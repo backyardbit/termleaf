@@ -42,3 +42,4 @@ These are wanted eventually. Keep the architecture open to them, but do not buil
   - No identifier may contain "shape". Name things after their domain role.
 - Put reload and parsing edge cases (partial file, deleted file, shrinking page count) into tests with fixture PDFs. Do not rely on checking them by hand.
 - Commit `Cargo.lock`. This is a binary crate.
+- The human owner is the only author of every commit. Write commit messages with no `Co-Authored-By` trailer and no other attribution to an agent or AI tool. The same goes for PR descriptions.
