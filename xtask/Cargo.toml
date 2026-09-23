@@ -1,0 +1,11 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ra-ap-rustc_lexer = "0.174.0"
+unicode-ident = "=1.0.24"
+
+[lints]
+workspace = true

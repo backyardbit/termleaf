@@ -1,0 +1,3 @@
+disallowed-types = [
+    { path = "std::any::Any", reason = "parse input into a domain type at its boundary instead of downcasting" },
+]

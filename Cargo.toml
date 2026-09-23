@@ -1,0 +1,32 @@
+[package]
+name = "termleaf"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+
+[lints]
+workspace = true
+
+[workspace]
+members = ["xtask"]
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+as_underscore = "deny"
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_sign_loss = "deny"
+cast_ptr_alignment = "deny"
+ptr_as_ptr = "deny"
+ptr_cast_constness = "deny"
+transmute_ptr_to_ptr = "deny"
+transmute_undefined_repr = "deny"
+multiple_unsafe_ops_per_block = "deny"
+undocumented_unsafe_blocks = "deny"
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+disallowed_types = "deny"

@@ -1,0 +1,27 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# LaTeX build artifacts (test fixtures, sample documents)
+*.aux
+*.log
+*.out
+*.toc
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.synctex(busy)
+*.xdv
+
+# Editors / OS
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+.helix/
+
+# Env
+.env
