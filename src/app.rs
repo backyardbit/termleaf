@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use crossterm::event::{
     self, Event as TerminalEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
 };
-use image::DynamicImage;
+use image::{DynamicImage, RgbImage, RgbaImage};
 use ratatui::DefaultTerminal;
 use ratatui::Frame;
 use ratatui::layout::{Rect, Size};
@@ -224,7 +224,7 @@ impl App {
                 }
                 let cells = cells_for(key.bounds, self.font_size);
                 if let Ok(protocol) = self.picker.new_protocol(
-                    DynamicImage::ImageRgb8(image),
+                    DynamicImage::ImageRgba8(pad_to_cells(image, self.font_size)),
                     cells,
                     Resize::Fit(None),
                 ) {
@@ -313,6 +313,21 @@ impl App {
     }
 }
 
+fn pad_to_cells(image: RgbImage, font_size: FontSize) -> RgbaImage {
+    let cell_width = u32::from(font_size.width.max(1));
+    let cell_height = u32::from(font_size.height.max(1));
+    let width = image.width().div_ceil(cell_width) * cell_width;
+    let height = image.height().div_ceil(cell_height) * cell_height;
+    let mut padded = RgbaImage::new(width, height);
+    image::imageops::overlay(
+        &mut padded,
+        &DynamicImage::ImageRgb8(image).to_rgba8(),
+        0,
+        0,
+    );
+    padded
+}
+
 fn cells_for(bounds: PixelSize, font_size: FontSize) -> Size {
     let columns = bounds.width / u32::from(font_size.width.max(1));
     let rows = bounds.height / u32::from(font_size.height.max(1));
@@ -347,6 +362,32 @@ mod tests {
     fn clamps_an_oversized_image_to_the_area() {
         let area = Rect::new(2, 1, 10, 5);
         assert_eq!(centered(area, Size::new(30, 30)), Rect::new(2, 1, 10, 5));
+    }
+
+    #[test]
+    fn pads_a_render_up_to_whole_cells() {
+        let padded = pad_to_cells(RgbImage::new(95, 41), FontSize::new(10, 20));
+        assert_eq!(padded.dimensions(), (100, 60));
+    }
+
+    #[test]
+    fn padding_keeps_the_rendered_pixels_opaque() {
+        let render = RgbImage::from_pixel(95, 41, image::Rgb([200, 100, 50]));
+        let padded = pad_to_cells(render, FontSize::new(10, 20));
+        assert_eq!(padded.get_pixel(94, 40).0, [200, 100, 50, 255]);
+    }
+
+    #[test]
+    fn padding_is_transparent() {
+        let padded = pad_to_cells(RgbImage::new(95, 41), FontSize::new(10, 20));
+        assert_eq!(padded.get_pixel(99, 59).0[3], 0);
+        assert_eq!(padded.get_pixel(95, 0).0[3], 0);
+    }
+
+    #[test]
+    fn a_render_aligned_to_cells_keeps_its_size() {
+        let padded = pad_to_cells(RgbImage::new(100, 60), FontSize::new(10, 20));
+        assert_eq!(padded.dimensions(), (100, 60));
     }
 
     #[test]
