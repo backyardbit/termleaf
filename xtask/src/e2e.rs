@@ -71,6 +71,16 @@ fn scenario(root: &Path) -> Outcome<()> {
     ])?;
     session.step("start", "page 1/3 · doc.pdf", Page::Changed)?;
 
+    session.send(&WHEEL_DOWN.repeat(80))?;
+    session.step(
+        "wheel-scrolls-into-page-two",
+        "page 2/3 · doc.pdf",
+        Page::Changed,
+    )?;
+
+    session.send("gg")?;
+    session.step("back-to-first-page", "page 1/3 · doc.pdf", Page::Changed)?;
+
     session.send("j")?;
     session.step("next-page", "page 2/3 · doc.pdf", Page::Changed)?;
 
@@ -93,10 +103,35 @@ fn scenario(root: &Path) -> Outcome<()> {
     fs::rename(&staging, &doc).map_err(|error| error.to_string())?;
     session.step("rename-replace-clamps", "page 2/2 · doc.pdf", Page::Changed)?;
 
+    session.send(CONTROL_WHEEL_UP)?;
+    session.step(
+        "control-wheel-zooms",
+        "page 2/2 · 110% · doc.pdf",
+        Page::Changed,
+    )?;
+
+    session.send(DOUBLE_CLICK)?;
+    session.step(
+        "double-click-resets-the-zoom",
+        "page 2/2 · doc.pdf",
+        Page::Changed,
+    )?;
+
+    session.send(DOUBLE_CLICK)?;
+    session.step(
+        "double-click-fits-the-page",
+        "page 2/2 · fit page · doc.pdf",
+        Page::Changed,
+    )?;
+
     session.send("q")?;
     session.wait_for_status("termleaf to quit", |status| !status.contains("doc.pdf"))?;
     Ok(())
 }
+
+const WHEEL_DOWN: &str = "\x1b[<65;40;10M";
+const CONTROL_WHEEL_UP: &str = "\x1b[<80;40;10M";
+const DOUBLE_CLICK: &str = "\x1b[<0;40;10M\x1b[<0;40;10m\x1b[<0;40;10M\x1b[<0;40;10m";
 
 fn copy(from: &Path, to: &Path) -> Outcome<()> {
     fs::copy(from, to)
@@ -334,7 +369,23 @@ pub fn page_region(screenshot: &RgbImage) -> Option<Region> {
         })
         .collect();
     let top = *page_rows.first()?;
-    let bottom = *page_rows.last()?;
+    let mut bottom = *page_rows.last()?;
+    let margin = left..left + ((right - left + 1) / 40).max(2);
+    let text_at_the_left_edge = |y: u32| margin.clone().any(|x| !is_paper(screenshot, x, y));
+    if let Some(status_text) = (top..=bottom)
+        .rev()
+        .find(|&y| page_rows.contains(&y) && text_at_the_left_edge(y))
+    {
+        let blank_row = |y: u32| (left..=right).all(|x| is_paper(screenshot, x, y));
+        bottom = (top..status_text)
+            .rev()
+            .find(|&y| blank_row(y))
+            .unwrap_or(top);
+        bottom = (top..=bottom)
+            .rev()
+            .find(|&y| page_rows.contains(&y))
+            .unwrap_or(top);
+    }
     Some(Region {
         x: left,
         y: top,
@@ -352,6 +403,20 @@ pub fn changed_page_pixels(before: &RgbImage, after: &RgbImage) -> usize {
     };
     (region.y..region.y + region.height)
         .flat_map(|y| (region.x..region.x + region.width).map(move |x| (x, y)))
+        .filter(|&(x, y)| before.get_pixel(x, y) != after.get_pixel(x, y))
+        .count()
+}
+
+pub fn changed_status_pixels(before: &RgbImage, after: &RgbImage) -> usize {
+    if before.dimensions() != after.dimensions() {
+        return usize::MAX;
+    }
+    let Some(region) = page_region(after) else {
+        return changed_pixels(before, after);
+    };
+    let (width, height) = after.dimensions();
+    (region.y + region.height..height)
+        .flat_map(|y| (0..width).map(move |x| (x, y)))
         .filter(|&(x, y)| before.get_pixel(x, y) != after.get_pixel(x, y))
         .count()
 }
@@ -398,8 +463,12 @@ impl Settle {
         let changed = self.previous_step.as_ref().map_or(usize::MAX, |before| {
             changed_page_pixels(before, &screenshot)
         });
+        let status_changed = self
+            .previous_step
+            .as_ref()
+            .is_none_or(|before| changed_status_pixels(before, &screenshot) > 0);
         let expected = match self.expectation {
-            Page::Changed => changed >= MIN_CHANGED_PIXELS,
+            Page::Changed => changed >= MIN_CHANGED_PIXELS && status_changed,
             Page::Unchanged => changed < MIN_CHANGED_PIXELS,
         };
         expected.then_some(screenshot)
@@ -544,6 +613,24 @@ mod tests {
     }
 
     #[test]
+    fn the_page_region_stops_above_status_text_when_the_page_fills_the_pane() {
+        let mut screen = dark_screen();
+        fill(&mut screen, 20..80, 0..96, WHITE);
+        fill(&mut screen, 40..50, 30..32, DARK);
+        fill(&mut screen, 20..45, 92..94, DARK);
+        fill(&mut screen, 60..62, 91..94, DARK);
+        assert_eq!(
+            page_region(&screen),
+            Some(Region {
+                x: 20,
+                y: 0,
+                width: 60,
+                height: 91
+            })
+        );
+    }
+
+    #[test]
     fn a_dark_screen_has_no_page_region() {
         assert_eq!(page_region(&dark_screen()), None);
     }
@@ -564,7 +651,11 @@ mod tests {
         assert_eq!(changed_page_pixels(&before, &after), 20);
     }
     fn page_with_mark(mark_x: u32) -> RgbImage {
-        let mut screen = page_above_status_bar(0);
+        page_with_mark_and_status(mark_x, 0)
+    }
+
+    fn page_with_mark_and_status(mark_x: u32, status_text_at: u32) -> RgbImage {
+        let mut screen = page_above_status_bar(status_text_at);
         fill(&mut screen, mark_x..mark_x + 10, 10..30, DARK);
         screen
     }
@@ -579,14 +670,24 @@ mod tests {
     #[test]
     fn a_new_page_is_accepted_once_it_holds_still() {
         let mut settle = Settle::new(Page::Changed, Some(page_with_mark(32)));
-        let new = page_with_mark(55);
+        let new = page_with_mark_and_status(55, 20);
         assert_eq!(observe_all(&mut settle, &[new.clone(), new]), [false, true]);
+    }
+
+    #[test]
+    fn a_new_page_under_the_old_status_bar_is_not_the_new_frame_yet() {
+        let mut settle = Settle::new(Page::Changed, Some(page_with_mark(32)));
+        let new = page_with_mark(55);
+        assert_eq!(
+            observe_all(&mut settle, &[new.clone(), new.clone(), new]),
+            [false, false, false]
+        );
     }
 
     #[test]
     fn the_stale_previous_page_is_never_accepted_as_changed() {
         let old = page_with_mark(32);
-        let new = page_with_mark(55);
+        let new = page_with_mark_and_status(55, 20);
         let mut settle = Settle::new(Page::Changed, Some(old.clone()));
         assert_eq!(
             observe_all(
