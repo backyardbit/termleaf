@@ -6,8 +6,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event as TerminalEvent, KeyCode, KeyEvent,
-    KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
+    Event as TerminalEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
 };
 use crossterm::execute;
 use image::{DynamicImage, RgbImage, RgbaImage};
@@ -23,6 +24,7 @@ use crate::keys::{Command, Key, KeyParser, ScreenCell};
 use crate::kitty::{self, CellGrid, ImageId, Placeholders};
 use crate::layout::{CellSize, Pane, View};
 use crate::mouse::{Gestures, MouseInput, Wheel};
+use crate::pinch::{self, PinchGate, PinchInput};
 use crate::renderer::{Generation, RenderKey, Renderer, Response};
 use crate::viewer::Viewer;
 use crate::watch::watch;
@@ -34,15 +36,21 @@ const TILE_BYTE_BUDGET: usize = 192 * 1024 * 1024;
 const IDLE_WAIT: Duration = Duration::from_secs(3600);
 const RESIZE_SETTLE: Duration = Duration::from_millis(300);
 
+pub struct Options {
+    pub pinch: bool,
+}
+
 enum Event {
     Key(Key),
     Mouse(MouseInput),
+    Pinch(PinchInput),
+    Focus(bool),
     Resized,
     FileChanged,
     Renderer(Response),
 }
 
-pub fn run(path: PathBuf) -> Result<()> {
+pub fn run(path: PathBuf, options: Options) -> Result<()> {
     if !path.is_file() {
         bail!("no such file: {}", path.display());
     }
@@ -75,6 +83,17 @@ pub fn run(path: PathBuf) -> Result<()> {
         }
     };
     let _ = execute!(std::io::stdout(), EnableMouseCapture);
+    if options.pinch {
+        let _ = execute!(std::io::stdout(), EnableFocusChange);
+        let pinches = events.clone();
+        if let Err(error) = pinch::listen(move |input| {
+            let _ = pinches.send(Event::Pinch(input));
+        }) {
+            let _ = execute!(std::io::stdout(), DisableFocusChange, DisableMouseCapture);
+            ratatui::restore();
+            return Err(error);
+        }
+    }
     spawn_input(events);
 
     let cell = cell_size(picker.font_size());
@@ -84,6 +103,7 @@ pub fn run(path: PathBuf) -> Result<()> {
         viewer: Viewer::new(pages, cell, pane),
         keys: KeyParser::default(),
         gestures: Gestures::default(),
+        pinch: PinchGate::default(),
         renderer,
         generation: 0,
         requested_generation: 0,
@@ -99,7 +119,7 @@ pub fn run(path: PathBuf) -> Result<()> {
     let result = app.event_loop(&mut terminal, &inbox);
     app.forget_all_tiles();
     let _ = app.flush(&mut terminal);
-    let _ = execute!(std::io::stdout(), DisableMouseCapture);
+    let _ = execute!(std::io::stdout(), DisableFocusChange, DisableMouseCapture);
     ratatui::restore();
     result
 }
@@ -118,19 +138,24 @@ fn kitty_picker() -> Result<Picker> {
 fn spawn_input(events: Sender<Event>) {
     thread::spawn(move || {
         while let Ok(terminal_event) = event::read() {
-            let translated = match terminal_event {
-                TerminalEvent::Key(key) => translate_key(key).map(Event::Key),
-                TerminalEvent::Mouse(mouse) => translate_mouse(mouse).map(Event::Mouse),
-                TerminalEvent::Resize(..) => Some(Event::Resized),
-                _ => None,
-            };
-            if let Some(event) = translated
+            if let Some(event) = translate_event(terminal_event)
                 && events.send(event).is_err()
             {
                 return;
             }
         }
     });
+}
+
+fn translate_event(terminal_event: TerminalEvent) -> Option<Event> {
+    match terminal_event {
+        TerminalEvent::Key(key) => translate_key(key).map(Event::Key),
+        TerminalEvent::Mouse(mouse) => translate_mouse(mouse).map(Event::Mouse),
+        TerminalEvent::Resize(..) => Some(Event::Resized),
+        TerminalEvent::FocusGained => Some(Event::Focus(true)),
+        TerminalEvent::FocusLost => Some(Event::Focus(false)),
+        TerminalEvent::Paste(_) => None,
+    }
 }
 
 fn translate_key(key: KeyEvent) -> Option<Key> {
@@ -168,6 +193,7 @@ fn translate_mouse(mouse: MouseEvent) -> Option<MouseInput> {
         MouseEventKind::ScrollDown => wheel(Wheel::Down),
         MouseEventKind::ScrollLeft => wheel(Wheel::Left),
         MouseEventKind::ScrollRight => wheel(Wheel::Right),
+        MouseEventKind::Moved => Some(MouseInput::Hover(at)),
         _ => None,
     }
 }
@@ -215,6 +241,7 @@ struct App {
     viewer: Viewer,
     keys: KeyParser,
     gestures: Gestures,
+    pinch: PinchGate,
     renderer: Renderer,
     generation: Generation,
     requested_generation: Generation,
@@ -278,10 +305,17 @@ impl App {
                 }
             }
             Event::Mouse(input) => {
+                self.pinch.pointer(input.at());
                 if let Some(command) = self.gestures.feed(input, Instant::now()) {
                     return self.apply(command);
                 }
             }
+            Event::Pinch(input) => {
+                if let Some(command) = self.pinch.feed(input) {
+                    return self.apply(command);
+                }
+            }
+            Event::Focus(focused) => self.pinch.focus(focused),
             Event::Resized => {}
             Event::FileChanged => {
                 self.reload_retries = 0;
@@ -574,6 +608,7 @@ mod tests {
             viewer: Viewer::new(pages, CELL, pane),
             keys: KeyParser::default(),
             gestures: Gestures::default(),
+            pinch: PinchGate::default(),
             renderer,
             generation: 0,
             requested_generation: 0,
@@ -695,6 +730,55 @@ mod tests {
             }
         }
         assert!(app.shown.is_some());
+    }
+
+    #[test]
+    fn a_pinch_zooms_the_page() {
+        let (mut app, _inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        let before = app.viewer.view().layout.scale();
+        app.handle(Event::Pinch(PinchInput::Scale(1.21)));
+        assert!(app.viewer.view().layout.scale() > before);
+    }
+
+    #[test]
+    fn a_pinch_is_ignored_while_another_pane_has_focus() {
+        let (mut app, _inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        let before = app.viewer.view().layout.scale();
+        app.handle(Event::Focus(false));
+        app.handle(Event::Pinch(PinchInput::Scale(1.21)));
+        assert_eq!(app.viewer.view().layout.scale(), before);
+    }
+
+    #[test]
+    fn focus_events_are_forwarded() {
+        assert!(matches!(
+            translate_event(TerminalEvent::FocusLost),
+            Some(Event::Focus(false))
+        ));
+        assert!(matches!(
+            translate_event(TerminalEvent::FocusGained),
+            Some(Event::Focus(true))
+        ));
+    }
+
+    #[test]
+    fn pointer_motion_is_forwarded_as_hover() {
+        let moved = MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 5,
+            row: 6,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert_eq!(
+            translate_mouse(moved),
+            Some(MouseInput::Hover(ScreenCell { column: 5, row: 6 }))
+        );
     }
 
     #[test]

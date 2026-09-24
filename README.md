@@ -53,6 +53,21 @@ Pages scroll continuously and open at fit width.
 | click | follow a link (`\ref`, citations, table of contents) |
 | double-click | switch between fit width and fit page |
 
+### Pinch to zoom
+
+Terminals never pass trackpad pinches to the programs running inside them. With `--pinch`, termleaf reads pinches from the operating system itself and zooms at the pointer while its pane has focus:
+
+```sh
+termleaf --pinch thesis.pdf
+```
+
+This is opt-in because it needs a broad permission:
+
+- **macOS:** your terminal app (Ghostty, kitty, …) needs **Input Monitoring** in System Settings → Privacy & Security. termleaf asks macOS to show the prompt the first time. Restart the terminal after allowing it. The permission belongs to the terminal app, so every program you run in it could then watch keyboard and mouse input.
+- **Linux:** your user must be in the `input` group (`sudo usermod -aG input $USER`, then log in again). termleaf only opens devices that report themselves as touchpads, but the group gives read access to every input device.
+
+Ctrl+wheel and `+`/`-` zoom without any permission.
+
 ## License
 
 AGPL-3.0-or-later, matching [MuPDF](https://mupdf.com/), which termleaf uses to render pages.
