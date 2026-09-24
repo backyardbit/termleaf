@@ -39,6 +39,8 @@ jobs:
         run: |
           gh release download v0.9.1 --repo herdrdev/herdr --pattern herdr-linux-x86_64 --output "$RUNNER_TEMP/herdr"
           sudo install -m 755 "$RUNNER_TEMP/herdr" /usr/local/bin/herdr
+          mkdir -p ~/.config/herdr
+          printf 'onboarding = false\n' > ~/.config/herdr/config.toml
       - uses: Swatinem/rust-cache@v2
       - run: xvfb-run --auto-servernum --server-args="-screen 0 1400x900x24" cargo xtask e2e
       - if: always()

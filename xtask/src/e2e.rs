@@ -199,9 +199,9 @@ impl Session {
         let mut last = None;
         let accepted = poll(STEP_TIMEOUT, "the page image", || {
             let screenshot = self.screenshot(label).ok()?;
-            let changed = previous
-                .as_ref()
-                .map_or(usize::MAX, |before| changed_pixels(before, &screenshot));
+            let changed = previous.as_ref().map_or(usize::MAX, |before| {
+                changed_page_pixels(before, &screenshot)
+            });
             let settled = match page {
                 Page::Changed => changed >= MIN_CHANGED_PIXELS,
                 Page::Unchanged => changed < MIN_CHANGED_PIXELS,
@@ -299,6 +299,72 @@ pub fn changed_pixels(before: &RgbImage, after: &RgbImage) -> usize {
         .count()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Region {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
+fn is_paper(screenshot: &RgbImage, x: u32, y: u32) -> bool {
+    screenshot
+        .get_pixel(x, y)
+        .0
+        .iter()
+        .all(|&channel| channel >= PAPER_THRESHOLD)
+}
+
+pub fn page_region(screenshot: &RgbImage) -> Option<Region> {
+    let (width, height) = screenshot.dimensions();
+    let tall_columns: Vec<u32> = (0..width)
+        .filter(|&x| {
+            let paper = (0..height).filter(|&y| is_paper(screenshot, x, y)).count();
+            paper * 4 >= usize::try_from(height).unwrap_or(usize::MAX)
+        })
+        .collect();
+    let left = *tall_columns.first()?;
+    let right = *tall_columns.last()?;
+    let edge = ((right - left + 1) / 10).max(2);
+    let beside_page: Vec<u32> = (left.saturating_sub(edge)..left)
+        .chain(right.saturating_add(1)..right.saturating_add(edge + 1).min(width))
+        .collect();
+    let page_rows: Vec<u32> = (0..height)
+        .filter(|&y| {
+            let inside = (left..=right)
+                .filter(|&x| is_paper(screenshot, x, y))
+                .count();
+            let beside = beside_page
+                .iter()
+                .filter(|&&x| is_paper(screenshot, x, y))
+                .count();
+            let inside_width = usize::try_from(right - left + 1).unwrap_or(usize::MAX);
+            inside * 2 >= inside_width && beside * 2 < beside_page.len().max(1)
+        })
+        .collect();
+    let top = *page_rows.first()?;
+    let bottom = *page_rows.last()?;
+    Some(Region {
+        x: left,
+        y: top,
+        width: right - left + 1,
+        height: bottom - top + 1,
+    })
+}
+
+pub fn changed_page_pixels(before: &RgbImage, after: &RgbImage) -> usize {
+    if before.dimensions() != after.dimensions() {
+        return usize::MAX;
+    }
+    let Some(region) = page_region(after).or_else(|| page_region(before)) else {
+        return changed_pixels(before, after);
+    };
+    (region.y..region.y + region.height)
+        .flat_map(|y| (region.x..region.x + region.width).map(move |x| (x, y)))
+        .filter(|&(x, y)| before.get_pixel(x, y) != after.get_pixel(x, y))
+        .count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -373,5 +439,81 @@ mod tests {
     fn screens_of_different_sizes_count_as_fully_changed() {
         let small = RgbImage::from_pixel(10, 10, DARK);
         assert_eq!(changed_pixels(&small, &dark_screen()), usize::MAX);
+    }
+
+    fn fill(
+        screen: &mut RgbImage,
+        xs: std::ops::Range<u32>,
+        ys: std::ops::Range<u32>,
+        colour: Rgb<u8>,
+    ) {
+        for x in xs {
+            for y in ys.clone() {
+                screen.put_pixel(x, y, colour);
+            }
+        }
+    }
+
+    fn page_above_status_bar(status_text_at: u32) -> RgbImage {
+        let mut screen = dark_screen();
+        fill(&mut screen, 30..70, 0..80, WHITE);
+        fill(&mut screen, 0..100, 90..96, WHITE);
+        fill(
+            &mut screen,
+            status_text_at..status_text_at + 5,
+            92..94,
+            DARK,
+        );
+        screen
+    }
+
+    #[test]
+    fn the_page_region_excludes_the_full_width_status_bar() {
+        assert_eq!(
+            page_region(&page_above_status_bar(0)),
+            Some(Region {
+                x: 30,
+                y: 0,
+                width: 40,
+                height: 80
+            })
+        );
+    }
+
+    #[test]
+    fn the_page_region_excludes_a_status_bar_that_only_spans_the_pane() {
+        let mut screen = dark_screen();
+        fill(&mut screen, 40..70, 0..80, WHITE);
+        fill(&mut screen, 30..80, 90..96, WHITE);
+        assert_eq!(
+            page_region(&screen),
+            Some(Region {
+                x: 40,
+                y: 0,
+                width: 30,
+                height: 80
+            })
+        );
+    }
+
+    #[test]
+    fn a_dark_screen_has_no_page_region() {
+        assert_eq!(page_region(&dark_screen()), None);
+    }
+
+    #[test]
+    fn status_bar_changes_do_not_count_as_page_changes() {
+        let before = page_above_status_bar(0);
+        let after = page_above_status_bar(50);
+        assert!(changed_pixels(&before, &after) > 0);
+        assert_eq!(changed_page_pixels(&before, &after), 0);
+    }
+
+    #[test]
+    fn changes_inside_the_page_are_counted() {
+        let before = page_above_status_bar(0);
+        let mut after = before.clone();
+        fill(&mut after, 40..50, 10..12, DARK);
+        assert_eq!(changed_page_pixels(&before, &after), 20);
     }
 }
