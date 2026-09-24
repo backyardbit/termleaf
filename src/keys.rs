@@ -28,6 +28,10 @@ pub enum Command {
         steps: i32,
         anchor: Option<ScreenCell>,
     },
+    Magnify {
+        per_mille: u32,
+        anchor: Option<ScreenCell>,
+    },
     FitWidth,
     FitPage,
     ToggleFit(ScreenCell),

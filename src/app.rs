@@ -22,8 +22,8 @@ use ratatui_image::picker::cap_parser::QueryStdioOptions;
 use ratatui_image::picker::{Capability, Picker, ProtocolType};
 
 use crate::keys::{Command, Key, KeyParser, ScreenCell};
-use crate::kitty::{self, CellGrid, ImageId, Payload, Placeholders};
-use crate::layout::{CellSize, Pane, View};
+use crate::kitty::{self, CellGrid, ImageId, Payload, Placeholders, Placement};
+use crate::layout::{CellSize, Pane, RenderedTile, Stretched, StretchedGrid, View};
 use crate::mouse::{Gestures, MouseInput, Wheel};
 use crate::pinch::{self, PinchGate, PinchInput};
 use crate::renderer::{Generation, RenderKey, Renderer, Response};
@@ -36,6 +36,7 @@ const MAX_RELOAD_RETRIES: u32 = 3;
 const TILE_BYTE_BUDGET: usize = 192 * 1024 * 1024;
 const IDLE_WAIT: Duration = Duration::from_secs(3600);
 const RESIZE_SETTLE: Duration = Duration::from_millis(300);
+const ZOOM_SETTLE: Duration = Duration::from_millis(150);
 
 pub struct Options {
     pub pinch: bool,
@@ -110,6 +111,9 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
         tiles: Vec::new(),
         in_flight: Vec::new(),
         shown: None,
+        zooming_until: None,
+        stretched: Vec::new(),
+        stretch_grids: std::collections::HashMap::new(),
         next_id: ImageId::first(),
         payload: payload_for(&picker),
         outgoing: String::new(),
@@ -265,6 +269,9 @@ struct App {
     tiles: Vec<CachedTile>,
     in_flight: Vec<RenderKey>,
     shown: Option<Shown>,
+    zooming_until: Option<Instant>,
+    stretched: Vec<(ImageId, Stretched)>,
+    stretch_grids: std::collections::HashMap<ImageId, StretchedGrid>,
     next_id: ImageId,
     payload: Payload,
     outgoing: String,
@@ -283,13 +290,13 @@ impl App {
                 pane_of(page_area(Rect::new(0, 0, size.width, size.height))),
                 now,
             );
-            self.request_tiles_at(now);
+            self.prepare_frame(now);
             if self.may_transmit(now) {
                 self.resize_settles_at = None;
                 self.flush(terminal)?;
             }
             terminal.draw(|frame| self.draw(frame))?;
-            let wait = [self.reload_at, self.resize_settles_at]
+            let wait = [self.reload_at, self.resize_settles_at, self.zooming_until]
                 .into_iter()
                 .flatten()
                 .min()
@@ -355,11 +362,68 @@ impl App {
     }
 
     fn apply(&mut self, command: Command) -> Flow {
+        self.apply_at(command, Instant::now())
+    }
+
+    fn apply_at(&mut self, command: Command, now: Instant) -> Flow {
         if command == Command::Quit {
             return Flow::Quit;
         }
+        let scale = self.viewer.view().layout.scale();
         self.viewer.apply(command);
+        if self.viewer.view().layout.scale() != scale {
+            self.zooming_until = Some(now + ZOOM_SETTLE);
+        }
         Flow::Continue
+    }
+
+    fn prepare_frame(&mut self, now: Instant) {
+        self.request_tiles_at(now);
+        self.stretch_shown_tiles();
+    }
+
+    fn zooming(&mut self, now: Instant) -> bool {
+        if self.zooming_until.is_some_and(|until| now >= until) {
+            self.zooming_until = None;
+        }
+        self.zooming_until.is_some()
+    }
+
+    fn stretch_shown_tiles(&mut self) {
+        self.stretched.clear();
+        let Some(shown) = &self.shown else {
+            return;
+        };
+        let target = self.viewer.view();
+        let from = shown.view.layout.scale();
+        if from == target.layout.scale() {
+            return;
+        }
+        let stretched: Vec<(ImageId, Stretched)> = self
+            .tiles
+            .iter()
+            .filter(|tile| tile.key.scale == from && tile.key.generation == shown.generation)
+            .filter_map(|tile| {
+                let rendered = RenderedTile {
+                    page: tile.key.page,
+                    scale: from,
+                    region: tile.key.region,
+                };
+                target.stretch(rendered).map(|placed| (tile.id, placed))
+            })
+            .collect();
+        for (id, placed) in &stretched {
+            if self.stretch_grids.get(id) != Some(&placed.grid) {
+                self.stretch_grids.insert(*id, placed.grid);
+                let grid = CellGrid {
+                    columns: placed.grid.columns,
+                    rows: placed.grid.rows,
+                };
+                self.outgoing
+                    .push_str(&kitty::place(*id, Placement::Stretched, grid));
+            }
+        }
+        self.stretched = stretched;
     }
 
     fn start_reload(&mut self) {
@@ -427,6 +491,7 @@ impl App {
                 continue;
             }
             let tile = self.tiles.remove(index);
+            self.stretch_grids.remove(&tile.id);
             total -= tile.bytes;
             self.outgoing.push_str(&kitty::delete(tile.id));
         }
@@ -436,6 +501,7 @@ impl App {
         let mut kept = Vec::with_capacity(self.tiles.len());
         for tile in self.tiles.drain(..) {
             if forget(&tile.key) {
+                self.stretch_grids.remove(&tile.id);
                 self.outgoing.push_str(&kitty::delete(tile.id));
             } else {
                 kept.push(tile);
@@ -470,6 +536,13 @@ impl App {
     fn request_tiles_at(&mut self, now: Instant) {
         let view = self.viewer.view().clone();
         if view.pane.columns == 0 || view.pane.rows == 0 {
+            return;
+        }
+        let stretching = self
+            .shown
+            .as_ref()
+            .is_some_and(|shown| shown.view.layout.scale() != view.layout.scale());
+        if self.zooming(now) && stretching {
             return;
         }
         let wanted = tile_keys(self.generation, &view);
@@ -525,7 +598,24 @@ impl App {
             ..area
         };
 
-        if let Some(shown) = &self.shown {
+        for (id, placed) in &self.stretched {
+            let area = Rect {
+                x: pages.x + placed.area.x,
+                y: pages.y + placed.area.y,
+                ..placed.area
+            }
+            .intersection(pages);
+            frame.render_widget(
+                Placeholders {
+                    id: *id,
+                    placement: Placement::Stretched,
+                    first_column: placed.first_column,
+                    first_row: placed.first_row,
+                },
+                area,
+            );
+        }
+        if let Some(shown) = self.shown.as_ref().filter(|_| self.stretched.is_empty()) {
             for placement in shown.view.placements() {
                 let key = tile_key(shown.generation, &shown.view, placement.tile);
                 let Some(id) = self.cached(key) else {
@@ -540,6 +630,7 @@ impl App {
                 frame.render_widget(
                     Placeholders {
                         id,
+                        placement: Placement::Tile,
                         first_column: placement.first_column,
                         first_row: placement.first_row,
                     },
@@ -634,6 +725,9 @@ mod tests {
             tiles: Vec::new(),
             in_flight: Vec::new(),
             shown: None,
+            zooming_until: None,
+            stretched: Vec::new(),
+            stretch_grids: std::collections::HashMap::new(),
             next_id: ImageId::first(),
             payload: Payload::Raw,
             outgoing: String::new(),
@@ -747,6 +841,58 @@ mod tests {
             }
         }
         assert!(app.shown.is_some());
+    }
+
+    #[test]
+    fn while_zooming_the_shown_tiles_are_stretched_instead_of_rendered() {
+        let (mut app, inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        settle(&mut app, &inbox);
+        app.outgoing.clear();
+        app.in_flight.clear();
+        let now = Instant::now();
+        app.apply_at(
+            Command::Magnify {
+                per_mille: 1200,
+                anchor: None,
+            },
+            now,
+        );
+        app.prepare_frame(now);
+        assert!(!app.stretched.is_empty());
+        assert!(app.outgoing.contains("a=p,U=1"));
+        assert!(app.in_flight.is_empty());
+    }
+
+    #[test]
+    fn sharp_tiles_replace_the_stretch_once_zooming_settles() {
+        let (mut app, inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        settle(&mut app, &inbox);
+        let now = Instant::now();
+        app.apply_at(
+            Command::Magnify {
+                per_mille: 1200,
+                anchor: None,
+            },
+            now,
+        );
+        app.prepare_frame(now);
+        let later = now + ZOOM_SETTLE;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !app.stretched.is_empty() && Instant::now() < deadline {
+            app.prepare_frame(later);
+            if let Ok(Event::Renderer(response)) = inbox.recv_timeout(Duration::from_millis(200)) {
+                app.receive(response);
+            }
+        }
+        assert!(app.stretched.is_empty());
+        let shown = app.shown.as_ref().unwrap().view.layout.scale();
+        assert_eq!(shown, app.viewer.view().layout.scale());
     }
 
     #[test]

@@ -66,7 +66,12 @@ impl Viewer {
             Command::Last => self.go_to_page(last),
             Command::GoTo(number) => self.go_to_page(number.saturating_sub(1).min(last)),
             Command::Scroll { columns, rows } => self.scroll(columns, rows),
-            Command::Zoom { steps, anchor } => self.zoom_by(steps, anchor),
+            Command::Zoom { steps, anchor } => {
+                self.magnify(ZOOM_STEP.powi(steps), anchor);
+            }
+            Command::Magnify { per_mille, anchor } => {
+                self.magnify(f64::from(per_mille) / 1000.0, anchor);
+            }
             Command::FitWidth => self.fit(Zoom::FitWidth, None),
             Command::FitPage => self.fit(Zoom::FitPage, None),
             Command::ToggleFit(at) => {
@@ -153,10 +158,9 @@ impl Viewer {
         self.view = self.view.clone().clamped();
     }
 
-    fn zoom_by(&mut self, steps: i32, anchor: Option<ScreenCell>) {
+    fn magnify(&mut self, factor: f64, anchor: Option<ScreenCell>) {
         let current = self.view.layout.scale().pixels_per_point();
-        let wanted =
-            (current * ZOOM_STEP.powi(steps)).clamp(MIN_PIXELS_PER_POINT, MAX_PIXELS_PER_POINT);
+        let wanted = (current * factor).clamp(MIN_PIXELS_PER_POINT, MAX_PIXELS_PER_POINT);
         let scale = Scale::from_pixels_per_point(wanted);
         self.zoom = Zoom::Free(scale);
         let at = self.screen_point(anchor);
@@ -403,6 +407,23 @@ mod tests {
         let tolerance = 20.0 / viewer.view().layout.scale().pixels_per_point();
         assert!((after.x - before.x).abs() <= tolerance);
         assert!((after.y - before.y).abs() <= tolerance);
+    }
+
+    #[test]
+    fn magnify_scales_by_the_given_factor_around_the_pointer() {
+        let mut viewer = viewer(2);
+        let before = viewer.view().layout.scale().pixels_per_point();
+        let at = cell(30, 10);
+        let under = viewer.view().page_under(at.column, at.row).unwrap();
+        viewer.apply(Command::Magnify {
+            per_mille: 1030,
+            anchor: Some(at),
+        });
+        let after = viewer.view().layout.scale().pixels_per_point();
+        assert!((after / before - 1.03).abs() < 0.002);
+        let still_under = viewer.view().page_under(at.column, at.row).unwrap();
+        let tolerance = 20.0 / viewer.view().layout.scale().pixels_per_point();
+        assert!((still_under.y - under.y).abs() <= tolerance);
     }
 
     #[test]
