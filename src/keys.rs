@@ -8,12 +8,30 @@ pub enum Key {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScreenCell {
+    pub column: u16,
+    pub row: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     Next(usize),
     Previous(usize),
     First,
     Last,
     GoTo(usize),
+    Scroll {
+        columns: i32,
+        rows: i32,
+    },
+    Zoom {
+        steps: i32,
+        anchor: Option<ScreenCell>,
+    },
+    FitWidth,
+    FitPage,
+    ToggleFit(ScreenCell),
+    Click(ScreenCell),
     Quit,
 }
 
@@ -65,6 +83,10 @@ impl KeyParser {
                     'j' => Some(Command::Next(repeat)),
                     'k' => Some(Command::Previous(repeat)),
                     'G' => Some(count.map_or(Command::Last, Command::GoTo)),
+                    '+' | '=' => Some(zoom(repeat, 1)),
+                    '-' => Some(zoom(repeat, -1)),
+                    's' => Some(Command::FitWidth),
+                    'a' => Some(Command::FitPage),
                     'q' => Some(Command::Quit),
                     _ => None,
                 }
@@ -106,6 +128,13 @@ impl KeyParser {
     fn reset(&mut self) {
         self.count = None;
         self.awaiting_second_g = false;
+    }
+}
+
+fn zoom(repeat: usize, direction: i32) -> Command {
+    Command::Zoom {
+        steps: i32::try_from(repeat).unwrap_or(i32::MAX) * direction,
+        anchor: None,
     }
 }
 
@@ -203,6 +232,43 @@ mod tests {
         let mut parser = KeyParser::default();
         parser.feed(Key::Char(':'));
         assert_eq!(parser.feed(Key::Interrupt), Some(Command::Quit));
+    }
+
+    #[test]
+    fn plus_and_minus_zoom_around_the_view() {
+        assert_eq!(
+            run("+-="),
+            [
+                Command::Zoom {
+                    steps: 1,
+                    anchor: None
+                },
+                Command::Zoom {
+                    steps: -1,
+                    anchor: None
+                },
+                Command::Zoom {
+                    steps: 1,
+                    anchor: None
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_count_zooms_several_steps() {
+        assert_eq!(
+            run("3-"),
+            [Command::Zoom {
+                steps: -3,
+                anchor: None
+            }]
+        );
+    }
+
+    #[test]
+    fn s_and_a_fit_the_width_and_the_page() {
+        assert_eq!(run("sa"), [Command::FitWidth, Command::FitPage]);
     }
 
     #[test]

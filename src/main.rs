@@ -1,5 +1,8 @@
 mod app;
 mod keys;
+mod kitty;
+mod layout;
+mod mouse;
 mod pdf;
 mod renderer;
 mod viewer;
@@ -16,7 +19,16 @@ keys:
   j / k        next / previous page (takes a count, e.g. 5j)
   gg / G       first / last page (with a count: go to that page)
   :<n>         go to page n
-  q, Ctrl-C    quit";
+  + / -        zoom in / out (= also zooms in)
+  s / a        fit width / fit page
+  q, Ctrl-C    quit
+
+mouse:
+  wheel               scroll (shift or a sideways swipe pans across)
+  Ctrl + wheel        zoom at the pointer
+  drag                pan
+  click               follow a link
+  double-click        switch between fit width and fit page";
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();

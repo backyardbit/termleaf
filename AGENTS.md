@@ -8,27 +8,29 @@ The main use case is writing LaTeX. Helix runs in one herdr pane and termleaf ru
 
 - **Viewer, not build system.** termleaf watches a PDF and redraws when it changes. It works with any build tool (`latexmk -pvc`, texlab's build-on-save, `tectonic`). Any compile integration added later must be optional and live at the edge of the program.
 - **Only an existing PDF can be opened.** `termleaf file.pdf` exits with an error if the file is missing or can't be read at startup.
-- **One page at a time**, sized to fit the pane. Continuous scrolling is a later mode.
-- **Reload never loses your place.** Keep the current page across a reload. If the document gets shorter, clamp to the last page.
+- **Continuous scrolling.** Pages stack vertically with a one-row gap, and the pane is a window onto that strip. It opens at fit width. Zoom is free (about 10% per step, anchored at the pointer), with fit width and fit page as named modes.
+- **Reload never loses your place.** Keep the scroll position (page and offset into it) across a reload. If the document gets shorter, clamp to the last page.
 - **Reload handles half-written files.** Build tools truncate and rewrite the PDF, or replace it with a renamed file, so:
   - Watch the directory, not the file.
   - Debounce file events.
   - Treat a file that doesn't end with `%%EOF` as incomplete.
   - Retry when parsing fails.
   - Keep showing the last good page, and mark the status bar `✗ unreadable`.
-- **The UI never blocks.** Pages render on the render thread. Keys stay responsive while a page renders, and neighbouring pages are prefetched.
+- **The UI never blocks.** Pages render on the render thread. Input stays responsive while a page renders, and the tiles a pane above and below the view are prefetched. The event loop drains every pending event before it draws, so a burst of wheel events costs one frame.
+- **Scrolling never re-sends pixels.** Each page is cut into tiles of at most 64×48 cells at the current scale (`layout.rs`). Each tile is rendered once, transmitted once as a Kitty virtual placement, and cached. Scrolling and panning only rewrite the Unicode placeholder cells, with row and column diacritics picking the visible slice of each tile. That is what keeps scrolling smooth under herdr. Only a change of scale renders new tiles, and the old frame stays up until every visible tile at the new scale has arrived.
 - **Rendering uses MuPDF** through the `mupdf` crate, with its default features. MuPDF is AGPL, so termleaf is AGPL-3.0-or-later.
-  - `Document`, `Page` and `Pixmap` are not `Send`. Every MuPDF object lives on the render thread in `renderer.rs`, and only plain images cross threads.
-- **Kitty graphics protocol only.** Drawing goes through `ratatui` + `ratatui-image` (Unicode placeholders). In any other terminal, termleaf exits with a clear error. There is no text-block fallback, and the README says so.
+  - `Document`, `Page` and `Pixmap` are not `Send`. Every MuPDF object lives on the render thread in `renderer.rs`, and only plain images and page data (sizes, links) cross threads.
+- **Kitty graphics protocol only.** `kitty.rs` writes the transmissions and deletions itself and draws Unicode placeholders as a ratatui widget. `ratatui-image` is only used to query the terminal (protocol and cell size). In any other terminal, termleaf exits with a clear error. There is no text-block fallback, and the README says so.
 - **herdr on Ghostty is the primary target.** Facts about herdr:
   - It re-sends Kitty images to the outer terminal and supports Unicode placeholders.
-  - It blanks the image for about 20 ms each time an image is re-sent (herdr#3676). Send each rendered page once and keep its protocol object cached.
-  - It silently drops graphics frames larger than about 32 MB.
+  - It blanks the image for about 20 ms each time an image is re-sent (herdr#3676). Send each rendered tile once and keep it cached. Evicted tiles are deleted from the terminal.
+  - It silently drops graphics frames larger than about 32 MB. The tile size keeps every transmission well under that.
   - It reports cell pixel size through `CSI 16 t` and `TIOCGWINSZ`, but only after its first resize.
-- **Keyboard only, in the style of vim.**
+- **Keyboard in the style of vim, plus the mouse.**
   - `j` goes to the next page and `k` goes to the previous page.
-  - Other bindings: `gg`/`G`, count prefixes (`5j`), `:<n>` to jump to a page, `q` to quit.
-  - All bindings live in `keys.rs` so they can later be configured.
+  - Other bindings: `gg`/`G`, count prefixes (`5j`), `:<n>` to jump to a page, `+`/`-` to zoom, `s`/`a` for fit width/fit page, `q` to quit.
+  - Mouse: the wheel scrolls one row per event, shift or a sideways swipe pans, Ctrl+wheel zooms at the pointer, drag pans, click follows an internal link, double-click toggles fit width and fit page.
+  - Key bindings live in `keys.rs` and mouse gestures in `mouse.rs`, so both can later be configured. Both produce the same `Command`s for `viewer.rs`.
 - **Small and fast.** One binary, quick startup, few dependencies. Adding a dependency needs a reason.
 - **Platforms:** macOS and Linux.
 
@@ -36,9 +38,7 @@ The main use case is writing LaTeX. Helix runs in one herdr pane and termleaf ru
 
 These are wanted eventually. Keep the architecture open to them, but do not build them early:
 
-- Continuous scrolling
 - SyncTeX forward and inverse search between Helix and termleaf
-- Zoom and fit modes (fit width, fit page)
 - A dark mode that inverts or recolours pages
 - A config file for keybindings and defaults
 - Sixel and iTerm2 protocols, and a Homebrew tap
