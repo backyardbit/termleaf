@@ -253,10 +253,52 @@ impl View {
     }
 
     pub fn scrolled_to(self, point: DocumentPoint, screen_column: f64, screen_row: f64) -> Self {
+        let origin = self.origin_for(point, screen_column, screen_row);
+        self.at_origin(origin)
+    }
+
+    pub fn origin(&self) -> DocumentPoint {
+        DocumentPoint {
+            column: f64::from(self.left),
+            row: f64::from(self.top),
+        }
+    }
+
+    pub fn origin_for(
+        &self,
+        point: DocumentPoint,
+        screen_column: f64,
+        screen_row: f64,
+    ) -> DocumentPoint {
         let (margin_x, margin_y) = self.margins();
-        let top = nearest_whole(point.row - screen_row + f64::from(margin_y));
-        let left = nearest_whole(point.column - screen_column + f64::from(margin_x));
-        Self { top, left, ..self }.clamped()
+        DocumentPoint {
+            column: (point.column - screen_column + f64::from(margin_x))
+                .clamp(0.0, f64::from(self.max_left())),
+            row: (point.row - screen_row + f64::from(margin_y))
+                .clamp(0.0, f64::from(self.max_top())),
+        }
+    }
+
+    pub fn at_origin(self, origin: DocumentPoint) -> Self {
+        Self {
+            top: nearest_whole(origin.row),
+            left: nearest_whole(origin.column),
+            ..self
+        }
+        .clamped()
+    }
+
+    pub fn point_from(
+        &self,
+        origin: DocumentPoint,
+        screen_column: f64,
+        screen_row: f64,
+    ) -> DocumentPoint {
+        let (margin_x, margin_y) = self.margins();
+        DocumentPoint {
+            column: origin.column + screen_column - f64::from(margin_x),
+            row: origin.row + screen_row - f64::from(margin_y),
+        }
     }
 
     pub fn screen_of(&self, point: DocumentPoint) -> (f64, f64) {
