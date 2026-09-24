@@ -206,6 +206,10 @@ impl App {
                     .retain(|(key, _)| key.generation == generation || Some(*key) == shown);
                 self.in_flight.clear();
             }
+            Response::Unchanged { generation } if generation == self.requested_generation => {
+                self.reload_retries = 0;
+                self.viewer.reloaded(self.viewer.page_count());
+            }
             Response::Unreadable { generation } if generation == self.requested_generation => {
                 self.viewer.unreadable();
                 if self.reload_at.is_none() && self.reload_retries < MAX_RELOAD_RETRIES {
@@ -228,7 +232,7 @@ impl App {
                     self.evict();
                 }
             }
-            Response::Loaded { .. } | Response::Unreadable { .. } => {}
+            Response::Loaded { .. } | Response::Unreadable { .. } | Response::Unchanged { .. } => {}
         }
     }
 

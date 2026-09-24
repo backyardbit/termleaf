@@ -1,6 +1,3 @@
-use std::fs;
-use std::path::Path;
-
 use anyhow::{Context, Result, bail, ensure};
 use image::RgbImage;
 use mupdf::{Colorspace, Document, Matrix};
@@ -20,11 +17,6 @@ pub struct Pdf {
 }
 
 impl Pdf {
-    pub fn open(path: &Path) -> Result<Self> {
-        let bytes = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-        Self::from_bytes(&bytes)
-    }
-
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         ensure!(is_complete(bytes), "the PDF is incomplete");
         let document = Document::from_bytes(bytes, "application/pdf")?;
@@ -85,7 +77,8 @@ fn fit_scale(page_width: f32, page_height: f32, bounds: PixelSize) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::fs;
+    use std::path::{Path, PathBuf};
 
     fn fixture(name: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -95,13 +88,13 @@ mod tests {
 
     #[test]
     fn counts_pages() {
-        let pdf = Pdf::open(&fixture("three-pages.pdf")).unwrap();
+        let pdf = Pdf::from_bytes(&fs::read(fixture("three-pages.pdf")).unwrap()).unwrap();
         assert_eq!(pdf.page_count(), 3);
     }
 
     #[test]
     fn renders_within_the_requested_bounds() {
-        let pdf = Pdf::open(&fixture("three-pages.pdf")).unwrap();
+        let pdf = Pdf::from_bytes(&fs::read(fixture("three-pages.pdf")).unwrap()).unwrap();
         let bounds = PixelSize {
             width: 400,
             height: 300,
@@ -121,11 +114,6 @@ mod tests {
     #[test]
     fn rejects_an_empty_file() {
         assert!(Pdf::from_bytes(&[]).is_err());
-    }
-
-    #[test]
-    fn rejects_a_missing_file() {
-        assert!(Pdf::open(&fixture("missing.pdf")).is_err());
     }
 
     #[test]
