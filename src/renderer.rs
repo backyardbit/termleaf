@@ -5,7 +5,7 @@ use std::thread;
 
 use image::RgbImage;
 
-use crate::pdf::{Pdf, PixelSize};
+use crate::pdf::{PageInfo, Pdf, PixelRegion, Scale};
 
 pub type Generation = u64;
 
@@ -13,7 +13,8 @@ pub type Generation = u64;
 pub struct RenderKey {
     pub generation: Generation,
     pub page: usize,
-    pub bounds: PixelSize,
+    pub scale: Scale,
+    pub region: PixelRegion,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -25,7 +26,7 @@ enum Request {
 pub enum Response {
     Loaded {
         generation: Generation,
-        page_count: usize,
+        pages: Vec<PageInfo>,
     },
     Unreadable {
         generation: Generation,
@@ -81,16 +82,13 @@ fn load(path: &Path, generation: Generation, loaded: &mut Option<LoadedPdf>) -> 
     }
     match Pdf::from_bytes(&bytes) {
         Ok(pdf) => {
-            let page_count = pdf.page_count();
+            let pages = pdf.pages();
             *loaded = Some(LoadedPdf {
                 generation,
                 pdf,
                 bytes,
             });
-            Response::Loaded {
-                generation,
-                page_count,
-            }
+            Response::Loaded { generation, pages }
         }
         Err(_) => Response::Unreadable { generation },
     }
@@ -117,7 +115,7 @@ fn serve(path: &Path, inbox: &Receiver<Request>, respond: &impl Fn(Response)) {
                 if current.generation != key.generation {
                     continue;
                 }
-                if let Ok(image) = current.pdf.render(key.page, key.bounds) {
+                if let Ok(image) = current.pdf.render(key.page, key.scale, key.region) {
                     respond(Response::Rendered { key, image });
                 }
             }
@@ -136,6 +134,12 @@ fn next_request(pending: &mut Vec<Request>) -> Request {
     }
     let newest = pending.pop().unwrap_or(Request::Load(0));
     pending.retain(|request| *request != newest);
+    if let Request::Render(wanted) = &newest {
+        pending.retain(|request| match request {
+            Request::Render(key) => key.scale == wanted.scale,
+            Request::Load(_) => true,
+        });
+    }
     newest
 }
 
@@ -144,10 +148,17 @@ mod tests {
     use super::*;
 
     fn render(page: usize) -> Request {
+        render_at(page, 1.0)
+    }
+
+    fn render_at(page: usize, pixels_per_point: f64) -> Request {
         Request::Render(RenderKey {
             generation: 1,
             page,
-            bounds: PixelSize {
+            scale: Scale::from_pixels_per_point(pixels_per_point),
+            region: PixelRegion {
+                x: 0,
+                y: 0,
                 width: 10,
                 height: 10,
             },
@@ -239,10 +250,7 @@ mod tests {
         renderer.load(1);
         assert!(matches!(
             next_response(&responses),
-            Response::Loaded {
-                generation: 1,
-                page_count: 3
-            }
+            Response::Loaded { generation: 1, pages } if pages.len() == 3
         ));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
@@ -284,5 +292,19 @@ mod tests {
         let mut pending = vec![render(4), render(1), render(4)];
         assert_eq!(next_request(&mut pending), render(4));
         assert_eq!(pending, [render(1)]);
+    }
+
+    #[test]
+    fn renders_at_an_outdated_scale_are_dropped() {
+        let mut pending = vec![render_at(1, 1.0), render_at(2, 1.0), render_at(1, 1.5)];
+        assert_eq!(next_request(&mut pending), render_at(1, 1.5));
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn a_load_keeps_the_renders_queued_behind_it() {
+        let mut pending = vec![render_at(1, 1.0), Request::Load(2), render_at(2, 1.5)];
+        assert_eq!(next_request(&mut pending), Request::Load(2));
+        assert_eq!(pending.len(), 2);
     }
 }

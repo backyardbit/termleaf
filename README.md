@@ -38,7 +38,20 @@ The file must exist when termleaf starts. If a later build leaves the PDF broken
 | `gg` / `G` | first / last page |
 | `<n>G`, `<n>gg`, `:<n>` | go to page *n* |
 | `:$` | last page |
+| `+` / `-` | zoom in / out (`=` also zooms in; takes a count) |
+| `s` / `a` | fit width / fit page |
 | `q`, `:q`, `Ctrl-C` | quit |
+
+Pages scroll continuously and open at fit width.
+
+| Mouse | Action |
+| --- | --- |
+| wheel | scroll |
+| shift + wheel, sideways swipe | pan left / right |
+| `Ctrl` + wheel | zoom at the pointer |
+| drag | pan |
+| click | follow a link (`\ref`, citations, table of contents) |
+| double-click | switch between fit width and fit page |
 
 ## License
 
