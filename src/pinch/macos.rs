@@ -9,10 +9,12 @@ use core_foundation::mach_port::{CFMachPort, CFMachPortRef};
 use core_foundation::runloop::{CFRunLoop, kCFRunLoopCommonModes};
 
 use super::PinchInput;
-use super::gesture::{
-    GESTURE_EVENT, GESTURE_KIND_FIELD, GESTURE_PHASE_FIELD, GESTURE_VALUE_FIELD, decode,
-};
+use super::gesture::decode;
 
+const GESTURE_EVENT: u32 = 29;
+const GESTURE_KIND_FIELD: u32 = 110;
+const GESTURE_VALUE_FIELD: u32 = 113;
+const GESTURE_PHASE_FIELD: u32 = 132;
 const SESSION_EVENT_TAP: u32 = 1;
 const TAIL_APPEND_EVENT_TAP: u32 = 1;
 const LISTEN_ONLY: u32 = 1;

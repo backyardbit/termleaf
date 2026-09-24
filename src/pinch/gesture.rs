@@ -1,9 +1,5 @@
 use super::PinchInput;
 
-pub const GESTURE_EVENT: u32 = 29;
-pub const GESTURE_KIND_FIELD: u32 = 110;
-pub const GESTURE_VALUE_FIELD: u32 = 113;
-pub const GESTURE_PHASE_FIELD: u32 = 132;
 const PINCH: i64 = 8;
 const GESTURE_ENDED: i64 = 62;
 const PHASE_ENDED: i64 = 4;
