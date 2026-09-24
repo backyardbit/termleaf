@@ -545,13 +545,29 @@ impl App {
         if self.zooming(now) && stretching {
             return;
         }
+        if self.may_transmit(now) {
+            self.prefetch_around(&view);
+        }
         let wanted = tile_keys(self.generation, &view);
         for key in &wanted {
             self.request(*key);
         }
+        if self.only_scrolled_from_shown(&view) {
+            self.shown = Some(Shown {
+                generation: self.generation,
+                view: view.clone(),
+            });
+        }
         if !wanted.iter().all(|key| self.cached(*key).is_some()) || !self.may_transmit(now) {
             return;
         }
+        let scale = view.layout.scale();
+        let generation = self.generation;
+        self.shown = Some(Shown { generation, view });
+        self.forget_tiles(|key| key.scale != scale || key.generation != generation);
+    }
+
+    fn prefetch_around(&mut self, view: &View) {
         for neighbour in [
             View {
                 top: view.top.saturating_add(view.pane.rows),
@@ -567,10 +583,14 @@ impl App {
                 self.request(key);
             }
         }
-        let scale = view.layout.scale();
-        let generation = self.generation;
-        self.shown = Some(Shown { generation, view });
-        self.forget_tiles(|key| key.scale != scale || key.generation != generation);
+    }
+
+    fn only_scrolled_from_shown(&self, view: &View) -> bool {
+        self.shown.as_ref().is_some_and(|shown| {
+            shown.generation == self.generation
+                && shown.view.pane == view.pane
+                && shown.view.layout == view.layout
+        })
     }
 
     fn request(&mut self, key: RenderKey) {
@@ -774,6 +794,57 @@ mod tests {
             rows: 80,
         });
         settle(&mut app, &inbox);
+    }
+
+    #[test]
+    fn a_scroll_is_shown_before_the_tiles_it_uncovers_have_rendered() {
+        let (mut app, inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 24,
+        });
+        settle(&mut app, &inbox);
+        app.viewer.apply(Command::Last);
+        app.request_tiles_at(Instant::now());
+        let shown = app.shown.as_ref().map(|shown| &shown.view);
+        assert_eq!(shown, Some(app.viewer.view()));
+    }
+
+    #[test]
+    fn the_pane_above_is_prefetched_before_the_view_has_rendered() {
+        let (mut app, inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 24,
+        });
+        settle(&mut app, &inbox);
+        app.viewer.apply(Command::Last);
+        app.request_tiles_at(Instant::now() + RESIZE_SETTLE);
+        let view = app.viewer.view();
+        let above = View {
+            top: view.top - view.pane.rows,
+            ..view.clone()
+        };
+        for key in tile_keys(app.generation, &above) {
+            assert!(
+                app.in_flight.contains(&key) || app.cached(key).is_some(),
+                "{key:?} was not prefetched"
+            );
+        }
+    }
+
+    #[test]
+    fn a_zoom_still_waits_for_its_tiles_before_it_is_shown() {
+        let (mut app, inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 24,
+        });
+        settle(&mut app, &inbox);
+        app.viewer.apply(Command::Zoom {
+            steps: 1,
+            anchor: None,
+        });
+        app.request_tiles_at(Instant::now());
+        let shown = app.shown.as_ref().map(|shown| &shown.view);
+        assert_ne!(shown, Some(app.viewer.view()));
     }
 
     #[test]
