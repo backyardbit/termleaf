@@ -35,7 +35,7 @@ pub fn run(root: &Path) -> ExitCode {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Page {
     Changed,
     Unchanged,
@@ -195,21 +195,12 @@ impl Session {
 
     fn step(&mut self, label: &str, status: &str, page: Page) -> Outcome<()> {
         self.wait_for_status(&format!("status `{status}`"), |shown| shown == status)?;
-        let previous = self.previous.take();
-        let mut last = None;
-        let accepted = poll(STEP_TIMEOUT, "the page image", || {
+        let mut settle = Settle::new(page, self.previous.take());
+        let accepted = poll(STEP_TIMEOUT, "the page image to settle", || {
             let screenshot = self.screenshot(label).ok()?;
-            let changed = previous.as_ref().map_or(usize::MAX, |before| {
-                changed_page_pixels(before, &screenshot)
-            });
-            let settled = match page {
-                Page::Changed => changed >= MIN_CHANGED_PIXELS,
-                Page::Unchanged => changed < MIN_CHANGED_PIXELS,
-            };
-            let ready = page_is_drawn(&screenshot) && settled;
-            last = Some(changed);
-            ready.then_some(screenshot)
+            settle.observe(screenshot)
         });
+        let last = settle.changed_since_previous_step();
         match accepted {
             Ok(screenshot) => {
                 println!("ok   {label}: {status}");
@@ -365,6 +356,62 @@ pub fn changed_page_pixels(before: &RgbImage, after: &RgbImage) -> usize {
         .count()
 }
 
+struct Settle {
+    expectation: Page,
+    previous_step: Option<RgbImage>,
+    last: Option<RgbImage>,
+    still_frames: usize,
+}
+
+impl Settle {
+    fn new(expectation: Page, previous_step: Option<RgbImage>) -> Self {
+        Self {
+            expectation,
+            previous_step,
+            last: None,
+            still_frames: 0,
+        }
+    }
+
+    fn required_still_frames(&self) -> usize {
+        match self.expectation {
+            Page::Changed => 1,
+            Page::Unchanged => 3,
+        }
+    }
+
+    fn observe(&mut self, screenshot: RgbImage) -> Option<RgbImage> {
+        if !page_is_drawn(&screenshot) {
+            self.last = None;
+            self.still_frames = 0;
+            return None;
+        }
+        let held_still = self
+            .last
+            .as_ref()
+            .is_some_and(|last| changed_page_pixels(last, &screenshot) == 0);
+        self.still_frames = if held_still { self.still_frames + 1 } else { 0 };
+        self.last = Some(screenshot.clone());
+        if self.still_frames < self.required_still_frames() {
+            return None;
+        }
+        let changed = self.previous_step.as_ref().map_or(usize::MAX, |before| {
+            changed_page_pixels(before, &screenshot)
+        });
+        let expected = match self.expectation {
+            Page::Changed => changed >= MIN_CHANGED_PIXELS,
+            Page::Unchanged => changed < MIN_CHANGED_PIXELS,
+        };
+        expected.then_some(screenshot)
+    }
+
+    fn changed_since_previous_step(&self) -> Option<usize> {
+        let last = self.last.as_ref()?;
+        let previous = self.previous_step.as_ref()?;
+        Some(changed_page_pixels(previous, last))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -515,5 +562,84 @@ mod tests {
         let mut after = before.clone();
         fill(&mut after, 40..50, 10..12, DARK);
         assert_eq!(changed_page_pixels(&before, &after), 20);
+    }
+    fn page_with_mark(mark_x: u32) -> RgbImage {
+        let mut screen = page_above_status_bar(0);
+        fill(&mut screen, mark_x..mark_x + 10, 10..30, DARK);
+        screen
+    }
+
+    fn observe_all(settle: &mut Settle, screenshots: &[RgbImage]) -> Vec<bool> {
+        screenshots
+            .iter()
+            .map(|screenshot| settle.observe(screenshot.clone()).is_some())
+            .collect()
+    }
+
+    #[test]
+    fn a_new_page_is_accepted_once_it_holds_still() {
+        let mut settle = Settle::new(Page::Changed, Some(page_with_mark(32)));
+        let new = page_with_mark(55);
+        assert_eq!(observe_all(&mut settle, &[new.clone(), new]), [false, true]);
+    }
+
+    #[test]
+    fn the_stale_previous_page_is_never_accepted_as_changed() {
+        let old = page_with_mark(32);
+        let new = page_with_mark(55);
+        let mut settle = Settle::new(Page::Changed, Some(old.clone()));
+        assert_eq!(
+            observe_all(
+                &mut settle,
+                &[old.clone(), old.clone(), old, new.clone(), new]
+            ),
+            [false, false, false, false, true]
+        );
+    }
+
+    #[test]
+    fn an_unchanged_page_must_hold_still_for_longer() {
+        let page = page_with_mark(32);
+        let mut settle = Settle::new(Page::Unchanged, Some(page.clone()));
+        assert_eq!(
+            observe_all(
+                &mut settle,
+                &[page.clone(), page.clone(), page.clone(), page]
+            ),
+            [false, false, false, true]
+        );
+    }
+
+    #[test]
+    fn a_different_page_is_never_accepted_as_unchanged() {
+        let other = page_with_mark(55);
+        let mut settle = Settle::new(Page::Unchanged, Some(page_with_mark(32)));
+        assert_eq!(
+            observe_all(
+                &mut settle,
+                &[other.clone(), other.clone(), other.clone(), other]
+            ),
+            [false, false, false, false]
+        );
+    }
+
+    #[test]
+    fn a_screen_without_a_page_is_never_accepted() {
+        let blank = dark_screen();
+        let mut settle = Settle::new(Page::Changed, None);
+        assert_eq!(
+            observe_all(&mut settle, &[blank.clone(), blank.clone(), blank]),
+            [false, false, false]
+        );
+    }
+
+    #[test]
+    fn the_first_page_needs_no_previous_step() {
+        let page = page_with_mark(32);
+        let mut settle = Settle::new(Page::Changed, None);
+        assert_eq!(
+            observe_all(&mut settle, &[page.clone(), page]),
+            [false, true]
+        );
     }
 }
