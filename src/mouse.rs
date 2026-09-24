@@ -16,6 +16,7 @@ pub enum Wheel {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseInput {
+    Hover(ScreenCell),
     Press(ScreenCell),
     Drag(ScreenCell),
     Release(ScreenCell),
@@ -25,6 +26,15 @@ pub enum MouseInput {
         sideways: bool,
         at: ScreenCell,
     },
+}
+
+impl MouseInput {
+    pub fn at(self) -> ScreenCell {
+        match self {
+            Self::Hover(at) | Self::Press(at) | Self::Drag(at) | Self::Release(at) => at,
+            Self::Wheel { at, .. } => at,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -49,6 +59,7 @@ impl Gestures {
                 sideways,
                 at,
             } => Some(wheel(direction, zoom, sideways, at)),
+            MouseInput::Hover(_) => None,
             MouseInput::Press(at) => {
                 let double = self.last_click.is_some_and(|(clicked, when)| {
                     now.duration_since(when) <= DOUBLE_CLICK && near(clicked, at)
@@ -238,6 +249,17 @@ mod tests {
                 }
             ]
         );
+    }
+
+    #[test]
+    fn hovering_is_not_a_gesture() {
+        assert!(feed_all(&[(MouseInput::Hover(cell(3, 4)), 0)]).is_empty());
+    }
+
+    #[test]
+    fn every_input_knows_where_the_pointer_is() {
+        assert_eq!(MouseInput::Hover(cell(3, 4)).at(), cell(3, 4));
+        assert_eq!(wheel_input(Wheel::Up, false, false).at(), cell(4, 7));
     }
 
     #[test]

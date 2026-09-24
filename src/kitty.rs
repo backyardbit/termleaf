@@ -1,4 +1,5 @@
 use std::fmt::Write as _;
+use std::io::Write as _;
 
 use image::RgbaImage;
 use ratatui::buffer::{Buffer, CellDiffOption};
@@ -34,21 +35,51 @@ impl ImageId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placement {
+    Tile,
+    Stretched,
+}
+
+impl Placement {
+    fn id(self) -> u8 {
+        match self {
+            Self::Tile => 1,
+            Self::Stretched => 2,
+        }
+    }
+
+    fn colour(self) -> Color {
+        Color::Rgb(0, 0, self.id())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Payload {
+    Raw,
+    Zlib,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CellGrid {
     pub columns: u16,
     pub rows: u16,
 }
 
-pub fn transmit(id: ImageId, image: &RgbaImage, grid: CellGrid) -> String {
-    let chunks: Vec<&[u8]> = image.as_raw().chunks(RAW_CHUNK).collect();
+pub fn transmit(id: ImageId, image: &RgbaImage, grid: CellGrid, payload: Payload) -> String {
+    let (bytes, encoding) = match payload {
+        Payload::Raw => (image.as_raw().clone(), ""),
+        Payload::Zlib => (zlib(image.as_raw()), "o=z,"),
+    };
+    let chunks: Vec<&[u8]> = bytes.chunks(RAW_CHUNK).collect();
     let mut sequence = String::new();
     for (index, chunk) in chunks.iter().enumerate() {
         sequence.push_str("\x1b_Gq=2,");
         if index == 0 {
             let _ = write!(
                 sequence,
-                "a=T,U=1,i={},f=32,t=d,s={},v={},c={},r={},",
+                "a=T,U=1,i={},p={},f=32,t=d,s={},v={},c={},r={},{encoding}",
                 id.0,
+                Placement::Tile.id(),
                 image.width(),
                 image.height(),
                 grid.columns,
@@ -63,12 +94,34 @@ pub fn transmit(id: ImageId, image: &RgbaImage, grid: CellGrid) -> String {
     sequence
 }
 
+fn zlib(raw: &[u8]) -> Vec<u8> {
+    let mut encoder = flate2::write::ZlibEncoder::new(
+        Vec::with_capacity(raw.len() / 64),
+        flate2::Compression::fast(),
+    );
+    if encoder.write_all(raw).is_err() {
+        return Vec::new();
+    }
+    encoder.finish().unwrap_or_default()
+}
+
+pub fn place(id: ImageId, placement: Placement, grid: CellGrid) -> String {
+    format!(
+        "\x1b_Gq=2,a=p,U=1,i={},p={},c={},r={}\x1b\\",
+        id.0,
+        placement.id(),
+        grid.columns,
+        grid.rows
+    )
+}
+
 pub fn delete(id: ImageId) -> String {
     format!("\x1b_Gq=2,a=d,d=I,i={}\x1b\\", id.0)
 }
 
 pub struct Placeholders {
     pub id: ImageId,
+    pub placement: Placement,
     pub first_column: u16,
     pub first_row: u16,
 }
@@ -93,6 +146,9 @@ impl Widget for Placeholders {
                 symbol.push(column);
                 cell.set_symbol(&symbol)
                     .set_fg(self.id.colour())
+                    .set_style(
+                        ratatui::style::Style::default().underline_color(self.placement.colour()),
+                    )
                     .set_diff_option(CellDiffOption::ForcedWidth(std::num::NonZeroU16::MIN));
             }
         }
@@ -425,6 +481,7 @@ mod tests {
                 columns: 7,
                 rows: 5,
             },
+            Payload::Raw,
         );
         assert_eq!(payload(&sequence), image.as_raw().clone());
     }
@@ -439,8 +496,9 @@ mod tests {
                 columns: 7,
                 rows: 5,
             },
+            Payload::Raw,
         );
-        assert!(sequence.starts_with("\x1b_Gq=2,a=T,U=1,i=1,f=32,t=d,s=70,v=50,c=7,r=5,"));
+        assert!(sequence.starts_with("\x1b_Gq=2,a=T,U=1,i=1,p=1,f=32,t=d,s=70,v=50,c=7,r=5,"));
     }
 
     #[test]
@@ -453,6 +511,7 @@ mod tests {
                 columns: 10,
                 rows: 10,
             },
+            Payload::Raw,
         );
         let endings: Vec<&str> = sequence
             .match_indices("m=")
@@ -465,6 +524,88 @@ mod tests {
                 .iter()
                 .all(|ending| *ending == "m=1")
         );
+    }
+
+    fn inflate(bytes: &[u8]) -> Vec<u8> {
+        use std::io::Read;
+        let mut raw = Vec::new();
+        flate2::read::ZlibDecoder::new(bytes)
+            .read_to_end(&mut raw)
+            .unwrap();
+        raw
+    }
+
+    #[test]
+    fn a_compressed_transmission_inflates_back_to_the_raw_pixels() {
+        let image = RgbaImage::from_fn(70, 50, |x, y| {
+            image::Rgba([u8::try_from(x).unwrap(), u8::try_from(y).unwrap(), 3, 255])
+        });
+        let sequence = transmit(
+            ImageId::first(),
+            &image,
+            CellGrid {
+                columns: 7,
+                rows: 5,
+            },
+            Payload::Zlib,
+        );
+        assert_eq!(inflate(&payload(&sequence)), image.as_raw().clone());
+    }
+
+    #[test]
+    fn a_compressed_transmission_says_so_and_keeps_the_raw_size() {
+        let image = RgbaImage::new(70, 50);
+        let sequence = transmit(
+            ImageId::first(),
+            &image,
+            CellGrid {
+                columns: 7,
+                rows: 5,
+            },
+            Payload::Zlib,
+        );
+        assert!(sequence.starts_with("\x1b_Gq=2,a=T,U=1,i=1,p=1,f=32,t=d,s=70,v=50,c=7,r=5,o=z,"));
+    }
+
+    #[test]
+    fn a_blank_page_compresses_to_a_tiny_fraction() {
+        let image = RgbaImage::from_pixel(1280, 1920, image::Rgba([255, 255, 255, 255]));
+        let grid = CellGrid {
+            columns: 64,
+            rows: 48,
+        };
+        let raw = transmit(ImageId::first(), &image, grid, Payload::Raw);
+        let compressed = transmit(ImageId::first(), &image, grid, Payload::Zlib);
+        assert!(compressed.len() * 100 < raw.len());
+    }
+
+    #[test]
+    fn restretching_an_image_reuses_its_second_placement() {
+        assert_eq!(
+            place(
+                ImageId::first(),
+                Placement::Stretched,
+                CellGrid {
+                    columns: 90,
+                    rows: 60
+                }
+            ),
+            "\x1b_Gq=2,a=p,U=1,i=1,p=2,c=90,r=60\x1b\\"
+        );
+    }
+
+    #[test]
+    fn placeholders_name_their_placement_in_the_underline_colour() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 2, 1));
+        Placeholders {
+            id: ImageId::first(),
+            placement: Placement::Stretched,
+            first_column: 0,
+            first_row: 0,
+        }
+        .render(Rect::new(0, 0, 2, 1), &mut buffer);
+        assert_eq!(buffer[(0, 0)].underline_color, Color::Rgb(0, 0, 2));
+        assert_eq!(buffer[(1, 0)].underline_color, Color::Rgb(0, 0, 2));
     }
 
     #[test]
@@ -487,6 +628,7 @@ mod tests {
         let mut buffer = Buffer::empty(Rect::new(0, 0, 4, 3));
         Placeholders {
             id: ImageId(0x0001_0203),
+            placement: Placement::Tile,
             first_column: 5,
             first_row: 2,
         }
@@ -508,6 +650,7 @@ mod tests {
         let mut buffer = Buffer::empty(Rect::new(0, 0, 2, 1));
         Placeholders {
             id: ImageId::first(),
+            placement: Placement::Tile,
             first_column: 296,
             first_row: 0,
         }

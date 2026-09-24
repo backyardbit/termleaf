@@ -6,8 +6,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event as TerminalEvent, KeyCode, KeyEvent,
-    KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
+    Event as TerminalEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
 };
 use crossterm::execute;
 use image::{DynamicImage, RgbImage, RgbaImage};
@@ -17,12 +18,14 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui_image::FontSize;
-use ratatui_image::picker::{Picker, ProtocolType};
+use ratatui_image::picker::cap_parser::QueryStdioOptions;
+use ratatui_image::picker::{Capability, Picker, ProtocolType};
 
 use crate::keys::{Command, Key, KeyParser, ScreenCell};
-use crate::kitty::{self, CellGrid, ImageId, Placeholders};
-use crate::layout::{CellSize, Pane, View};
+use crate::kitty::{self, CellGrid, ImageId, Payload, Placeholders, Placement};
+use crate::layout::{CellSize, Pane, RenderedTile, Stretched, StretchedGrid, View};
 use crate::mouse::{Gestures, MouseInput, Wheel};
+use crate::pinch::{self, PinchGate, PinchInput};
 use crate::renderer::{Generation, RenderKey, Renderer, Response};
 use crate::viewer::Viewer;
 use crate::watch::watch;
@@ -33,16 +36,23 @@ const MAX_RELOAD_RETRIES: u32 = 3;
 const TILE_BYTE_BUDGET: usize = 192 * 1024 * 1024;
 const IDLE_WAIT: Duration = Duration::from_secs(3600);
 const RESIZE_SETTLE: Duration = Duration::from_millis(300);
+const ZOOM_SETTLE: Duration = Duration::from_millis(150);
+
+pub struct Options {
+    pub pinch: bool,
+}
 
 enum Event {
     Key(Key),
     Mouse(MouseInput),
+    Pinch(PinchInput),
+    Focus(bool),
     Resized,
     FileChanged,
     Renderer(Response),
 }
 
-pub fn run(path: PathBuf) -> Result<()> {
+pub fn run(path: PathBuf, options: Options) -> Result<()> {
     if !path.is_file() {
         bail!("no such file: {}", path.display());
     }
@@ -75,6 +85,13 @@ pub fn run(path: PathBuf) -> Result<()> {
         }
     };
     let _ = execute!(std::io::stdout(), EnableMouseCapture);
+    if options.pinch {
+        let _ = execute!(std::io::stdout(), EnableFocusChange);
+        let pinches = events.clone();
+        let _ = pinch::listen(move |input| {
+            let _ = pinches.send(Event::Pinch(input));
+        });
+    }
     spawn_input(events);
 
     let cell = cell_size(picker.font_size());
@@ -84,6 +101,7 @@ pub fn run(path: PathBuf) -> Result<()> {
         viewer: Viewer::new(pages, cell, pane),
         keys: KeyParser::default(),
         gestures: Gestures::default(),
+        pinch: PinchGate::default(),
         renderer,
         generation: 0,
         requested_generation: 0,
@@ -93,19 +111,27 @@ pub fn run(path: PathBuf) -> Result<()> {
         tiles: Vec::new(),
         in_flight: Vec::new(),
         shown: None,
+        zooming_until: None,
+        stretched: Vec::new(),
+        stretch_grids: std::collections::HashMap::new(),
         next_id: ImageId::first(),
+        payload: payload_for(&picker),
         outgoing: String::new(),
     };
     let result = app.event_loop(&mut terminal, &inbox);
     app.forget_all_tiles();
     let _ = app.flush(&mut terminal);
-    let _ = execute!(std::io::stdout(), DisableMouseCapture);
+    let _ = execute!(std::io::stdout(), DisableFocusChange, DisableMouseCapture);
     ratatui::restore();
     result
 }
 
 fn kitty_picker() -> Result<Picker> {
-    let picker = Picker::from_query_stdio().context("querying the terminal")?;
+    let options = QueryStdioOptions {
+        kitty_compression: true,
+        ..QueryStdioOptions::default()
+    };
+    let picker = Picker::from_query_stdio_with_options(options).context("querying the terminal")?;
     if picker.protocol_type() != ProtocolType::Kitty {
         bail!(
             "termleaf needs a terminal that supports the Kitty graphics protocol \
@@ -115,22 +141,39 @@ fn kitty_picker() -> Result<Picker> {
     Ok(picker)
 }
 
+fn payload_for(picker: &Picker) -> Payload {
+    compression_if(picker.capabilities())
+}
+
+fn compression_if(capabilities: &[Capability]) -> Payload {
+    if capabilities.contains(&Capability::KittyCompression) {
+        Payload::Zlib
+    } else {
+        Payload::Raw
+    }
+}
+
 fn spawn_input(events: Sender<Event>) {
     thread::spawn(move || {
         while let Ok(terminal_event) = event::read() {
-            let translated = match terminal_event {
-                TerminalEvent::Key(key) => translate_key(key).map(Event::Key),
-                TerminalEvent::Mouse(mouse) => translate_mouse(mouse).map(Event::Mouse),
-                TerminalEvent::Resize(..) => Some(Event::Resized),
-                _ => None,
-            };
-            if let Some(event) = translated
+            if let Some(event) = translate_event(terminal_event)
                 && events.send(event).is_err()
             {
                 return;
             }
         }
     });
+}
+
+fn translate_event(terminal_event: TerminalEvent) -> Option<Event> {
+    match terminal_event {
+        TerminalEvent::Key(key) => translate_key(key).map(Event::Key),
+        TerminalEvent::Mouse(mouse) => translate_mouse(mouse).map(Event::Mouse),
+        TerminalEvent::Resize(..) => Some(Event::Resized),
+        TerminalEvent::FocusGained => Some(Event::Focus(true)),
+        TerminalEvent::FocusLost => Some(Event::Focus(false)),
+        TerminalEvent::Paste(_) => None,
+    }
 }
 
 fn translate_key(key: KeyEvent) -> Option<Key> {
@@ -168,6 +211,7 @@ fn translate_mouse(mouse: MouseEvent) -> Option<MouseInput> {
         MouseEventKind::ScrollDown => wheel(Wheel::Down),
         MouseEventKind::ScrollLeft => wheel(Wheel::Left),
         MouseEventKind::ScrollRight => wheel(Wheel::Right),
+        MouseEventKind::Moved => Some(MouseInput::Hover(at)),
         _ => None,
     }
 }
@@ -215,6 +259,7 @@ struct App {
     viewer: Viewer,
     keys: KeyParser,
     gestures: Gestures,
+    pinch: PinchGate,
     renderer: Renderer,
     generation: Generation,
     requested_generation: Generation,
@@ -224,7 +269,11 @@ struct App {
     tiles: Vec<CachedTile>,
     in_flight: Vec<RenderKey>,
     shown: Option<Shown>,
+    zooming_until: Option<Instant>,
+    stretched: Vec<(ImageId, Stretched)>,
+    stretch_grids: std::collections::HashMap<ImageId, StretchedGrid>,
     next_id: ImageId,
+    payload: Payload,
     outgoing: String,
 }
 
@@ -241,13 +290,13 @@ impl App {
                 pane_of(page_area(Rect::new(0, 0, size.width, size.height))),
                 now,
             );
-            self.request_tiles_at(now);
+            self.prepare_frame(now);
             if self.may_transmit(now) {
                 self.resize_settles_at = None;
                 self.flush(terminal)?;
             }
             terminal.draw(|frame| self.draw(frame))?;
-            let wait = [self.reload_at, self.resize_settles_at]
+            let wait = [self.reload_at, self.resize_settles_at, self.zooming_until]
                 .into_iter()
                 .flatten()
                 .min()
@@ -278,10 +327,17 @@ impl App {
                 }
             }
             Event::Mouse(input) => {
+                self.pinch.pointer(input.at());
                 if let Some(command) = self.gestures.feed(input, Instant::now()) {
                     return self.apply(command);
                 }
             }
+            Event::Pinch(input) => {
+                if let Some(command) = self.pinch.feed(input) {
+                    return self.apply(command);
+                }
+            }
+            Event::Focus(focused) => self.pinch.focus(focused),
             Event::Resized => {}
             Event::FileChanged => {
                 self.reload_retries = 0;
@@ -306,11 +362,68 @@ impl App {
     }
 
     fn apply(&mut self, command: Command) -> Flow {
+        self.apply_at(command, Instant::now())
+    }
+
+    fn apply_at(&mut self, command: Command, now: Instant) -> Flow {
         if command == Command::Quit {
             return Flow::Quit;
         }
+        let scale = self.viewer.view().layout.scale();
         self.viewer.apply(command);
+        if self.viewer.view().layout.scale() != scale {
+            self.zooming_until = Some(now + ZOOM_SETTLE);
+        }
         Flow::Continue
+    }
+
+    fn prepare_frame(&mut self, now: Instant) {
+        self.request_tiles_at(now);
+        self.stretch_shown_tiles();
+    }
+
+    fn zooming(&mut self, now: Instant) -> bool {
+        if self.zooming_until.is_some_and(|until| now >= until) {
+            self.zooming_until = None;
+        }
+        self.zooming_until.is_some()
+    }
+
+    fn stretch_shown_tiles(&mut self) {
+        self.stretched.clear();
+        let Some(shown) = &self.shown else {
+            return;
+        };
+        let target = self.viewer.view();
+        let from = shown.view.layout.scale();
+        if from == target.layout.scale() {
+            return;
+        }
+        let stretched: Vec<(ImageId, Stretched)> = self
+            .tiles
+            .iter()
+            .filter(|tile| tile.key.scale == from && tile.key.generation == shown.generation)
+            .filter_map(|tile| {
+                let rendered = RenderedTile {
+                    page: tile.key.page,
+                    scale: from,
+                    region: tile.key.region,
+                };
+                target.stretch(rendered).map(|placed| (tile.id, placed))
+            })
+            .collect();
+        for (id, placed) in &stretched {
+            if self.stretch_grids.get(id) != Some(&placed.grid) {
+                self.stretch_grids.insert(*id, placed.grid);
+                let grid = CellGrid {
+                    columns: placed.grid.columns,
+                    rows: placed.grid.rows,
+                };
+                self.outgoing
+                    .push_str(&kitty::place(*id, Placement::Stretched, grid));
+            }
+        }
+        self.stretched = stretched;
     }
 
     fn start_reload(&mut self) {
@@ -358,7 +471,8 @@ impl App {
         let grid = grid_of(&padded, cell);
         let id = self.next_id;
         self.next_id = id.next();
-        self.outgoing.push_str(&kitty::transmit(id, &padded, grid));
+        self.outgoing
+            .push_str(&kitty::transmit(id, &padded, grid, self.payload));
         self.tiles.push(CachedTile {
             key,
             id,
@@ -377,6 +491,7 @@ impl App {
                 continue;
             }
             let tile = self.tiles.remove(index);
+            self.stretch_grids.remove(&tile.id);
             total -= tile.bytes;
             self.outgoing.push_str(&kitty::delete(tile.id));
         }
@@ -386,6 +501,7 @@ impl App {
         let mut kept = Vec::with_capacity(self.tiles.len());
         for tile in self.tiles.drain(..) {
             if forget(&tile.key) {
+                self.stretch_grids.remove(&tile.id);
                 self.outgoing.push_str(&kitty::delete(tile.id));
             } else {
                 kept.push(tile);
@@ -420,6 +536,13 @@ impl App {
     fn request_tiles_at(&mut self, now: Instant) {
         let view = self.viewer.view().clone();
         if view.pane.columns == 0 || view.pane.rows == 0 {
+            return;
+        }
+        let stretching = self
+            .shown
+            .as_ref()
+            .is_some_and(|shown| shown.view.layout.scale() != view.layout.scale());
+        if self.zooming(now) && stretching {
             return;
         }
         let wanted = tile_keys(self.generation, &view);
@@ -475,7 +598,24 @@ impl App {
             ..area
         };
 
-        if let Some(shown) = &self.shown {
+        for (id, placed) in &self.stretched {
+            let area = Rect {
+                x: pages.x + placed.area.x,
+                y: pages.y + placed.area.y,
+                ..placed.area
+            }
+            .intersection(pages);
+            frame.render_widget(
+                Placeholders {
+                    id: *id,
+                    placement: Placement::Stretched,
+                    first_column: placed.first_column,
+                    first_row: placed.first_row,
+                },
+                area,
+            );
+        }
+        if let Some(shown) = self.shown.as_ref().filter(|_| self.stretched.is_empty()) {
             for placement in shown.view.placements() {
                 let key = tile_key(shown.generation, &shown.view, placement.tile);
                 let Some(id) = self.cached(key) else {
@@ -490,6 +630,7 @@ impl App {
                 frame.render_widget(
                     Placeholders {
                         id,
+                        placement: Placement::Tile,
                         first_column: placement.first_column,
                         first_row: placement.first_row,
                     },
@@ -574,6 +715,7 @@ mod tests {
             viewer: Viewer::new(pages, CELL, pane),
             keys: KeyParser::default(),
             gestures: Gestures::default(),
+            pinch: PinchGate::default(),
             renderer,
             generation: 0,
             requested_generation: 0,
@@ -583,7 +725,11 @@ mod tests {
             tiles: Vec::new(),
             in_flight: Vec::new(),
             shown: None,
+            zooming_until: None,
+            stretched: Vec::new(),
+            stretch_grids: std::collections::HashMap::new(),
             next_id: ImageId::first(),
+            payload: Payload::Raw,
             outgoing: String::new(),
         };
         (app, inbox)
@@ -695,6 +841,107 @@ mod tests {
             }
         }
         assert!(app.shown.is_some());
+    }
+
+    #[test]
+    fn while_zooming_the_shown_tiles_are_stretched_instead_of_rendered() {
+        let (mut app, inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        settle(&mut app, &inbox);
+        app.outgoing.clear();
+        app.in_flight.clear();
+        let now = Instant::now();
+        app.apply_at(
+            Command::Magnify {
+                per_mille: 1200,
+                anchor: None,
+            },
+            now,
+        );
+        app.prepare_frame(now);
+        assert!(!app.stretched.is_empty());
+        assert!(app.outgoing.contains("a=p,U=1"));
+        assert!(app.in_flight.is_empty());
+    }
+
+    #[test]
+    fn sharp_tiles_replace_the_stretch_once_zooming_settles() {
+        let (mut app, inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        settle(&mut app, &inbox);
+        let now = Instant::now();
+        app.apply_at(
+            Command::Magnify {
+                per_mille: 1200,
+                anchor: None,
+            },
+            now,
+        );
+        app.prepare_frame(now);
+        let later = now + ZOOM_SETTLE;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !app.stretched.is_empty() && Instant::now() < deadline {
+            app.prepare_frame(later);
+            if let Ok(Event::Renderer(response)) = inbox.recv_timeout(Duration::from_millis(200)) {
+                app.receive(response);
+            }
+        }
+        assert!(app.stretched.is_empty());
+        let shown = app.shown.as_ref().unwrap().view.layout.scale();
+        assert_eq!(shown, app.viewer.view().layout.scale());
+    }
+
+    #[test]
+    fn a_pinch_zooms_the_page() {
+        let (mut app, _inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        let before = app.viewer.view().layout.scale();
+        app.handle(Event::Pinch(PinchInput::Scale(1.21)));
+        assert!(app.viewer.view().layout.scale() > before);
+    }
+
+    #[test]
+    fn a_pinch_is_ignored_while_another_pane_has_focus() {
+        let (mut app, _inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        let before = app.viewer.view().layout.scale();
+        app.handle(Event::Focus(false));
+        app.handle(Event::Pinch(PinchInput::Scale(1.21)));
+        assert_eq!(app.viewer.view().layout.scale(), before);
+    }
+
+    #[test]
+    fn focus_events_are_forwarded() {
+        assert!(matches!(
+            translate_event(TerminalEvent::FocusLost),
+            Some(Event::Focus(false))
+        ));
+        assert!(matches!(
+            translate_event(TerminalEvent::FocusGained),
+            Some(Event::Focus(true))
+        ));
+    }
+
+    #[test]
+    fn pointer_motion_is_forwarded_as_hover() {
+        let moved = MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 5,
+            row: 6,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert_eq!(
+            translate_mouse(moved),
+            Some(MouseInput::Hover(ScreenCell { column: 5, row: 6 }))
+        );
     }
 
     #[test]
@@ -826,6 +1073,19 @@ mod tests {
             Some(MouseInput::Drag(ScreenCell { column: 1, row: 2 }))
         );
         assert_eq!(translate_mouse(drag(MouseButton::Right)), None);
+    }
+
+    #[test]
+    fn tiles_are_compressed_when_the_terminal_can_inflate_them() {
+        assert_eq!(
+            compression_if(&[Capability::Kitty, Capability::KittyCompression]),
+            Payload::Zlib
+        );
+    }
+
+    #[test]
+    fn tiles_stay_raw_when_the_terminal_did_not_confirm_compression() {
+        assert_eq!(compression_if(&[Capability::Kitty]), Payload::Raw);
     }
 
     #[test]

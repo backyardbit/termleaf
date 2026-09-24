@@ -12,12 +12,16 @@ categories = ["command-line-utilities", "visualization"]
 [dependencies]
 anyhow = "1"
 base64-simd = "0.8"
+flate2 = "1"
 crossterm = "0.29"
 image = { version = "0.25", default-features = false }
 mupdf = "0.8"
 notify = "8"
 ratatui = "0.30"
 ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.9"
 
 [lints]
 workspace = true

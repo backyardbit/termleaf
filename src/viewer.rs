@@ -1,5 +1,5 @@
 use crate::keys::{Command, ScreenCell};
-use crate::layout::{CellSize, Layout, Pane, Position, View, fit_page, fit_width};
+use crate::layout::{CellSize, DocumentPoint, Layout, Pane, Position, View, fit_page, fit_width};
 use crate::pdf::{PageInfo, PageSize, Scale, nearest_whole};
 
 const ZOOM_STEP: f64 = 1.1;
@@ -24,6 +24,7 @@ pub struct Viewer {
     pages: Vec<PageInfo>,
     zoom: Zoom,
     view: View,
+    origin: DocumentPoint,
     file_state: FileState,
 }
 
@@ -40,6 +41,10 @@ impl Viewer {
             },
             pages,
             zoom: Zoom::FitWidth,
+            origin: DocumentPoint {
+                column: 0.0,
+                row: 0.0,
+            },
             file_state: FileState::Fresh,
         }
     }
@@ -66,7 +71,12 @@ impl Viewer {
             Command::Last => self.go_to_page(last),
             Command::GoTo(number) => self.go_to_page(number.saturating_sub(1).min(last)),
             Command::Scroll { columns, rows } => self.scroll(columns, rows),
-            Command::Zoom { steps, anchor } => self.zoom_by(steps, anchor),
+            Command::Zoom { steps, anchor } => {
+                self.magnify(ZOOM_STEP.powi(steps), anchor);
+            }
+            Command::Magnify { per_mille, anchor } => {
+                self.magnify(f64::from(per_mille) / 1000.0, anchor);
+            }
             Command::FitWidth => self.fit(Zoom::FitWidth, None),
             Command::FitPage => self.fit(Zoom::FitPage, None),
             Command::ToggleFit(at) => {
@@ -110,6 +120,7 @@ impl Viewer {
         };
         let point = self.view.layout.point_of(anchor);
         self.view = self.view.clone().scrolled_to(point, 0.0, 0.0);
+        self.origin = self.view.origin();
         self.file_state = FileState::Fresh;
     }
 
@@ -145,18 +156,19 @@ impl Viewer {
     fn go_to_page(&mut self, page: usize) {
         self.view.top = self.view.layout.page_top(page);
         self.view = self.view.clone().clamped();
+        self.origin = self.view.origin();
     }
 
     fn scroll(&mut self, columns: i32, rows: i32) {
         self.view.top = self.view.top.saturating_add_signed(rows);
         self.view.left = self.view.left.saturating_add_signed(columns);
         self.view = self.view.clone().clamped();
+        self.origin = self.view.origin();
     }
 
-    fn zoom_by(&mut self, steps: i32, anchor: Option<ScreenCell>) {
+    fn magnify(&mut self, factor: f64, anchor: Option<ScreenCell>) {
         let current = self.view.layout.scale().pixels_per_point();
-        let wanted =
-            (current * ZOOM_STEP.powi(steps)).clamp(MIN_PIXELS_PER_POINT, MAX_PIXELS_PER_POINT);
+        let wanted = (current * factor).clamp(MIN_PIXELS_PER_POINT, MAX_PIXELS_PER_POINT);
         let scale = Scale::from_pixels_per_point(wanted);
         self.zoom = Zoom::Free(scale);
         let at = self.screen_point(anchor);
@@ -203,6 +215,7 @@ impl Viewer {
         let row = self.view.layout.point_of(target).row;
         self.view.top = nearest_whole(row.floor());
         self.view = self.view.clone().clamped();
+        self.origin = self.view.origin();
     }
 
     fn screen_point(&self, anchor: Option<ScreenCell>) -> (f64, f64) {
@@ -231,19 +244,21 @@ impl Viewer {
         pane: Pane,
         (screen_column, screen_row): (f64, f64),
     ) {
-        let anchor = self
-            .view
-            .layout
-            .position_at(self.view.point_at(screen_column, screen_row));
+        let anchor = self.view.layout.position_at(self.view.point_from(
+            self.origin,
+            screen_column,
+            screen_row,
+        ));
         let layout = Layout::new(sizes, scale, cell);
         let point = layout.point_of(anchor);
-        self.view = View {
+        let view = View {
             layout,
             pane,
             top: 0,
             left: 0,
-        }
-        .scrolled_to(point, screen_column, screen_row);
+        };
+        self.origin = view.origin_for(point, screen_column, screen_row);
+        self.view = view.at_origin(self.origin);
     }
 }
 
@@ -403,6 +418,60 @@ mod tests {
         let tolerance = 20.0 / viewer.view().layout.scale().pixels_per_point();
         assert!((after.x - before.x).abs() <= tolerance);
         assert!((after.y - before.y).abs() <= tolerance);
+    }
+
+    #[test]
+    fn magnify_scales_by_the_given_factor_around_the_pointer() {
+        let mut viewer = viewer(2);
+        let before = viewer.view().layout.scale().pixels_per_point();
+        let at = cell(30, 10);
+        let under = viewer.view().page_under(at.column, at.row).unwrap();
+        viewer.apply(Command::Magnify {
+            per_mille: 1030,
+            anchor: Some(at),
+        });
+        let after = viewer.view().layout.scale().pixels_per_point();
+        assert!((after / before - 1.03).abs() < 0.002);
+        let still_under = viewer.view().page_under(at.column, at.row).unwrap();
+        let tolerance = 20.0 / viewer.view().layout.scale().pixels_per_point();
+        assert!((still_under.y - under.y).abs() <= tolerance);
+    }
+
+    #[test]
+    fn a_long_pinch_keeps_the_page_under_the_pointer() {
+        let retina = CellSize {
+            width: 20,
+            height: 40,
+        };
+        let mut viewer = Viewer::new(
+            document(5),
+            retina,
+            Pane {
+                columns: 84,
+                rows: 34,
+            },
+        );
+        viewer.apply(Command::Scroll {
+            columns: 0,
+            rows: 20,
+        });
+        let at = cell(40, 25);
+        let start = viewer.view().page_under(at.column, at.row).unwrap();
+        for _ in 0..30 {
+            viewer.apply(Command::Magnify {
+                per_mille: 1030,
+                anchor: Some(at),
+            });
+        }
+        let end = viewer.view().page_under(at.column, at.row).unwrap();
+        let pixels_per_point = viewer.view().layout.scale().pixels_per_point();
+        let rows_off = (end.y - start.y) * pixels_per_point / f64::from(retina.height);
+        let columns_off = (end.x - start.x) * pixels_per_point / f64::from(retina.width);
+        assert!(rows_off.abs() <= 0.6, "drifted {rows_off:+.2} rows");
+        assert!(
+            columns_off.abs() <= 0.6,
+            "drifted {columns_off:+.2} columns"
+        );
     }
 
     #[test]

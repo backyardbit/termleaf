@@ -46,6 +46,27 @@ pub struct TilePlacement {
     pub first_row: u16,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RenderedTile {
+    pub page: usize,
+    pub scale: Scale,
+    pub region: PixelRegion,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StretchedGrid {
+    pub columns: u16,
+    pub rows: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stretched {
+    pub grid: StretchedGrid,
+    pub area: Rect,
+    pub first_column: u16,
+    pub first_row: u16,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Layout {
     sizes: Vec<PageSize>,
@@ -232,10 +253,91 @@ impl View {
     }
 
     pub fn scrolled_to(self, point: DocumentPoint, screen_column: f64, screen_row: f64) -> Self {
+        let origin = self.origin_for(point, screen_column, screen_row);
+        self.at_origin(origin)
+    }
+
+    pub fn origin(&self) -> DocumentPoint {
+        DocumentPoint {
+            column: f64::from(self.left),
+            row: f64::from(self.top),
+        }
+    }
+
+    pub fn origin_for(
+        &self,
+        point: DocumentPoint,
+        screen_column: f64,
+        screen_row: f64,
+    ) -> DocumentPoint {
         let (margin_x, margin_y) = self.margins();
-        let top = nearest_whole(point.row - screen_row + f64::from(margin_y));
-        let left = nearest_whole(point.column - screen_column + f64::from(margin_x));
-        Self { top, left, ..self }.clamped()
+        DocumentPoint {
+            column: (point.column - screen_column + f64::from(margin_x))
+                .clamp(0.0, f64::from(self.max_left())),
+            row: (point.row - screen_row + f64::from(margin_y))
+                .clamp(0.0, f64::from(self.max_top())),
+        }
+    }
+
+    pub fn at_origin(self, origin: DocumentPoint) -> Self {
+        Self {
+            top: nearest_whole(origin.row),
+            left: nearest_whole(origin.column),
+            ..self
+        }
+        .clamped()
+    }
+
+    pub fn point_from(
+        &self,
+        origin: DocumentPoint,
+        screen_column: f64,
+        screen_row: f64,
+    ) -> DocumentPoint {
+        let (margin_x, margin_y) = self.margins();
+        DocumentPoint {
+            column: origin.column + screen_column - f64::from(margin_x),
+            row: origin.row + screen_row - f64::from(margin_y),
+        }
+    }
+
+    pub fn screen_of(&self, point: DocumentPoint) -> (f64, f64) {
+        let (margin_x, margin_y) = self.margins();
+        (
+            point.column - f64::from(self.left) + f64::from(margin_x),
+            point.row - f64::from(self.top) + f64::from(margin_y),
+        )
+    }
+
+    pub fn stretch(&self, tile: RenderedTile) -> Option<Stretched> {
+        let cell = self.layout.cell();
+        let from = tile.scale.pixels_per_point();
+        let factor = self.layout.scale().pixels_per_point() / from;
+        let columns =
+            cells(nearest_whole(f64::from(tile.region.width.div_ceil(cell.width)) * factor).max(1));
+        let rows = cells(
+            nearest_whole(f64::from(tile.region.height.div_ceil(cell.height)) * factor).max(1),
+        );
+        let position = Position {
+            page: tile.page,
+            x: f64::from(tile.region.x) / from,
+            y: f64::from(tile.region.y) / from,
+        };
+        let (x, y) = self.screen_of(self.layout.point_of(position));
+        let (left, top) = (nearest_signed(x), nearest_signed(y));
+        let columns_shown = clip(left, columns, self.pane.columns)?;
+        let rows_shown = clip(top, rows, self.pane.rows)?;
+        Some(Stretched {
+            grid: StretchedGrid { columns, rows },
+            area: Rect {
+                x: columns_shown.start,
+                y: rows_shown.start,
+                width: columns_shown.end - columns_shown.start,
+                height: rows_shown.end - rows_shown.start,
+            },
+            first_column: skipped(left, columns_shown.start),
+            first_row: skipped(top, rows_shown.start),
+        })
     }
 
     pub fn page_under(&self, screen_column: u16, screen_row: u16) -> Option<Position> {
@@ -328,6 +430,30 @@ impl CellRange for std::ops::Range<u32> {
 fn overlap(a: &std::ops::Range<u32>, b: &std::ops::Range<u32>) -> Option<std::ops::Range<u32>> {
     let range = a.start.max(b.start)..a.end.min(b.end);
     (range.start < range.end).then_some(range)
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the value is rounded and clamped into i64's range first"
+)]
+fn nearest_signed(value: f64) -> i64 {
+    if value.is_nan() {
+        return 0;
+    }
+    value.round().clamp(-1e15, 1e15) as i64
+}
+
+fn clip(start: i64, length: u16, limit: u32) -> Option<std::ops::Range<u16>> {
+    let end = start + i64::from(length);
+    let first = start.clamp(0, i64::from(limit));
+    let last = end.clamp(0, i64::from(limit));
+    let first = u16::try_from(first).ok()?;
+    let last = u16::try_from(last).ok()?;
+    (first < last).then_some(first..last)
+}
+
+fn skipped(start: i64, shown_from: u16) -> u16 {
+    u16::try_from(i64::from(shown_from) - start).unwrap_or(0)
 }
 
 fn cells(value: u32) -> u16 {
@@ -527,6 +653,97 @@ mod tests {
         assert!((position.y - 50.0).abs() < 1e-9);
         assert!((position.x - 25.0).abs() < 1e-9);
         assert_eq!(view.page_under(2, 2), None);
+    }
+
+    #[test]
+    fn a_screen_point_round_trips_through_the_document() {
+        let layout = at_one_to_one(vec![page(300.0, 2000.0)]);
+        let view = view(layout, 10, 10, 7, 3);
+        let point = view.point_at(2.5, 4.0);
+        let (column, row) = view.screen_of(point);
+        assert!((column - 2.5).abs() < 1e-9 && (row - 4.0).abs() < 1e-9);
+    }
+
+    fn rendered_at(view: &View, tile: Tile) -> RenderedTile {
+        RenderedTile {
+            page: tile.page,
+            scale: view.layout.scale(),
+            region: view.layout.tile_region(tile),
+        }
+    }
+
+    #[test]
+    fn stretching_to_the_same_view_matches_the_normal_placement() {
+        let layout = at_one_to_one(vec![page(100.0, 2000.0), page(100.0, 200.0)]);
+        let view = view(layout, 10, 20, 40, 0);
+        for placed in view.placements() {
+            let stretched = view.stretch(rendered_at(&view, placed.tile)).unwrap();
+            assert_eq!(stretched.area, placed.area);
+            assert_eq!(stretched.first_row, placed.first_row);
+            assert_eq!(stretched.first_column, placed.first_column);
+        }
+    }
+
+    #[test]
+    fn stretching_to_twice_the_scale_doubles_the_tile() {
+        let sizes = vec![page(100.0, 200.0)];
+        let small = view(at_one_to_one(sizes.clone()), 40, 40, 0, 0);
+        let large = view(
+            Layout::new(sizes, Scale::from_pixels_per_point(2.0), CELL),
+            40,
+            40,
+            0,
+            0,
+        );
+        let tile = Tile {
+            page: 0,
+            column: 0,
+            row: 0,
+        };
+        let stretched = large.stretch(rendered_at(&small, tile)).unwrap();
+        assert_eq!(
+            stretched.grid,
+            StretchedGrid {
+                columns: 20,
+                rows: 20
+            }
+        );
+        assert_eq!(stretched.area, Rect::new(10, 10, 20, 20));
+    }
+
+    #[test]
+    fn a_stretched_tile_above_the_view_is_clipped_from_the_top() {
+        let sizes = vec![page(100.0, 400.0)];
+        let small = view(at_one_to_one(sizes.clone()), 10, 10, 0, 0);
+        let large = view(
+            Layout::new(sizes, Scale::from_pixels_per_point(2.0), CELL),
+            10,
+            10,
+            6,
+            0,
+        );
+        let tile = Tile {
+            page: 0,
+            column: 0,
+            row: 0,
+        };
+        let stretched = large.stretch(rendered_at(&small, tile)).unwrap();
+        assert_eq!(stretched.first_row, 6);
+        assert_eq!(stretched.area.y, 0);
+        assert_eq!(stretched.area.height, 10);
+    }
+
+    #[test]
+    fn a_tile_stretched_out_of_the_view_is_not_drawn() {
+        let sizes = vec![page(100.0, 4000.0)];
+        let whole = view(at_one_to_one(sizes.clone()), 10, 10, 0, 0);
+        let far = view(at_one_to_one(sizes), 10, 10, 150, 0);
+        let tile = Tile {
+            page: 0,
+            column: 0,
+            row: 0,
+        };
+        assert_eq!(far.stretch(rendered_at(&whole, tile)), None);
     }
 
     #[test]
