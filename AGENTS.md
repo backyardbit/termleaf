@@ -47,6 +47,7 @@ These are wanted eventually. Keep the architecture open to them, but do not buil
 
 - **Use test-driven development.** Write a failing test that states the behaviour you want, watch it go red, then write the code that turns it green. A test written after the code tends to restate what the code does rather than what it should do. Each test names a behaviour a user or caller relies on, not an implementation detail.
 - A change is done when `cargo xtask check` passes. It runs fmt, clippy, the tests and `cargo xtask lint`. CI runs the same check on `ubuntu-latest` and `macos-latest`.
+- The real-terminal end-to-end test, `cargo xtask e2e` (the `e2e` job in `ci.yml`), runs only in GitHub Actions and refuses to run without `CI` set. It uses Ghostty + herdr on a virtual display, drives termleaf by keys and checks it by screenshot. Never run it, or anything else that opens windows or captures the screen, on the owner's machines. To check real-terminal behaviour, push and read the CI results and their screenshot artifacts.
 - The lint rules are a Rust port of the anti-slop Oxlint rules. Clippy settings are in `Cargo.toml` and `clippy.toml`, and the custom checks are in `xtask/`. Keep the explanation of the code in names, types, small functions and tests:
   - Write no comments of any kind, doc comments included. The one exception is `// SAFETY:`, which every `unsafe` block needs.
   - Parse external input into a domain type at its boundary. `dyn Any` and lossy `as` casts are denied. Convert with `From`/`TryFrom`.

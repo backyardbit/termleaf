@@ -1,3 +1,5 @@
+mod e2e;
+
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -40,10 +42,14 @@ fn main() -> ExitCode {
     match task.as_deref() {
         Some("lint") => lint(),
         Some("check") => check(),
+        Some("e2e") => e2e::run(&workspace_root()),
         _ => {
-            eprintln!("usage: cargo xtask <lint|check>");
+            eprintln!("usage: cargo xtask <lint|check|e2e>");
             eprintln!("  lint   run the anti-slop source checks");
             eprintln!("  check  run fmt, clippy, tests and lint");
+            eprintln!(
+                "  e2e    drive termleaf in Ghostty and herdr on a virtual display (CI only)"
+            );
             ExitCode::FAILURE
         }
     }
