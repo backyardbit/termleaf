@@ -86,13 +86,9 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
     if options.pinch {
         let _ = execute!(std::io::stdout(), EnableFocusChange);
         let pinches = events.clone();
-        if let Err(error) = pinch::listen(move |input| {
+        let _ = pinch::listen(move |input| {
             let _ = pinches.send(Event::Pinch(input));
-        }) {
-            let _ = execute!(std::io::stdout(), DisableFocusChange, DisableMouseCapture);
-            ratatui::restore();
-            return Err(error);
-        }
+        });
     }
     spawn_input(events);
 

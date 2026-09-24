@@ -55,18 +55,12 @@ Pages scroll continuously and open at fit width.
 
 ### Pinch to zoom
 
-Terminals never pass trackpad pinches to the programs running inside them. With `--pinch`, termleaf reads pinches from the operating system itself and zooms at the pointer while its pane has focus:
+Terminals never pass trackpad pinches to the programs running inside them, so termleaf reads pinches from the operating system itself. It zooms at the pointer while its pane has focus. It needs a broad permission, and until that is granted pinch simply does nothing:
 
-```sh
-termleaf --pinch thesis.pdf
-```
-
-This is opt-in because it needs a broad permission:
-
-- **macOS:** your terminal app (Ghostty, kitty, …) needs **Input Monitoring** in System Settings → Privacy & Security. termleaf asks macOS to show the prompt the first time. Restart the terminal after allowing it. The permission belongs to the terminal app, so every program you run in it could then watch keyboard and mouse input.
+- **macOS:** your terminal app (Ghostty, kitty, …) needs **Input Monitoring** in System Settings → Privacy & Security. macOS asks the first time termleaf starts. Restart the terminal after allowing it. The permission belongs to the terminal app, so every program you run in it could then watch keyboard and mouse input.
 - **Linux:** your user must be in the `input` group (`sudo usermod -aG input $USER`, then log in again). termleaf only opens devices that report themselves as touchpads, but the group gives read access to every input device.
 
-Ctrl+wheel and `+`/`-` zoom without any permission.
+Run `termleaf --no-pinch` to keep termleaf away from OS input entirely. Ctrl+wheel and `+`/`-` zoom without any permission.
 
 ## License
 

@@ -12,7 +12,7 @@ mod watch;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: termleaf [--pinch] <file.pdf>
+const USAGE: &str = "usage: termleaf [--no-pinch] <file.pdf>
 
 Shows a PDF in the terminal and reloads it whenever the file changes.
 
@@ -30,11 +30,14 @@ mouse:
   drag                pan
   click               follow a link
   double-click        switch between fit width and fit page
+  pinch               zoom at the pointer (see below)
+
+Pinch to zoom reads the trackpad from the OS, because terminals never pass
+pinches on. It needs Input Monitoring for your terminal app on macOS, or
+membership of the `input` group on Linux; without it, pinch stays off.
 
 options:
-  --pinch      zoom with a trackpad pinch. termleaf reads the trackpad from
-               the OS, which needs Input Monitoring for your terminal on
-               macOS or membership of the `input` group on Linux";
+  --no-pinch   never read the trackpad from the OS";
 
 #[derive(Debug, PartialEq, Eq)]
 enum Invocation {
@@ -45,11 +48,11 @@ enum Invocation {
 }
 
 fn parse(arguments: &[String]) -> Invocation {
-    let pinch = arguments.iter().any(|argument| argument == "--pinch");
+    let pinch = !arguments.iter().any(|argument| argument == "--no-pinch");
     let rest: Vec<&str> = arguments
         .iter()
         .map(String::as_str)
-        .filter(|argument| *argument != "--pinch")
+        .filter(|argument| *argument != "--no-pinch")
         .collect();
     match rest.as_slice() {
         ["-h" | "--help"] => Invocation::Help,
@@ -101,24 +104,24 @@ mod tests {
     }
 
     #[test]
-    fn a_file_is_viewed_without_pinch_by_default() {
+    fn pinch_is_on_by_default() {
         assert_eq!(
             run(&["thesis.pdf"]),
             Invocation::View {
                 path: PathBuf::from("thesis.pdf"),
-                pinch: false
+                pinch: true
             }
         );
     }
 
     #[test]
-    fn pinch_is_opt_in_on_either_side_of_the_file() {
+    fn no_pinch_turns_it_off_on_either_side_of_the_file() {
         let expected = Invocation::View {
             path: PathBuf::from("thesis.pdf"),
-            pinch: true,
+            pinch: false,
         };
-        assert_eq!(run(&["--pinch", "thesis.pdf"]), expected);
-        assert_eq!(run(&["thesis.pdf", "--pinch"]), expected);
+        assert_eq!(run(&["--no-pinch", "thesis.pdf"]), expected);
+        assert_eq!(run(&["thesis.pdf", "--no-pinch"]), expected);
     }
 
     #[test]
@@ -130,7 +133,8 @@ mod tests {
     #[test]
     fn an_unknown_flag_or_missing_file_is_a_misuse() {
         assert_eq!(run(&["--zoom", "thesis.pdf"]), Invocation::Misused);
-        assert_eq!(run(&["--pinch"]), Invocation::Misused);
+        assert_eq!(run(&["--pinch", "thesis.pdf"]), Invocation::Misused);
+        assert_eq!(run(&["--no-pinch"]), Invocation::Misused);
         assert_eq!(run(&[]), Invocation::Misused);
     }
 }

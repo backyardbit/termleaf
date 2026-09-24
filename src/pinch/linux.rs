@@ -14,7 +14,7 @@ const SYSFS_INPUT: &str = "/sys/class/input";
 pub fn listen(send: impl Fn(PinchInput) + Clone + Send + 'static) -> Result<()> {
     let touchpads = touchpad_devices();
     if touchpads.is_empty() {
-        bail!("--pinch found no touchpad");
+        bail!("pinch found no touchpad");
     }
     let mut opened = 0;
     for name in touchpads {
@@ -27,7 +27,7 @@ pub fn listen(send: impl Fn(PinchInput) + Clone + Send + 'static) -> Result<()> 
     }
     if opened == 0 {
         bail!(
-            "--pinch cannot read the touchpad: add yourself to the `input` group \
+            "pinch cannot read the touchpad: add yourself to the `input` group \
              (sudo usermod -aG input $USER) and log in again"
         );
     }

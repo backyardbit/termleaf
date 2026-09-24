@@ -49,18 +49,18 @@ pub fn listen(send: impl Fn(PinchInput) + Clone + Send + Sync + 'static) -> Resu
         // SAFETY: CGRequestListenEventAccess takes no arguments; it asks macOS to show the permission prompt.
         let _ = unsafe { CGRequestListenEventAccess() };
         bail!(
-            "--pinch needs Input Monitoring: allow your terminal in System Settings > \
+            "pinch needs Input Monitoring: allow your terminal in System Settings > \
              Privacy & Security > Input Monitoring, then restart the terminal"
         );
     }
     if SINK.set(Box::new(send)).is_err() {
-        bail!("--pinch is already listening");
+        bail!("pinch is already listening");
     }
     let (started, outcome) = mpsc::channel();
     thread::spawn(move || run_tap(&started));
     match outcome.recv() {
         Ok(true) => Ok(()),
-        _ => bail!("--pinch could not watch trackpad gestures"),
+        _ => bail!("pinch could not watch trackpad gestures"),
     }
 }
 
