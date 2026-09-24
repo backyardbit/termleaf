@@ -22,7 +22,7 @@ termleaf runs on macOS and Linux.
 cargo install termleaf
 ```
 
-Building from source compiles MuPDF, which needs a C compiler, `make` and libclang. Prebuilt binaries and a shell installer are attached to each [GitHub release](https://github.com/backyardbit/termleaf/releases).
+Building from source compiles MuPDF, which needs a C compiler, `make` and libclang. On Linux it also needs `pkg-config` and the fontconfig headers (`libfontconfig-dev` on Debian and Ubuntu). Prebuilt binaries and a shell installer are attached to each [GitHub release](https://github.com/backyardbit/termleaf/releases).
 
 ## Usage
 
