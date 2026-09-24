@@ -2116,6 +2116,7 @@ dependencies = [
  "base64-simd",
  "core-foundation",
  "crossterm",
+ "flate2",
  "image",
  "mupdf",
  "notify",

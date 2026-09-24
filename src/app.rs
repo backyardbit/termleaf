@@ -18,10 +18,11 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui_image::FontSize;
-use ratatui_image::picker::{Picker, ProtocolType};
+use ratatui_image::picker::cap_parser::QueryStdioOptions;
+use ratatui_image::picker::{Capability, Picker, ProtocolType};
 
 use crate::keys::{Command, Key, KeyParser, ScreenCell};
-use crate::kitty::{self, CellGrid, ImageId, Placeholders};
+use crate::kitty::{self, CellGrid, ImageId, Payload, Placeholders};
 use crate::layout::{CellSize, Pane, View};
 use crate::mouse::{Gestures, MouseInput, Wheel};
 use crate::pinch::{self, PinchGate, PinchInput};
@@ -110,6 +111,7 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
         in_flight: Vec::new(),
         shown: None,
         next_id: ImageId::first(),
+        payload: payload_for(&picker),
         outgoing: String::new(),
     };
     let result = app.event_loop(&mut terminal, &inbox);
@@ -121,7 +123,11 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
 }
 
 fn kitty_picker() -> Result<Picker> {
-    let picker = Picker::from_query_stdio().context("querying the terminal")?;
+    let options = QueryStdioOptions {
+        kitty_compression: true,
+        ..QueryStdioOptions::default()
+    };
+    let picker = Picker::from_query_stdio_with_options(options).context("querying the terminal")?;
     if picker.protocol_type() != ProtocolType::Kitty {
         bail!(
             "termleaf needs a terminal that supports the Kitty graphics protocol \
@@ -129,6 +135,18 @@ fn kitty_picker() -> Result<Picker> {
         );
     }
     Ok(picker)
+}
+
+fn payload_for(picker: &Picker) -> Payload {
+    compression_if(picker.capabilities())
+}
+
+fn compression_if(capabilities: &[Capability]) -> Payload {
+    if capabilities.contains(&Capability::KittyCompression) {
+        Payload::Zlib
+    } else {
+        Payload::Raw
+    }
 }
 
 fn spawn_input(events: Sender<Event>) {
@@ -248,6 +266,7 @@ struct App {
     in_flight: Vec<RenderKey>,
     shown: Option<Shown>,
     next_id: ImageId,
+    payload: Payload,
     outgoing: String,
 }
 
@@ -388,7 +407,8 @@ impl App {
         let grid = grid_of(&padded, cell);
         let id = self.next_id;
         self.next_id = id.next();
-        self.outgoing.push_str(&kitty::transmit(id, &padded, grid));
+        self.outgoing
+            .push_str(&kitty::transmit(id, &padded, grid, self.payload));
         self.tiles.push(CachedTile {
             key,
             id,
@@ -615,6 +635,7 @@ mod tests {
             in_flight: Vec::new(),
             shown: None,
             next_id: ImageId::first(),
+            payload: Payload::Raw,
             outgoing: String::new(),
         };
         (app, inbox)
@@ -906,6 +927,19 @@ mod tests {
             Some(MouseInput::Drag(ScreenCell { column: 1, row: 2 }))
         );
         assert_eq!(translate_mouse(drag(MouseButton::Right)), None);
+    }
+
+    #[test]
+    fn tiles_are_compressed_when_the_terminal_can_inflate_them() {
+        assert_eq!(
+            compression_if(&[Capability::Kitty, Capability::KittyCompression]),
+            Payload::Zlib
+        );
+    }
+
+    #[test]
+    fn tiles_stay_raw_when_the_terminal_did_not_confirm_compression() {
+        assert_eq!(compression_if(&[Capability::Kitty]), Payload::Raw);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use std::fmt::Write as _;
+use std::io::Write as _;
 
 use image::RgbaImage;
 use ratatui::buffer::{Buffer, CellDiffOption};
@@ -34,20 +35,30 @@ impl ImageId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Payload {
+    Raw,
+    Zlib,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CellGrid {
     pub columns: u16,
     pub rows: u16,
 }
 
-pub fn transmit(id: ImageId, image: &RgbaImage, grid: CellGrid) -> String {
-    let chunks: Vec<&[u8]> = image.as_raw().chunks(RAW_CHUNK).collect();
+pub fn transmit(id: ImageId, image: &RgbaImage, grid: CellGrid, payload: Payload) -> String {
+    let (bytes, encoding) = match payload {
+        Payload::Raw => (image.as_raw().clone(), ""),
+        Payload::Zlib => (zlib(image.as_raw()), "o=z,"),
+    };
+    let chunks: Vec<&[u8]> = bytes.chunks(RAW_CHUNK).collect();
     let mut sequence = String::new();
     for (index, chunk) in chunks.iter().enumerate() {
         sequence.push_str("\x1b_Gq=2,");
         if index == 0 {
             let _ = write!(
                 sequence,
-                "a=T,U=1,i={},f=32,t=d,s={},v={},c={},r={},",
+                "a=T,U=1,i={},f=32,t=d,s={},v={},c={},r={},{encoding}",
                 id.0,
                 image.width(),
                 image.height(),
@@ -61,6 +72,17 @@ pub fn transmit(id: ImageId, image: &RgbaImage, grid: CellGrid) -> String {
         sequence.push_str("\x1b\\");
     }
     sequence
+}
+
+fn zlib(raw: &[u8]) -> Vec<u8> {
+    let mut encoder = flate2::write::ZlibEncoder::new(
+        Vec::with_capacity(raw.len() / 64),
+        flate2::Compression::fast(),
+    );
+    if encoder.write_all(raw).is_err() {
+        return Vec::new();
+    }
+    encoder.finish().unwrap_or_default()
 }
 
 pub fn delete(id: ImageId) -> String {
@@ -425,6 +447,7 @@ mod tests {
                 columns: 7,
                 rows: 5,
             },
+            Payload::Raw,
         );
         assert_eq!(payload(&sequence), image.as_raw().clone());
     }
@@ -439,6 +462,7 @@ mod tests {
                 columns: 7,
                 rows: 5,
             },
+            Payload::Raw,
         );
         assert!(sequence.starts_with("\x1b_Gq=2,a=T,U=1,i=1,f=32,t=d,s=70,v=50,c=7,r=5,"));
     }
@@ -453,6 +477,7 @@ mod tests {
                 columns: 10,
                 rows: 10,
             },
+            Payload::Raw,
         );
         let endings: Vec<&str> = sequence
             .match_indices("m=")
@@ -465,6 +490,59 @@ mod tests {
                 .iter()
                 .all(|ending| *ending == "m=1")
         );
+    }
+
+    fn inflate(bytes: &[u8]) -> Vec<u8> {
+        use std::io::Read;
+        let mut raw = Vec::new();
+        flate2::read::ZlibDecoder::new(bytes)
+            .read_to_end(&mut raw)
+            .unwrap();
+        raw
+    }
+
+    #[test]
+    fn a_compressed_transmission_inflates_back_to_the_raw_pixels() {
+        let image = RgbaImage::from_fn(70, 50, |x, y| {
+            image::Rgba([u8::try_from(x).unwrap(), u8::try_from(y).unwrap(), 3, 255])
+        });
+        let sequence = transmit(
+            ImageId::first(),
+            &image,
+            CellGrid {
+                columns: 7,
+                rows: 5,
+            },
+            Payload::Zlib,
+        );
+        assert_eq!(inflate(&payload(&sequence)), image.as_raw().clone());
+    }
+
+    #[test]
+    fn a_compressed_transmission_says_so_and_keeps_the_raw_size() {
+        let image = RgbaImage::new(70, 50);
+        let sequence = transmit(
+            ImageId::first(),
+            &image,
+            CellGrid {
+                columns: 7,
+                rows: 5,
+            },
+            Payload::Zlib,
+        );
+        assert!(sequence.starts_with("\x1b_Gq=2,a=T,U=1,i=1,f=32,t=d,s=70,v=50,c=7,r=5,o=z,"));
+    }
+
+    #[test]
+    fn a_blank_page_compresses_to_a_tiny_fraction() {
+        let image = RgbaImage::from_pixel(1280, 1920, image::Rgba([255, 255, 255, 255]));
+        let grid = CellGrid {
+            columns: 64,
+            rows: 48,
+        };
+        let raw = transmit(ImageId::first(), &image, grid, Payload::Raw);
+        let compressed = transmit(ImageId::first(), &image, grid, Payload::Zlib);
+        assert!(compressed.len() * 100 < raw.len());
     }
 
     #[test]
