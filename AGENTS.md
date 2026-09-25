@@ -42,7 +42,7 @@ These are wanted eventually. Keep the architecture open to them, but do not buil
 - SyncTeX forward and inverse search between Helix and termleaf
 - A dark mode that inverts or recolours pages
 - A config file for keybindings and defaults
-- Sixel and iTerm2 protocols, and a Homebrew tap
+- Sixel and iTerm2 protocols
 
 ## Working in this repo
 
@@ -60,6 +60,6 @@ These are wanted eventually. Keep the architecture open to them, but do not buil
 - Build gotchas:
   - `unicode-ident` is pinned in `xtask/Cargo.toml`. `ra-ap-rustc_lexer` fails to compile when its Unicode version differs from `unicode-properties`.
   - The MuPDF build fails on macOS when Homebrew's GNU Make 4.x comes first in PATH (mupdf-rs#211).
-- Releases: bump `version` in `Cargo.toml`, then push a `v*` tag. The `dist` workflow builds the binaries and a shell installer, and `cargo publish` pushes the crate to crates.io. `xtask` is never published.
+- Releases: bump `version` in `Cargo.toml`, then push a `v*` tag. The `dist` workflow builds the binaries and a shell installer, pushes a Homebrew formula to `backyardbit/homebrew-tap` (using the `HOMEBREW_TAP_TOKEN` secret), and `cargo publish` pushes the crate to crates.io. `xtask` is never published.
 - Commit `Cargo.lock`. This is a binary crate.
 - The human owner is the only author of every commit. Write commit messages with no `Co-Authored-By` trailer and no other attribution to an agent or AI tool. The same goes for PR descriptions.
