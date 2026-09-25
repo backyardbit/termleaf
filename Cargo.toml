@@ -1,10 +1,11 @@
 [package]
 name = "termleaf"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 description = "A live-reloading PDF viewer for the terminal, built for editing LaTeX next to it"
 repository = "https://github.com/backyardbit/termleaf"
+homepage = "https://github.com/backyardbit/termleaf"
 readme = "README.md"
 keywords = ["pdf", "viewer", "terminal", "latex", "tui"]
 categories = ["command-line-utilities", "visualization"]
