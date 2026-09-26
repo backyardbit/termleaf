@@ -16,7 +16,9 @@ mod watch;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: termleaf [--no-pinch] <file.pdf>
+use crate::graphics::Choice;
+
+const USAGE: &str = "usage: termleaf [--no-pinch] [--graphics <protocol>] <file.pdf>
 
 Shows a PDF in the terminal and reloads it whenever the file changes.
 
@@ -41,29 +43,45 @@ pinches on. It needs Input Monitoring for your terminal app on macOS, or
 membership of the `input` group on Linux; without it, pinch stays off.
 
 options:
-  --no-pinch   never read the trackpad from the OS";
+  --no-pinch              never read the trackpad from the OS
+  --graphics <protocol>   auto (the default) or kitty, to use Kitty graphics
+                          whatever the terminal reports; sixel and iterm2
+                          are accepted but not supported yet";
 
 #[derive(Debug, PartialEq, Eq)]
 enum Invocation {
     Help,
     Version,
-    View { path: PathBuf, pinch: bool },
+    View {
+        path: PathBuf,
+        pinch: bool,
+        graphics: Choice,
+    },
     Misused,
 }
 
 fn parse(arguments: &[String]) -> Invocation {
-    let pinch = !arguments.iter().any(|argument| argument == "--no-pinch");
-    let rest: Vec<&str> = arguments
-        .iter()
-        .map(String::as_str)
-        .filter(|argument| *argument != "--no-pinch")
-        .collect();
+    let mut pinch = true;
+    let mut graphics = Choice::Auto;
+    let mut rest = Vec::new();
+    let mut arguments = arguments.iter().map(String::as_str);
+    while let Some(argument) = arguments.next() {
+        match argument {
+            "--no-pinch" => pinch = false,
+            "--graphics" => match arguments.next().and_then(Choice::parse) {
+                Some(choice) => graphics = choice,
+                None => return Invocation::Misused,
+            },
+            _ => rest.push(argument),
+        }
+    }
     match rest.as_slice() {
         ["-h" | "--help"] => Invocation::Help,
         ["-V" | "--version"] => Invocation::Version,
         [path] if !path.starts_with('-') => Invocation::View {
             path: PathBuf::from(path),
             pinch,
+            graphics,
         },
         _ => Invocation::Misused,
     }
@@ -71,7 +89,7 @@ fn parse(arguments: &[String]) -> Invocation {
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    let (path, pinch) = match parse(&arguments) {
+    let (path, options) = match parse(&arguments) {
         Invocation::Help => {
             println!("{USAGE}");
             return ExitCode::SUCCESS;
@@ -80,13 +98,17 @@ fn main() -> ExitCode {
             println!("termleaf {}", env!("CARGO_PKG_VERSION"));
             return ExitCode::SUCCESS;
         }
-        Invocation::View { path, pinch } => (path, pinch),
+        Invocation::View {
+            path,
+            pinch,
+            graphics,
+        } => (path, app::Options { pinch, graphics }),
         Invocation::Misused => {
             eprintln!("{USAGE}");
             return ExitCode::FAILURE;
         }
     };
-    match app::run(path, app::Options { pinch }) {
+    match app::run(path, options) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("termleaf: {error:#}");
@@ -98,6 +120,7 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graphics::Protocol;
 
     fn run(arguments: &[&str]) -> Invocation {
         let owned: Vec<String> = arguments
@@ -108,12 +131,13 @@ mod tests {
     }
 
     #[test]
-    fn pinch_is_on_by_default() {
+    fn pinch_is_on_and_graphics_are_detected_by_default() {
         assert_eq!(
             run(&["thesis.pdf"]),
             Invocation::View {
                 path: PathBuf::from("thesis.pdf"),
-                pinch: true
+                pinch: true,
+                graphics: Choice::Auto,
             }
         );
     }
@@ -123,9 +147,37 @@ mod tests {
         let expected = Invocation::View {
             path: PathBuf::from("thesis.pdf"),
             pinch: false,
+            graphics: Choice::Auto,
         };
         assert_eq!(run(&["--no-pinch", "thesis.pdf"]), expected);
         assert_eq!(run(&["thesis.pdf", "--no-pinch"]), expected);
+    }
+
+    #[test]
+    fn graphics_forces_a_protocol_on_either_side_of_the_file() {
+        let expected = Invocation::View {
+            path: PathBuf::from("thesis.pdf"),
+            pinch: false,
+            graphics: Choice::Force(Protocol::Kitty),
+        };
+        assert_eq!(
+            run(&["--graphics", "kitty", "--no-pinch", "thesis.pdf"]),
+            expected
+        );
+        assert_eq!(
+            run(&["--no-pinch", "thesis.pdf", "--graphics", "kitty"]),
+            expected
+        );
+    }
+
+    #[test]
+    fn graphics_without_a_known_protocol_is_a_misuse() {
+        assert_eq!(run(&["thesis.pdf", "--graphics"]), Invocation::Misused);
+        assert_eq!(run(&["--graphics", "thesis.pdf"]), Invocation::Misused);
+        assert_eq!(
+            run(&["--graphics", "halfblocks", "thesis.pdf"]),
+            Invocation::Misused
+        );
     }
 
     #[test]

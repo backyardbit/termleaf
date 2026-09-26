@@ -20,7 +20,7 @@ use ratatui_image::FontSize;
 use ratatui_image::picker::{Capability, Picker};
 
 use crate::encoder::{self, Encoded, Encoder, Job, Wanted};
-use crate::graphics::{self, Protocol};
+use crate::graphics::{self, Choice, Protocol};
 use crate::keys::{Command, Key, KeyParser, ScreenCell};
 use crate::kitty::{self, CellGrid, ImageId, Payload, Placeholders, Placement};
 use crate::layout::{CellSize, Pane, RenderedTile, Stretched, StretchedGrid, View};
@@ -43,6 +43,7 @@ const ZOOM_SETTLE: Duration = Duration::from_millis(150);
 
 pub struct Options {
     pub pinch: bool,
+    pub graphics: Choice,
 }
 
 enum Event {
@@ -89,7 +90,7 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
     };
 
     let mut terminal = ratatui::init();
-    let picker = match graphics::detect() {
+    let picker = match graphics::detect(options.graphics) {
         Ok((Protocol::Kitty, picker)) => picker,
         Ok((Protocol::Raster(protocol), _)) => {
             ratatui::restore();
