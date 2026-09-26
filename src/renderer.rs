@@ -109,7 +109,7 @@ fn serve(path: &Path, inbox: &Receiver<Request>, respond: &impl Fn(Response)) {
         match next_request(&mut pending) {
             Request::Load(generation) => respond(load(path, generation, &mut loaded)),
             Request::Render(key) => {
-                let Some(current) = &loaded else {
+                let Some(current) = &mut loaded else {
                     continue;
                 };
                 if current.generation != key.generation {

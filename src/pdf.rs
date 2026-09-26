@@ -1,6 +1,8 @@
 use anyhow::{Context, Result, bail, ensure};
 use image::RgbImage;
-use mupdf::{Colorspace, DestinationKind, Device, Document, Matrix, Page, Pixmap};
+use mupdf::{
+    Colorspace, DestinationKind, Device, DisplayList, Document, Matrix, Page, Pixmap, Rect,
+};
 
 const END_OF_FILE_MARKER: &[u8] = b"%%EOF";
 const TRAILER_WINDOW: usize = 1024;
@@ -90,8 +92,14 @@ pub struct PageInfo {
 }
 
 pub struct Pdf {
+    recorded: Option<RecordedPage>,
     document: Document,
     page_count: usize,
+}
+
+struct RecordedPage {
+    index: usize,
+    list: DisplayList,
 }
 
 impl Pdf {
@@ -101,6 +109,7 @@ impl Pdf {
         let page_count = usize::try_from(document.page_count()?)?;
         ensure!(page_count > 0, "the PDF has no pages");
         Ok(Self {
+            recorded: None,
             document,
             page_count,
         })
@@ -122,9 +131,14 @@ impl Pdf {
             .collect()
     }
 
-    pub fn render(&self, page_index: usize, scale: Scale, region: PixelRegion) -> Result<RgbImage> {
-        let page = self.load(page_index)?;
-        let bounds = page.bounds()?;
+    pub fn render(
+        &mut self,
+        page_index: usize,
+        scale: Scale,
+        region: PixelRegion,
+    ) -> Result<RgbImage> {
+        let list = self.recording(page_index)?;
+        let bounds = list.bounds();
         let mut transform = Matrix::new_translate(-bounds.x0, -bounds.y0);
         let pixels_per_point = scale_factor(scale);
         transform.concat(Matrix::new_scale(pixels_per_point, pixels_per_point));
@@ -139,9 +153,27 @@ impl Pdf {
         pixmap.clear_with(WHITE)?;
         {
             let device = Device::from_pixmap(&pixmap)?;
-            page.run(&device, &transform)?;
+            list.run(&device, &transform, Rect::from(pixmap.rect()))?;
         }
         rgb_image(&pixmap)
+    }
+
+    fn recording(&mut self, page_index: usize) -> Result<&DisplayList> {
+        let stale = self
+            .recorded
+            .as_ref()
+            .is_none_or(|recorded| recorded.index != page_index);
+        if stale {
+            let list = self.load(page_index)?.to_display_list(true)?;
+            self.recorded = Some(RecordedPage {
+                index: page_index,
+                list,
+            });
+        }
+        self.recorded
+            .as_ref()
+            .map(|recorded| &recorded.list)
+            .context("no page is recorded")
     }
 
     fn load(&self, page_index: usize) -> Result<Page> {
@@ -265,7 +297,7 @@ mod tests {
 
     #[test]
     fn a_region_is_cut_from_the_same_render_as_the_whole_page() {
-        let pdf = open("three-pages.pdf");
+        let mut pdf = open("three-pages.pdf");
         let scale = Scale::from_pixels_per_point(1.0);
         let whole = pdf
             .render(
@@ -288,6 +320,23 @@ mod tests {
         let part = pdf.render(0, scale, region).unwrap();
         let expected = image::imageops::crop_imm(&whole, 90, 60, 200, 100).to_image();
         assert_eq!(part, expected);
+    }
+
+    #[test]
+    fn a_page_renders_the_same_after_another_page_was_rendered() {
+        let scale = Scale::from_pixels_per_point(1.0);
+        let region = PixelRegion {
+            x: 50,
+            y: 40,
+            width: 300,
+            height: 200,
+        };
+        let first = open("three-pages.pdf").render(0, scale, region).unwrap();
+        let mut pdf = open("three-pages.pdf");
+        pdf.render(1, scale, region).unwrap();
+        let again = pdf.render(0, scale, region).unwrap();
+        assert_eq!(again, first);
+        assert_ne!(pdf.render(1, scale, region).unwrap(), first);
     }
 
     #[test]
