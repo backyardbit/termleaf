@@ -129,7 +129,8 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
         encoder,
         wanted,
         shelf: Shelf::new(SHELF_BYTES),
-        shelved_prefetch: false,
+        shelf_waits: false,
+        requested_view: None,
         generation: 0,
         requested_generation: 0,
         reload_at: None,
@@ -290,7 +291,8 @@ struct App {
     encoder: Encoder,
     wanted: Wanted,
     shelf: Shelf,
-    shelved_prefetch: bool,
+    shelf_waits: bool,
+    requested_view: Option<View>,
     generation: Generation,
     requested_generation: Generation,
     reload_at: Option<Instant>,
@@ -344,7 +346,7 @@ impl App {
     }
 
     fn idle_wait(&self, now: Instant) -> Duration {
-        if self.shelved_prefetch {
+        if self.shelf_waits {
             return Duration::ZERO;
         }
         [self.reload_at, self.resize_settles_at, self.zooming_until]
@@ -574,7 +576,7 @@ impl App {
     }
 
     fn request_tiles_at(&mut self, now: Instant) {
-        self.shelved_prefetch = false;
+        self.shelf_waits = false;
         let view = self.viewer.view().clone();
         if view.pane.columns == 0 || view.pane.rows == 0 {
             return;
@@ -594,19 +596,24 @@ impl App {
         let wanted = tile_keys(self.generation, &view);
         self.wanted
             .set(prefetch.iter().chain(&wanted).copied().collect());
-        let view_ready = wanted.iter().all(|key| self.cached(*key).is_some());
+        let drawn = self.requested_view.as_ref() == Some(&view);
+        self.requested_view = Some(view.clone());
+        let view_ready = drawn && wanted.iter().all(|key| self.cached(*key).is_some());
         let mut deferred = false;
-        for key in &prefetch {
-            if !view_ready && !wanted.contains(key) && self.shelf.holds(*key) {
+        for key in prefetch.iter().chain(&wanted) {
+            let ready = if wanted.contains(key) {
+                drawn
+            } else {
+                view_ready
+            };
+            if !ready && self.shelf.holds(*key) {
                 deferred = true;
             } else {
                 self.request(*key);
             }
         }
-        for key in &wanted {
-            self.request(*key);
-        }
-        self.shelved_prefetch = deferred && wanted.iter().all(|key| self.cached(*key).is_some());
+        self.shelf_waits =
+            deferred && (!drawn || wanted.iter().all(|key| self.cached(*key).is_some()));
         if self.only_scrolled_from_shown(&view) {
             self.shown = Some(Shown {
                 generation: self.generation,
@@ -793,7 +800,8 @@ mod tests {
             encoder,
             wanted,
             shelf: Shelf::new(SHELF_BYTES),
-            shelved_prefetch: false,
+            shelf_waits: false,
+            requested_view: None,
             generation: 0,
             requested_generation: 0,
             reload_at: None,
@@ -1173,6 +1181,8 @@ mod tests {
         let key = tile_keys(app.generation, app.viewer.view())[0];
         app.handle(Event::Encoded(encoded_tile(&app, key)));
         app.request_tiles_at(Instant::now());
+        assert_eq!(app.cached(key), None);
+        app.request_tiles_at(Instant::now());
         assert!(!app.in_flight.contains(&key));
         let id = app.cached(key).expect("the waiting tile is cached");
         assert!(
@@ -1182,7 +1192,7 @@ mod tests {
     }
 
     #[test]
-    fn view_tiles_waiting_on_the_shelf_go_out_a_frame_before_prefetched_ones() {
+    fn shelved_tiles_go_out_after_the_view_is_drawn_and_prefetched_ones_a_frame_later() {
         let (mut app, _inbox) = headless_app(Pane {
             columns: 80,
             rows: 30,
@@ -1199,6 +1209,10 @@ mod tests {
         }
         let now = Instant::now() + RESIZE_SETTLE;
         app.request_tiles_at(now);
+        assert!(app.outgoing.is_empty());
+        assert!(!shown.iter().any(|key| app.in_flight.contains(key)));
+        assert_eq!(app.idle_wait(now), Duration::ZERO);
+        app.request_tiles_at(now);
         assert!(shown.iter().all(|key| app.cached(*key).is_some()));
         assert_eq!(app.cached(prefetched), None);
         assert_eq!(app.idle_wait(now), Duration::ZERO);
@@ -1206,6 +1220,34 @@ mod tests {
         assert!(app.cached(prefetched).is_some());
         assert!(!app.in_flight.contains(&prefetched));
         assert_ne!(app.idle_wait(now), Duration::ZERO);
+    }
+
+    #[test]
+    fn returning_to_tiles_the_terminal_holds_draws_them_before_shelved_prefetch_goes_out() {
+        let (mut app, _inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        let view = app.viewer.view().clone();
+        let shown = tile_keys(app.generation, &view);
+        let prefetched = app
+            .neighbour_keys(&view)
+            .into_iter()
+            .find(|key| !shown.contains(key))
+            .expect("a tile below the view");
+        app.wanted.set(shown.clone());
+        for key in &shown {
+            app.handle(Event::Encoded(encoded_tile(&app, *key)));
+        }
+        app.wanted.set(Vec::new());
+        app.handle(Event::Encoded(encoded_tile(&app, prefetched)));
+        app.outgoing.clear();
+        let now = Instant::now() + RESIZE_SETTLE;
+        app.request_tiles_at(now);
+        assert!(app.outgoing.is_empty());
+        assert_eq!(app.idle_wait(now), Duration::ZERO);
+        app.request_tiles_at(now);
+        assert!(app.cached(prefetched).is_some());
     }
 
     #[test]
@@ -1223,6 +1265,7 @@ mod tests {
             .expect("a tile below the view");
         app.handle(Event::Encoded(encoded_tile(&app, prefetched)));
         let now = Instant::now() + RESIZE_SETTLE;
+        app.request_tiles_at(now);
         app.request_tiles_at(now);
         assert_eq!(app.cached(prefetched), None);
         assert_ne!(app.idle_wait(now), Duration::ZERO);
