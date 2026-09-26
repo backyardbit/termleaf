@@ -65,33 +65,62 @@ pub struct CellGrid {
     pub rows: u16,
 }
 
-pub fn transmit(id: ImageId, image: &RgbaImage, grid: CellGrid, payload: Payload) -> String {
-    let (bytes, encoding) = match payload {
-        Payload::Raw => (image.as_raw().clone(), ""),
-        Payload::Zlib => (zlib(image.as_raw()), "o=z,"),
+pub struct EncodedImage {
+    width: u32,
+    height: u32,
+    grid: CellGrid,
+    payload: Payload,
+    chunks: String,
+}
+
+pub fn encode(image: &RgbaImage, grid: CellGrid, payload: Payload) -> EncodedImage {
+    let compressed;
+    let bytes: &[u8] = match payload {
+        Payload::Raw => image.as_raw(),
+        Payload::Zlib => {
+            compressed = zlib(image.as_raw());
+            &compressed
+        }
     };
     let chunks: Vec<&[u8]> = bytes.chunks(RAW_CHUNK).collect();
-    let mut sequence = String::new();
+    let mut sequence = String::with_capacity(bytes.len() / 3 * 4 + chunks.len() * 16 + 16);
     for (index, chunk) in chunks.iter().enumerate() {
-        sequence.push_str("\x1b_Gq=2,");
-        if index == 0 {
-            let _ = write!(
-                sequence,
-                "a=T,U=1,i={},p={},f=32,t=d,s={},v={},c={},r={},{encoding}",
-                id.0,
-                Placement::Tile.id(),
-                image.width(),
-                image.height(),
-                grid.columns,
-                grid.rows
-            );
+        if index > 0 {
+            sequence.push_str("\x1b_Gq=2,");
         }
         let more = u8::from(index + 1 < chunks.len());
         let _ = write!(sequence, "m={more};");
         base64_simd::STANDARD.encode_append(chunk, &mut sequence);
         sequence.push_str("\x1b\\");
     }
-    sequence
+    EncodedImage {
+        width: image.width(),
+        height: image.height(),
+        grid,
+        payload,
+        chunks: sequence,
+    }
+}
+
+pub fn transmit(id: ImageId, image: &EncodedImage, sequence: &mut String) {
+    if image.chunks.is_empty() {
+        return;
+    }
+    let encoding = match image.payload {
+        Payload::Raw => "",
+        Payload::Zlib => "o=z,",
+    };
+    let _ = write!(
+        sequence,
+        "\x1b_Gq=2,a=T,U=1,i={},p={},f=32,t=d,s={},v={},c={},r={},{encoding}",
+        id.0,
+        Placement::Tile.id(),
+        image.width,
+        image.height,
+        image.grid.columns,
+        image.grid.rows
+    );
+    sequence.push_str(&image.chunks);
 }
 
 fn zlib(raw: &[u8]) -> Vec<u8> {
@@ -463,6 +492,16 @@ static DIACRITICS: [char; 297] = [
 mod tests {
     use super::*;
 
+    fn transmission(image: &RgbaImage, grid: CellGrid, payload: Payload) -> String {
+        let mut sequence = String::new();
+        transmit(
+            ImageId::first(),
+            &encode(image, grid, payload),
+            &mut sequence,
+        );
+        sequence
+    }
+
     fn payload(sequence: &str) -> Vec<u8> {
         sequence
             .split("\x1b\\")
@@ -474,8 +513,7 @@ mod tests {
     #[test]
     fn a_transmission_carries_the_raw_pixels() {
         let image = RgbaImage::from_pixel(70, 50, image::Rgba([1, 2, 3, 4]));
-        let sequence = transmit(
-            ImageId::first(),
+        let sequence = transmission(
             &image,
             CellGrid {
                 columns: 7,
@@ -489,8 +527,7 @@ mod tests {
     #[test]
     fn a_transmission_creates_a_virtual_placement_of_the_given_cells() {
         let image = RgbaImage::new(70, 50);
-        let sequence = transmit(
-            ImageId::first(),
+        let sequence = transmission(
             &image,
             CellGrid {
                 columns: 7,
@@ -504,8 +541,7 @@ mod tests {
     #[test]
     fn only_the_last_chunk_ends_the_transmission() {
         let image = RgbaImage::new(100, 100);
-        let sequence = transmit(
-            ImageId::first(),
+        let sequence = transmission(
             &image,
             CellGrid {
                 columns: 10,
@@ -540,8 +576,7 @@ mod tests {
         let image = RgbaImage::from_fn(70, 50, |x, y| {
             image::Rgba([u8::try_from(x).unwrap(), u8::try_from(y).unwrap(), 3, 255])
         });
-        let sequence = transmit(
-            ImageId::first(),
+        let sequence = transmission(
             &image,
             CellGrid {
                 columns: 7,
@@ -555,8 +590,7 @@ mod tests {
     #[test]
     fn a_compressed_transmission_says_so_and_keeps_the_raw_size() {
         let image = RgbaImage::new(70, 50);
-        let sequence = transmit(
-            ImageId::first(),
+        let sequence = transmission(
             &image,
             CellGrid {
                 columns: 7,
@@ -574,9 +608,42 @@ mod tests {
             columns: 64,
             rows: 48,
         };
-        let raw = transmit(ImageId::first(), &image, grid, Payload::Raw);
-        let compressed = transmit(ImageId::first(), &image, grid, Payload::Zlib);
+        let raw = transmission(&image, grid, Payload::Raw);
+        let compressed = transmission(&image, grid, Payload::Zlib);
         assert!(compressed.len() * 100 < raw.len());
+    }
+
+    #[test]
+    fn one_encoding_can_be_written_under_any_image_id() {
+        let image = RgbaImage::from_pixel(70, 50, image::Rgba([1, 2, 3, 4]));
+        let grid = CellGrid {
+            columns: 7,
+            rows: 5,
+        };
+        let encoded = encode(&image, grid, Payload::Zlib);
+        let mut first = String::new();
+        transmit(ImageId::first(), &encoded, &mut first);
+        let mut second = String::new();
+        transmit(ImageId(2), &encoded, &mut second);
+        assert!(second.starts_with("\x1b_Gq=2,a=T,U=1,i=2,p=1,"));
+        assert_eq!(first.replacen("i=1,", "i=2,", 1), second);
+    }
+
+    #[test]
+    fn writing_appends_to_what_is_already_queued() {
+        let image = RgbaImage::new(70, 50);
+        let grid = CellGrid {
+            columns: 7,
+            rows: 5,
+        };
+        let mut sequence = delete(ImageId(9));
+        transmit(
+            ImageId::first(),
+            &encode(&image, grid, Payload::Raw),
+            &mut sequence,
+        );
+        assert!(sequence.starts_with(&delete(ImageId(9))));
+        assert!(sequence.ends_with("\x1b\\"));
     }
 
     #[test]

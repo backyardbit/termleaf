@@ -1,4 +1,5 @@
 mod app;
+mod encoder;
 mod keys;
 mod kitty;
 mod layout;

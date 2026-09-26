@@ -34,10 +34,6 @@ pub enum Response {
     Unchanged {
         generation: Generation,
     },
-    Rendered {
-        key: RenderKey,
-        image: RgbImage,
-    },
 }
 
 pub struct Renderer {
@@ -45,9 +41,13 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn spawn(path: PathBuf, respond: impl Fn(Response) + Send + 'static) -> Self {
+    pub fn spawn(
+        path: PathBuf,
+        respond: impl Fn(Response) + Send + 'static,
+        deliver: impl Fn(RenderKey, RgbImage) + Send + 'static,
+    ) -> Self {
         let (requests, inbox) = mpsc::channel();
-        thread::spawn(move || serve(&path, &inbox, &respond));
+        thread::spawn(move || serve(&path, &inbox, &respond, &deliver));
         Self { requests }
     }
 
@@ -94,7 +94,12 @@ fn load(path: &Path, generation: Generation, loaded: &mut Option<LoadedPdf>) -> 
     }
 }
 
-fn serve(path: &Path, inbox: &Receiver<Request>, respond: &impl Fn(Response)) {
+fn serve(
+    path: &Path,
+    inbox: &Receiver<Request>,
+    respond: &impl Fn(Response),
+    deliver: &impl Fn(RenderKey, RgbImage),
+) {
     let mut loaded: Option<LoadedPdf> = None;
     let mut pending: Vec<Request> = Vec::new();
     loop {
@@ -116,7 +121,7 @@ fn serve(path: &Path, inbox: &Receiver<Request>, respond: &impl Fn(Response)) {
                     continue;
                 }
                 if let Ok(image) = current.pdf.render(key.page, key.scale, key.region) {
-                    respond(Response::Rendered { key, image });
+                    deliver(key, image);
                 }
             }
         }
@@ -191,9 +196,13 @@ mod tests {
     fn reloading_identical_bytes_reports_unchanged() {
         let path = scratch_copy_of_fixture();
         let (sender, responses) = mpsc::channel();
-        let renderer = Renderer::spawn(path.clone(), move |response| {
-            let _ = sender.send(response);
-        });
+        let renderer = Renderer::spawn(
+            path.clone(),
+            move |response| {
+                let _ = sender.send(response);
+            },
+            |_, _| {},
+        );
 
         renderer.load(0);
         assert!(matches!(
@@ -213,9 +222,13 @@ mod tests {
         let path = scratch_copy_of_fixture();
         let good = std::fs::read(&path).unwrap();
         let (sender, responses) = mpsc::channel();
-        let renderer = Renderer::spawn(path.clone(), move |response| {
-            let _ = sender.send(response);
-        });
+        let renderer = Renderer::spawn(
+            path.clone(),
+            move |response| {
+                let _ = sender.send(response);
+            },
+            |_, _| {},
+        );
 
         renderer.load(0);
         next_response(&responses);
@@ -238,9 +251,13 @@ mod tests {
     fn changed_bytes_load_a_new_generation() {
         let path = scratch_copy_of_fixture();
         let (sender, responses) = mpsc::channel();
-        let renderer = Renderer::spawn(path.clone(), move |response| {
-            let _ = sender.send(response);
-        });
+        let renderer = Renderer::spawn(
+            path.clone(),
+            move |response| {
+                let _ = sender.send(response);
+            },
+            |_, _| {},
+        );
 
         renderer.load(0);
         next_response(&responses);
@@ -259,9 +276,13 @@ mod tests {
     fn a_deleted_file_is_unreadable() {
         let path = scratch_copy_of_fixture();
         let (sender, responses) = mpsc::channel();
-        let renderer = Renderer::spawn(path.clone(), move |response| {
-            let _ = sender.send(response);
-        });
+        let renderer = Renderer::spawn(
+            path.clone(),
+            move |response| {
+                let _ = sender.send(response);
+            },
+            |_, _| {},
+        );
 
         renderer.load(0);
         next_response(&responses);

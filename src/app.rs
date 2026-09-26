@@ -11,7 +11,6 @@ use crossterm::event::{
     MouseEventKind,
 };
 use crossterm::execute;
-use image::{RgbImage, Rgba, RgbaImage};
 use ratatui::DefaultTerminal;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -21,8 +20,9 @@ use ratatui_image::FontSize;
 use ratatui_image::picker::cap_parser::QueryStdioOptions;
 use ratatui_image::picker::{Capability, Picker, ProtocolType};
 
+use crate::encoder::{self, Encoded, Encoder, Job};
 use crate::keys::{Command, Key, KeyParser, ScreenCell};
-use crate::kitty::{self, CellGrid, ImageId, Payload, Placeholders, Placement};
+use crate::kitty::{self, CellGrid, EncodedImage, ImageId, Payload, Placeholders, Placement};
 use crate::layout::{CellSize, Pane, RenderedTile, Stretched, StretchedGrid, View};
 use crate::mouse::{Gestures, MouseInput, Wheel};
 use crate::pinch::{self, PinchGate, PinchInput};
@@ -50,6 +50,7 @@ enum Event {
     Resized,
     FileChanged,
     Renderer(Response),
+    Encoded(Encoded),
 }
 
 pub fn run(path: PathBuf, options: Options) -> Result<()> {
@@ -57,11 +58,18 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
         bail!("no such file: {}", path.display());
     }
     let (events, inbox) = mpsc::channel();
+    let (jobs, queued) = encoder::queue();
     let renderer = {
         let events = events.clone();
-        Renderer::spawn(path.clone(), move |response| {
-            let _ = events.send(Event::Renderer(response));
-        })
+        Renderer::spawn(
+            path.clone(),
+            move |response| {
+                let _ = events.send(Event::Renderer(response));
+            },
+            move |key, image| {
+                let _ = jobs.send(Job { key, image });
+            },
+        )
     };
     renderer.load(0);
     let pages = match inbox.recv().context("the render thread stopped")? {
@@ -92,9 +100,15 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
             let _ = pinches.send(Event::Pinch(input));
         });
     }
+    let cell = cell_size(picker.font_size());
+    let encoder = {
+        let events = events.clone();
+        Encoder::spawn(queued, cell, payload_for(&picker), move |encoded| {
+            let _ = events.send(Event::Encoded(encoded));
+        })
+    };
     spawn_input(events);
 
-    let cell = cell_size(picker.font_size());
     let pane = pane_of(page_area(terminal.get_frame().area()));
     let mut app = App {
         file_name: display_name(&path),
@@ -103,6 +117,7 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
         gestures: Gestures::default(),
         pinch: PinchGate::default(),
         renderer,
+        encoder,
         generation: 0,
         requested_generation: 0,
         reload_at: None,
@@ -115,7 +130,6 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
         stretched: Vec::new(),
         stretch_grids: std::collections::HashMap::new(),
         next_id: ImageId::first(),
-        payload: payload_for(&picker),
         outgoing: String::new(),
     };
     let result = app.event_loop(&mut terminal, &inbox);
@@ -261,6 +275,7 @@ struct App {
     gestures: Gestures,
     pinch: PinchGate,
     renderer: Renderer,
+    encoder: Encoder,
     generation: Generation,
     requested_generation: Generation,
     reload_at: Option<Instant>,
@@ -273,7 +288,6 @@ struct App {
     stretched: Vec<(ImageId, Stretched)>,
     stretch_grids: std::collections::HashMap<ImageId, StretchedGrid>,
     next_id: ImageId,
-    payload: Payload,
     outgoing: String,
 }
 
@@ -344,6 +358,7 @@ impl App {
                 self.reload_at = Some(Instant::now() + RELOAD_SETTLE);
             }
             Event::Renderer(response) => self.receive(response),
+            Event::Encoded(encoded) => self.receive_encoded(encoded),
         }
         Flow::Continue
     }
@@ -455,29 +470,28 @@ impl App {
                     self.reload_at = Some(Instant::now() + RELOAD_RETRY);
                 }
             }
-            Response::Rendered { key, image } => {
-                self.in_flight.retain(|pending| *pending != key);
-                if key.generation == self.generation {
-                    self.store(key, image);
-                }
-            }
             Response::Loaded { .. } | Response::Unreadable { .. } | Response::Unchanged { .. } => {}
         }
     }
 
-    fn store(&mut self, key: RenderKey, image: RgbImage) {
-        let cell = self.viewer.view().layout.cell();
-        let padded = pad_to_cells(image, cell);
-        let grid = grid_of(&padded, cell);
+    fn receive_encoded(&mut self, encoded: Encoded) {
+        match encoded {
+            Encoded::Tile { key, image, bytes } => {
+                self.encoder.claimed();
+                self.in_flight.retain(|pending| *pending != key);
+                if key.generation == self.generation {
+                    self.store(key, &image, bytes);
+                }
+            }
+            Encoded::Dropped { key } => self.in_flight.retain(|pending| *pending != key),
+        }
+    }
+
+    fn store(&mut self, key: RenderKey, image: &EncodedImage, bytes: usize) {
         let id = self.next_id;
         self.next_id = id.next();
-        self.outgoing
-            .push_str(&kitty::transmit(id, &padded, grid, self.payload));
-        self.tiles.push(CachedTile {
-            key,
-            id,
-            bytes: padded.as_raw().len(),
-        });
+        kitty::transmit(id, image, &mut self.outgoing);
+        self.tiles.push(CachedTile { key, id, bytes });
         self.evict();
     }
 
@@ -545,11 +559,15 @@ impl App {
         if self.zooming(now) && stretching {
             return;
         }
-        if self.may_transmit(now) {
-            self.prefetch_around(&view);
-        }
+        let prefetch = if self.may_transmit(now) {
+            self.neighbour_keys(&view)
+        } else {
+            Vec::new()
+        };
         let wanted = tile_keys(self.generation, &view);
-        for key in &wanted {
+        self.encoder
+            .want(prefetch.iter().chain(&wanted).copied().collect());
+        for key in prefetch.iter().chain(&wanted) {
             self.request(*key);
         }
         if self.only_scrolled_from_shown(&view) {
@@ -567,7 +585,8 @@ impl App {
         self.forget_tiles(|key| key.scale != scale || key.generation != generation);
     }
 
-    fn prefetch_around(&mut self, view: &View) {
+    fn neighbour_keys(&self, view: &View) -> Vec<RenderKey> {
+        let mut keys = Vec::new();
         for neighbour in [
             View {
                 top: view.top.saturating_add(view.pane.rows),
@@ -579,10 +598,9 @@ impl App {
                 ..view.clone()
             },
         ] {
-            for key in tile_keys(self.generation, &neighbour) {
-                self.request(key);
-            }
+            keys.extend(tile_keys(self.generation, &neighbour));
         }
+        keys
     }
 
     fn only_scrolled_from_shown(&self, view: &View) -> bool {
@@ -691,26 +709,6 @@ fn tile_key(generation: Generation, view: &View, tile: crate::layout::Tile) -> R
     }
 }
 
-fn pad_to_cells(image: RgbImage, cell: CellSize) -> RgbaImage {
-    let width = image.width().div_ceil(cell.width) * cell.width;
-    let height = image.height().div_ceil(cell.height) * cell.height;
-    let mut padded = RgbaImage::new(width, height);
-    for (padded_row, row) in padded.rows_mut().zip(image.rows()) {
-        for (padded_pixel, pixel) in padded_row.zip(row) {
-            let [red, green, blue] = pixel.0;
-            *padded_pixel = Rgba([red, green, blue, u8::MAX]);
-        }
-    }
-    padded
-}
-
-fn grid_of(image: &RgbaImage, cell: CellSize) -> CellGrid {
-    CellGrid {
-        columns: u16::try_from(image.width() / cell.width).unwrap_or(u16::MAX),
-        rows: u16::try_from(image.height() / cell.height).unwrap_or(u16::MAX),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -723,8 +721,21 @@ mod tests {
     fn headless_app(pane: Pane) -> (App, Receiver<Event>) {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/three-pages.pdf");
         let (events, inbox) = mpsc::channel();
-        let renderer = Renderer::spawn(path, move |response| {
-            let _ = events.send(Event::Renderer(response));
+        let (jobs, queued) = encoder::queue();
+        let renderer = {
+            let events = events.clone();
+            Renderer::spawn(
+                path,
+                move |response| {
+                    let _ = events.send(Event::Renderer(response));
+                },
+                move |key, image| {
+                    let _ = jobs.send(Job { key, image });
+                },
+            )
+        };
+        let encoder = Encoder::spawn(queued, CELL, Payload::Raw, move |encoded| {
+            let _ = events.send(Event::Encoded(encoded));
         });
         renderer.load(0);
         let Ok(Event::Renderer(Response::Loaded { pages, .. })) = inbox.recv() else {
@@ -737,6 +748,7 @@ mod tests {
             gestures: Gestures::default(),
             pinch: PinchGate::default(),
             renderer,
+            encoder,
             generation: 0,
             requested_generation: 0,
             reload_at: None,
@@ -749,7 +761,6 @@ mod tests {
             stretched: Vec::new(),
             stretch_grids: std::collections::HashMap::new(),
             next_id: ImageId::first(),
-            payload: Payload::Raw,
             outgoing: String::new(),
         };
         (app, inbox)
@@ -764,8 +775,9 @@ mod tests {
             }
             let wait = deadline.saturating_duration_since(Instant::now());
             match inbox.recv_timeout(wait) {
-                Ok(Event::Renderer(response)) => app.receive(response),
-                Ok(_) => {}
+                Ok(event) => {
+                    app.handle(event);
+                }
                 Err(_) => panic!(
                     "the shown view never caught up; in flight: {:?}",
                     app.in_flight
@@ -881,10 +893,10 @@ mod tests {
         assert!(!app.may_transmit(resized_at + RESIZE_SETTLE / 2));
         assert!(app.may_transmit(resized_at + RESIZE_SETTLE));
         app.request_tiles_at(resized_at);
-        let Ok(Event::Renderer(response)) = inbox.recv_timeout(Duration::from_secs(10)) else {
+        let Ok(event) = inbox.recv_timeout(Duration::from_secs(10)) else {
             panic!("no render arrived");
         };
-        app.receive(response);
+        app.handle(event);
         app.request_tiles_at(resized_at);
         assert!(app.shown.is_none());
     }
@@ -907,8 +919,8 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(20);
         while app.shown.is_none() && Instant::now() < deadline {
             app.request_tiles_at(later);
-            if let Ok(Event::Renderer(response)) = inbox.recv_timeout(Duration::from_millis(200)) {
-                app.receive(response);
+            if let Ok(event) = inbox.recv_timeout(Duration::from_millis(200)) {
+                app.handle(event);
             }
         }
         assert!(app.shown.is_some());
@@ -957,8 +969,8 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(20);
         while !app.stretched.is_empty() && Instant::now() < deadline {
             app.prepare_frame(later);
-            if let Ok(Event::Renderer(response)) = inbox.recv_timeout(Duration::from_millis(200)) {
-                app.receive(response);
+            if let Ok(event) = inbox.recv_timeout(Duration::from_millis(200)) {
+                app.handle(event);
             }
         }
         assert!(app.stretched.is_empty());
@@ -1069,42 +1081,60 @@ mod tests {
         settle(&mut app, &inbox);
     }
 
-    #[test]
-    fn pads_a_render_up_to_whole_cells() {
-        let padded = pad_to_cells(RgbImage::new(95, 41), CELL);
-        assert_eq!(padded.dimensions(), (100, 60));
+    fn encoded_tile(app: &App, key: RenderKey) -> Encoded {
+        let cell = app.viewer.view().layout.cell();
+        let image = image::RgbImage::new(key.region.width, key.region.height);
+        encoder::encode(Job { key, image }, cell, Payload::Raw)
     }
 
     #[test]
-    fn padding_keeps_the_rendered_pixels_opaque() {
-        let render = RgbImage::from_pixel(95, 41, image::Rgb([200, 100, 50]));
-        let padded = pad_to_cells(render, CELL);
-        assert_eq!(padded.get_pixel(94, 40).0, [200, 100, 50, 255]);
+    fn an_encoded_tile_is_queued_for_the_terminal_before_it_can_be_placed() {
+        let (mut app, _inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        let key = tile_keys(app.generation, app.viewer.view())[0];
+        assert_eq!(app.cached(key), None);
+        let encoded = encoded_tile(&app, key);
+        app.handle(Event::Encoded(encoded));
+        let id = app.cached(key).expect("the tile is cached");
+        let Encoded::Tile { image, .. } = encoded_tile(&app, key) else {
+            panic!("a tile encodes to a transmission");
+        };
+        let mut expected = String::new();
+        kitty::transmit(id, &image, &mut expected);
+        assert_eq!(app.outgoing, expected);
     }
 
     #[test]
-    fn padding_is_transparent() {
-        let padded = pad_to_cells(RgbImage::new(95, 41), CELL);
-        assert_eq!(padded.get_pixel(99, 59).0[3], 0);
-        assert_eq!(padded.get_pixel(95, 0).0[3], 0);
+    fn a_dropped_tile_is_requested_again_when_it_is_wanted() {
+        let (mut app, _inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        app.request_tiles_at(Instant::now());
+        let key = tile_keys(app.generation, app.viewer.view())[0];
+        assert!(app.in_flight.contains(&key));
+        app.handle(Event::Encoded(Encoded::Dropped { key }));
+        assert!(!app.in_flight.contains(&key));
+        app.request_tiles_at(Instant::now());
+        assert!(app.in_flight.contains(&key));
     }
 
     #[test]
-    fn a_render_aligned_to_cells_keeps_its_size() {
-        let padded = pad_to_cells(RgbImage::new(100, 60), CELL);
-        assert_eq!(padded.dimensions(), (100, 60));
-    }
-
-    #[test]
-    fn a_padded_tile_covers_whole_cells() {
-        let padded = pad_to_cells(RgbImage::new(795, 470), CELL);
-        assert_eq!(
-            grid_of(&padded, CELL),
-            CellGrid {
-                columns: 80,
-                rows: 24
-            }
-        );
+    fn tiles_for_a_stale_file_are_encoded_but_not_kept() {
+        let (mut app, _inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        let key = RenderKey {
+            generation: app.generation + 1,
+            ..tile_keys(app.generation, app.viewer.view())[0]
+        };
+        let encoded = encoded_tile(&app, key);
+        app.handle(Event::Encoded(encoded));
+        assert_eq!(app.cached(key), None);
+        assert!(app.outgoing.is_empty());
     }
 
     #[test]
