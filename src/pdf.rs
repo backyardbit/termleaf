@@ -205,12 +205,11 @@ fn rgb_image(pixmap: &Pixmap) -> Result<RgbImage> {
     if pixmap.n() != 3 {
         bail!("unexpected pixmap with {} components", pixmap.n());
     }
-    let pixels = pixmap
-        .samples()
-        .chunks(stride)
-        .flat_map(|row| row.get(..row_bytes).unwrap_or(row))
-        .copied()
-        .collect();
+    let samples = pixmap.samples();
+    let mut pixels = Vec::with_capacity(row_bytes * usize::try_from(height)?);
+    for row in samples.chunks(stride) {
+        pixels.extend_from_slice(row.get(..row_bytes).unwrap_or(row));
+    }
     RgbImage::from_raw(width, height, pixels).context("pixmap size mismatch")
 }
 
