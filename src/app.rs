@@ -11,7 +11,6 @@ use crossterm::event::{
     MouseEventKind,
 };
 use crossterm::execute;
-use image::{RgbImage, Rgba, RgbaImage};
 use ratatui::DefaultTerminal;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -21,12 +20,14 @@ use ratatui_image::FontSize;
 use ratatui_image::picker::cap_parser::QueryStdioOptions;
 use ratatui_image::picker::{Capability, Picker, ProtocolType};
 
+use crate::encoder::{self, Encoded, Encoder, Job, Wanted};
 use crate::keys::{Command, Key, KeyParser, ScreenCell};
 use crate::kitty::{self, CellGrid, ImageId, Payload, Placeholders, Placement};
 use crate::layout::{CellSize, Pane, RenderedTile, Stretched, StretchedGrid, View};
 use crate::mouse::{Gestures, MouseInput, Wheel};
 use crate::pinch::{self, PinchGate, PinchInput};
 use crate::renderer::{Generation, RenderKey, Renderer, Response};
+use crate::shelf::Shelf;
 use crate::viewer::Viewer;
 use crate::watch::watch;
 
@@ -34,6 +35,7 @@ const RELOAD_SETTLE: Duration = Duration::from_millis(100);
 const RELOAD_RETRY: Duration = Duration::from_millis(250);
 const MAX_RELOAD_RETRIES: u32 = 3;
 const TILE_BYTE_BUDGET: usize = 192 * 1024 * 1024;
+const SHELF_BYTES: usize = 48 * 1024 * 1024;
 const IDLE_WAIT: Duration = Duration::from_secs(3600);
 const RESIZE_SETTLE: Duration = Duration::from_millis(300);
 const ZOOM_SETTLE: Duration = Duration::from_millis(150);
@@ -50,6 +52,7 @@ enum Event {
     Resized,
     FileChanged,
     Renderer(Response),
+    Encoded(Encoded),
 }
 
 pub fn run(path: PathBuf, options: Options) -> Result<()> {
@@ -57,11 +60,19 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
         bail!("no such file: {}", path.display());
     }
     let (events, inbox) = mpsc::channel();
+    let (jobs, queued) = encoder::queue();
+    let wanted = Wanted::default();
     let renderer = {
         let events = events.clone();
-        Renderer::spawn(path.clone(), move |response| {
-            let _ = events.send(Event::Renderer(response));
-        })
+        Renderer::spawn(
+            path.clone(),
+            move |response| {
+                let _ = events.send(Event::Renderer(response));
+            },
+            move |key, image| {
+                let _ = jobs.send(Job { key, image });
+            },
+        )
     };
     renderer.load(0);
     let pages = match inbox.recv().context("the render thread stopped")? {
@@ -92,9 +103,21 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
             let _ = pinches.send(Event::Pinch(input));
         });
     }
+    let cell = cell_size(picker.font_size());
+    let encoder = {
+        let events = events.clone();
+        Encoder::spawn(
+            queued,
+            wanted.clone(),
+            cell,
+            payload_for(&picker),
+            move |encoded| {
+                let _ = events.send(Event::Encoded(encoded));
+            },
+        )
+    };
     spawn_input(events);
 
-    let cell = cell_size(picker.font_size());
     let pane = pane_of(page_area(terminal.get_frame().area()));
     let mut app = App {
         file_name: display_name(&path),
@@ -103,6 +126,11 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
         gestures: Gestures::default(),
         pinch: PinchGate::default(),
         renderer,
+        encoder,
+        wanted,
+        shelf: Shelf::new(SHELF_BYTES),
+        shelf_waits: false,
+        requested_view: None,
         generation: 0,
         requested_generation: 0,
         reload_at: None,
@@ -115,7 +143,6 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
         stretched: Vec::new(),
         stretch_grids: std::collections::HashMap::new(),
         next_id: ImageId::first(),
-        payload: payload_for(&picker),
         outgoing: String::new(),
     };
     let result = app.event_loop(&mut terminal, &inbox);
@@ -261,6 +288,11 @@ struct App {
     gestures: Gestures,
     pinch: PinchGate,
     renderer: Renderer,
+    encoder: Encoder,
+    wanted: Wanted,
+    shelf: Shelf,
+    shelf_waits: bool,
+    requested_view: Option<View>,
     generation: Generation,
     requested_generation: Generation,
     reload_at: Option<Instant>,
@@ -273,7 +305,6 @@ struct App {
     stretched: Vec<(ImageId, Stretched)>,
     stretch_grids: std::collections::HashMap<ImageId, StretchedGrid>,
     next_id: ImageId,
-    payload: Payload,
     outgoing: String,
 }
 
@@ -296,12 +327,7 @@ impl App {
                 self.flush(terminal)?;
             }
             terminal.draw(|frame| self.draw(frame))?;
-            let wait = [self.reload_at, self.resize_settles_at, self.zooming_until]
-                .into_iter()
-                .flatten()
-                .min()
-                .map_or(IDLE_WAIT, |at| at.saturating_duration_since(Instant::now()));
-            let first = match inbox.recv_timeout(wait) {
+            let first = match inbox.recv_timeout(self.idle_wait(Instant::now())) {
                 Ok(event) => event,
                 Err(RecvTimeoutError::Timeout) => {
                     if self.reload_at.is_some_and(|at| at <= Instant::now()) {
@@ -317,6 +343,17 @@ impl App {
                 }
             }
         }
+    }
+
+    fn idle_wait(&self, now: Instant) -> Duration {
+        if self.shelf_waits {
+            return Duration::ZERO;
+        }
+        [self.reload_at, self.resize_settles_at, self.zooming_until]
+            .into_iter()
+            .flatten()
+            .min()
+            .map_or(IDLE_WAIT, |at| at.saturating_duration_since(now))
     }
 
     fn handle(&mut self, event: Event) -> Flow {
@@ -344,6 +381,7 @@ impl App {
                 self.reload_at = Some(Instant::now() + RELOAD_SETTLE);
             }
             Event::Renderer(response) => self.receive(response),
+            Event::Encoded(encoded) => self.receive_encoded(encoded),
         }
         Flow::Continue
     }
@@ -442,6 +480,7 @@ impl App {
                 self.forget_tiles(|key| {
                     key.generation != generation && Some(key.generation) != shown
                 });
+                self.shelf.forget(|key| key.generation != generation);
                 self.in_flight.clear();
             }
             Response::Unchanged { generation } if generation == self.requested_generation => {
@@ -455,28 +494,31 @@ impl App {
                     self.reload_at = Some(Instant::now() + RELOAD_RETRY);
                 }
             }
-            Response::Rendered { key, image } => {
-                self.in_flight.retain(|pending| *pending != key);
-                if key.generation == self.generation {
-                    self.store(key, image);
-                }
-            }
             Response::Loaded { .. } | Response::Unreadable { .. } | Response::Unchanged { .. } => {}
         }
     }
 
-    fn store(&mut self, key: RenderKey, image: RgbImage) {
-        let cell = self.viewer.view().layout.cell();
-        let padded = pad_to_cells(image, cell);
-        let grid = grid_of(&padded, cell);
+    fn receive_encoded(&mut self, tile: Encoded) {
+        self.encoder.claimed();
+        self.in_flight.retain(|pending| *pending != tile.key);
+        if tile.key.generation != self.generation || self.cached(tile.key).is_some() {
+            return;
+        }
+        if self.wanted.contains(&tile.key) {
+            self.store(&tile);
+        } else {
+            self.shelf.park(tile);
+        }
+    }
+
+    fn store(&mut self, tile: &Encoded) {
         let id = self.next_id;
         self.next_id = id.next();
-        self.outgoing
-            .push_str(&kitty::transmit(id, &padded, grid, self.payload));
+        kitty::transmit(id, &tile.image, &mut self.outgoing);
         self.tiles.push(CachedTile {
-            key,
+            key: tile.key,
             id,
-            bytes: padded.as_raw().len(),
+            bytes: tile.bytes,
         });
         self.evict();
     }
@@ -534,6 +576,7 @@ impl App {
     }
 
     fn request_tiles_at(&mut self, now: Instant) {
+        self.shelf_waits = false;
         let view = self.viewer.view().clone();
         if view.pane.columns == 0 || view.pane.rows == 0 {
             return;
@@ -545,13 +588,32 @@ impl App {
         if self.zooming(now) && stretching {
             return;
         }
-        if self.may_transmit(now) {
-            self.prefetch_around(&view);
-        }
+        let prefetch = if self.may_transmit(now) {
+            self.neighbour_keys(&view)
+        } else {
+            Vec::new()
+        };
         let wanted = tile_keys(self.generation, &view);
-        for key in &wanted {
-            self.request(*key);
+        self.wanted
+            .set(prefetch.iter().chain(&wanted).copied().collect());
+        let drawn = self.requested_view.as_ref() == Some(&view);
+        self.requested_view = Some(view.clone());
+        let view_ready = drawn && wanted.iter().all(|key| self.cached(*key).is_some());
+        let mut deferred = false;
+        for key in prefetch.iter().chain(&wanted) {
+            let ready = if wanted.contains(key) {
+                drawn
+            } else {
+                view_ready
+            };
+            if !ready && self.shelf.holds(*key) {
+                deferred = true;
+            } else {
+                self.request(*key);
+            }
         }
+        self.shelf_waits =
+            deferred && (!drawn || wanted.iter().all(|key| self.cached(*key).is_some()));
         if self.only_scrolled_from_shown(&view) {
             self.shown = Some(Shown {
                 generation: self.generation,
@@ -567,7 +629,8 @@ impl App {
         self.forget_tiles(|key| key.scale != scale || key.generation != generation);
     }
 
-    fn prefetch_around(&mut self, view: &View) {
+    fn neighbour_keys(&self, view: &View) -> Vec<RenderKey> {
+        let mut keys = Vec::new();
         for neighbour in [
             View {
                 top: view.top.saturating_add(view.pane.rows),
@@ -579,10 +642,9 @@ impl App {
                 ..view.clone()
             },
         ] {
-            for key in tile_keys(self.generation, &neighbour) {
-                self.request(key);
-            }
+            keys.extend(tile_keys(self.generation, &neighbour));
         }
+        keys
     }
 
     fn only_scrolled_from_shown(&self, view: &View) -> bool {
@@ -595,6 +657,10 @@ impl App {
 
     fn request(&mut self, key: RenderKey) {
         if self.cached(key).is_some() || self.in_flight.contains(&key) {
+            return;
+        }
+        if let Some(tile) = self.shelf.take(key) {
+            self.store(&tile);
             return;
         }
         self.in_flight.retain(|pending| pending.scale == key.scale);
@@ -691,26 +757,6 @@ fn tile_key(generation: Generation, view: &View, tile: crate::layout::Tile) -> R
     }
 }
 
-fn pad_to_cells(image: RgbImage, cell: CellSize) -> RgbaImage {
-    let width = image.width().div_ceil(cell.width) * cell.width;
-    let height = image.height().div_ceil(cell.height) * cell.height;
-    let mut padded = RgbaImage::new(width, height);
-    for (padded_row, row) in padded.rows_mut().zip(image.rows()) {
-        for (padded_pixel, pixel) in padded_row.zip(row) {
-            let [red, green, blue] = pixel.0;
-            *padded_pixel = Rgba([red, green, blue, u8::MAX]);
-        }
-    }
-    padded
-}
-
-fn grid_of(image: &RgbaImage, cell: CellSize) -> CellGrid {
-    CellGrid {
-        columns: u16::try_from(image.width() / cell.width).unwrap_or(u16::MAX),
-        rows: u16::try_from(image.height() / cell.height).unwrap_or(u16::MAX),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -723,8 +769,22 @@ mod tests {
     fn headless_app(pane: Pane) -> (App, Receiver<Event>) {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/three-pages.pdf");
         let (events, inbox) = mpsc::channel();
-        let renderer = Renderer::spawn(path, move |response| {
-            let _ = events.send(Event::Renderer(response));
+        let (jobs, queued) = encoder::queue();
+        let wanted = Wanted::default();
+        let renderer = {
+            let events = events.clone();
+            Renderer::spawn(
+                path,
+                move |response| {
+                    let _ = events.send(Event::Renderer(response));
+                },
+                move |key, image| {
+                    let _ = jobs.send(Job { key, image });
+                },
+            )
+        };
+        let encoder = Encoder::spawn(queued, wanted.clone(), CELL, Payload::Raw, move |encoded| {
+            let _ = events.send(Event::Encoded(encoded));
         });
         renderer.load(0);
         let Ok(Event::Renderer(Response::Loaded { pages, .. })) = inbox.recv() else {
@@ -737,6 +797,11 @@ mod tests {
             gestures: Gestures::default(),
             pinch: PinchGate::default(),
             renderer,
+            encoder,
+            wanted,
+            shelf: Shelf::new(SHELF_BYTES),
+            shelf_waits: false,
+            requested_view: None,
             generation: 0,
             requested_generation: 0,
             reload_at: None,
@@ -749,7 +814,6 @@ mod tests {
             stretched: Vec::new(),
             stretch_grids: std::collections::HashMap::new(),
             next_id: ImageId::first(),
-            payload: Payload::Raw,
             outgoing: String::new(),
         };
         (app, inbox)
@@ -764,8 +828,9 @@ mod tests {
             }
             let wait = deadline.saturating_duration_since(Instant::now());
             match inbox.recv_timeout(wait) {
-                Ok(Event::Renderer(response)) => app.receive(response),
-                Ok(_) => {}
+                Ok(event) => {
+                    app.handle(event);
+                }
                 Err(_) => panic!(
                     "the shown view never caught up; in flight: {:?}",
                     app.in_flight
@@ -881,10 +946,10 @@ mod tests {
         assert!(!app.may_transmit(resized_at + RESIZE_SETTLE / 2));
         assert!(app.may_transmit(resized_at + RESIZE_SETTLE));
         app.request_tiles_at(resized_at);
-        let Ok(Event::Renderer(response)) = inbox.recv_timeout(Duration::from_secs(10)) else {
+        let Ok(event) = inbox.recv_timeout(Duration::from_secs(10)) else {
             panic!("no render arrived");
         };
-        app.receive(response);
+        app.handle(event);
         app.request_tiles_at(resized_at);
         assert!(app.shown.is_none());
     }
@@ -907,8 +972,8 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(20);
         while app.shown.is_none() && Instant::now() < deadline {
             app.request_tiles_at(later);
-            if let Ok(Event::Renderer(response)) = inbox.recv_timeout(Duration::from_millis(200)) {
-                app.receive(response);
+            if let Ok(event) = inbox.recv_timeout(Duration::from_millis(200)) {
+                app.handle(event);
             }
         }
         assert!(app.shown.is_some());
@@ -957,8 +1022,8 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(20);
         while !app.stretched.is_empty() && Instant::now() < deadline {
             app.prepare_frame(later);
-            if let Ok(Event::Renderer(response)) = inbox.recv_timeout(Duration::from_millis(200)) {
-                app.receive(response);
+            if let Ok(event) = inbox.recv_timeout(Duration::from_millis(200)) {
+                app.handle(event);
             }
         }
         assert!(app.stretched.is_empty());
@@ -1069,42 +1134,125 @@ mod tests {
         settle(&mut app, &inbox);
     }
 
-    #[test]
-    fn pads_a_render_up_to_whole_cells() {
-        let padded = pad_to_cells(RgbImage::new(95, 41), CELL);
-        assert_eq!(padded.dimensions(), (100, 60));
+    fn encoded_tile(app: &App, key: RenderKey) -> Encoded {
+        let cell = app.viewer.view().layout.cell();
+        let image = image::RgbImage::new(key.region.width, key.region.height);
+        encoder::encode(Job { key, image }, cell, Payload::Raw)
+    }
+
+    fn transmission(id: ImageId, tile: &Encoded) -> String {
+        let mut expected = String::new();
+        kitty::transmit(id, &tile.image, &mut expected);
+        expected
     }
 
     #[test]
-    fn padding_keeps_the_rendered_pixels_opaque() {
-        let render = RgbImage::from_pixel(95, 41, image::Rgb([200, 100, 50]));
-        let padded = pad_to_cells(render, CELL);
-        assert_eq!(padded.get_pixel(94, 40).0, [200, 100, 50, 255]);
+    fn an_encoded_tile_is_queued_for_the_terminal_before_it_can_be_placed() {
+        let (mut app, _inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        let key = tile_keys(app.generation, app.viewer.view())[0];
+        app.wanted.set(vec![key]);
+        assert_eq!(app.cached(key), None);
+        app.handle(Event::Encoded(encoded_tile(&app, key)));
+        let id = app.cached(key).expect("the tile is cached");
+        assert_eq!(app.outgoing, transmission(id, &encoded_tile(&app, key)));
     }
 
     #[test]
-    fn padding_is_transparent() {
-        let padded = pad_to_cells(RgbImage::new(95, 41), CELL);
-        assert_eq!(padded.get_pixel(99, 59).0[3], 0);
-        assert_eq!(padded.get_pixel(95, 0).0[3], 0);
-    }
-
-    #[test]
-    fn a_render_aligned_to_cells_keeps_its_size() {
-        let padded = pad_to_cells(RgbImage::new(100, 60), CELL);
-        assert_eq!(padded.dimensions(), (100, 60));
-    }
-
-    #[test]
-    fn a_padded_tile_covers_whole_cells() {
-        let padded = pad_to_cells(RgbImage::new(795, 470), CELL);
-        assert_eq!(
-            grid_of(&padded, CELL),
-            CellGrid {
-                columns: 80,
-                rows: 24
-            }
+    fn a_tile_that_arrives_after_scrolling_away_is_sent_on_return_without_rendering_again() {
+        let (mut app, _inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        let key = tile_keys(app.generation, app.viewer.view())[0];
+        app.handle(Event::Encoded(encoded_tile(&app, key)));
+        assert_eq!(app.cached(key), None);
+        assert!(app.outgoing.is_empty());
+        app.request_tiles_at(Instant::now());
+        app.request_tiles_at(Instant::now());
+        assert!(!app.in_flight.contains(&key));
+        let id = app.cached(key).expect("the waiting tile is cached");
+        assert!(
+            app.outgoing
+                .starts_with(&transmission(id, &encoded_tile(&app, key)))
         );
+    }
+
+    #[test]
+    fn shelved_tiles_wait_for_the_view_to_be_drawn_and_prefetched_ones_for_it_to_complete() {
+        let (mut app, _inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        let view = app.viewer.view().clone();
+        let shown = tile_keys(app.generation, &view);
+        let prefetched = app
+            .neighbour_keys(&view)
+            .into_iter()
+            .find(|key| !shown.contains(key))
+            .expect("a tile below the view");
+        app.handle(Event::Encoded(encoded_tile(&app, shown[0])));
+        app.handle(Event::Encoded(encoded_tile(&app, prefetched)));
+        let now = Instant::now() + RESIZE_SETTLE;
+        app.request_tiles_at(now);
+        assert!(app.outgoing.is_empty());
+        assert_eq!(app.idle_wait(now), Duration::ZERO);
+        app.request_tiles_at(now);
+        assert!(app.cached(shown[0]).is_some());
+        assert_eq!(app.cached(prefetched), None);
+        assert_ne!(app.idle_wait(now), Duration::ZERO);
+        for key in &shown[1..] {
+            app.handle(Event::Encoded(encoded_tile(&app, *key)));
+        }
+        app.request_tiles_at(now);
+        assert!(app.cached(prefetched).is_some());
+        assert!(!app.in_flight.contains(&prefetched));
+    }
+
+    #[test]
+    fn a_tile_the_terminal_already_holds_is_not_transmitted_twice() {
+        let (mut app, _inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        let key = tile_keys(app.generation, app.viewer.view())[0];
+        app.wanted.set(vec![key]);
+        app.handle(Event::Encoded(encoded_tile(&app, key)));
+        app.outgoing.clear();
+        app.handle(Event::Encoded(encoded_tile(&app, key)));
+        app.wanted.set(Vec::new());
+        app.handle(Event::Encoded(encoded_tile(&app, key)));
+        assert!(app.outgoing.is_empty());
+        assert!(!app.shelf.holds(key));
+        assert_eq!(app.tiles.iter().filter(|tile| tile.key == key).count(), 1);
+    }
+
+    #[test]
+    fn a_reload_clears_shelved_tiles_of_the_old_file_and_drops_its_late_ones() {
+        let (mut app, _inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        let old = tile_keys(app.generation, app.viewer.view());
+        app.handle(Event::Encoded(encoded_tile(&app, old[0])));
+        let bytes = std::fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/three-pages.pdf"),
+        )
+        .unwrap();
+        let pages = crate::pdf::Pdf::from_bytes(&bytes).unwrap().pages();
+        app.requested_generation = 1;
+        app.handle(Event::Renderer(Response::Loaded {
+            generation: 1,
+            pages,
+        }));
+        assert!(!app.shelf.holds(old[0]));
+        app.wanted.set(old.clone());
+        app.handle(Event::Encoded(encoded_tile(&app, old[1])));
+        assert_eq!(app.cached(old[1]), None);
+        assert!(!app.shelf.holds(old[1]));
+        assert!(!app.outgoing.contains("a=T"));
     }
 
     #[test]
