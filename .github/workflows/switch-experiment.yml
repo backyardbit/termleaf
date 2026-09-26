@@ -9,7 +9,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        herdr: [v0.9.0, v0.9.1]
+        herdr: [v0.9.1]
     runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}

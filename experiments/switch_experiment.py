@@ -193,6 +193,9 @@ def main():
         print("ack", json.dumps(readline(stream)), f"after {time.monotonic()-started:.3f}s", flush=True)
         time.sleep(2)
         measure(label, home, away)
+        if label == "direct-file-frame":
+            throughput(stream, header, pixels, directory, width)
+
     finally:
         herdr("server", "stop")
         ghostty.kill()
@@ -222,6 +225,36 @@ def summarise():
 
 
 MARKS = []
+
+
+def throughput(stream, header, pixels, directory, width, frames=60):
+    previous = []
+    timings = []
+    started = time.monotonic()
+    for sequence in range(2, 2 + frames):
+        shift = (sequence * 4 * width * 3) % len(pixels)
+        frame = pixels[shift:] + pixels[:shift]
+        path = os.path.join(directory, f"frame-{sequence}.rgba")
+        t0 = time.monotonic()
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.write(fd, frame)
+        os.close(fd)
+        written = time.monotonic()
+        stream.sendall((json.dumps(dict(header, sequence=sequence, revision=sequence, file={"path": path})) + "\n").encode())
+        reply = readline(stream)
+        acked = time.monotonic()
+        if not reply or "result" not in reply:
+            print("throughput frame failed", reply, flush=True)
+            break
+        timings.append((written - t0, acked - written))
+        previous.append(path)
+        while len(previous) > 3:
+            os.unlink(previous.pop(0))
+    total = time.monotonic() - started
+    writes = sorted(t[0] for t in timings)
+    acks = sorted(t[1] for t in timings)
+    print(f"THROUGHPUT {len(timings)} frames in {total:.2f}s = {len(timings)/total:.1f} fps; "
+          f"write median {writes[len(writes)//2]*1000:.1f}ms; ack median {acks[len(acks)//2]*1000:.1f}ms p90 {acks[int(len(acks)*0.9)]*1000:.1f}ms", flush=True)
 
 
 main()
