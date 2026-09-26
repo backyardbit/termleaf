@@ -1,0 +1,42 @@
+name: switch-experiment
+
+on:
+  push:
+    branches: [perf/switch-experiment]
+
+jobs:
+  measure:
+    strategy:
+      fail-fast: false
+      matrix:
+        herdr: [v0.9.0, v0.9.1]
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y pkg-config libfontconfig-dev xvfb imagemagick libgl1-mesa-dri
+      - run: |
+          gh release download 1.3.1-0-ppa2 --repo mkasberg/ghostty-ubuntu --pattern 'ghostty_*_amd64_24.04.deb' --dir "$RUNNER_TEMP/ghostty"
+          sudo apt-get install -y "$RUNNER_TEMP"/ghostty/*.deb
+      - run: |
+          gh release download ${{ matrix.herdr }} --repo herdrdev/herdr --pattern herdr-linux-x86_64 --output "$RUNNER_TEMP/herdr"
+          sudo install -m 755 "$RUNNER_TEMP/herdr" /usr/local/bin/herdr
+          mkdir -p ~/.config/herdr
+          printf 'onboarding = false\n' > ~/.config/herdr/config.toml
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - run: xvfb-run --auto-servernum --server-args="-screen 0 2400x1500x24" python3 experiments/switch_experiment.py target/exp target/release/termleaf tests/fixtures/five-pages.pdf
+        env:
+          HERDR_LOG: herdr=debug
+      - if: always()
+        run: |
+          mkdir -p target/exp
+          cp -r ~/.config/herdr/sessions target/exp/herdr-sessions 2>/dev/null || true
+          grep -rhiE "direct|GraphicsFile|fallback" target/exp/herdr-sessions 2>/dev/null | cut -c1-250 | head -40 || true
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: switch-experiment-${{ matrix.herdr }}
+          path: target/exp
