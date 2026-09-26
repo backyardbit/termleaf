@@ -77,6 +77,7 @@ def measure(label, home_tab, away_tab, rounds=5):
         if difference(reference, away) < 0.01:
             print(f"{label}: switching away did not change the screen", flush=True)
         start = time.monotonic()
+        MARKS.append((label, round, start))
         herdr("tab", "focus", home_tab)
         while True:
             shot = screenshot()
@@ -129,12 +130,12 @@ def page_pixels(width, height):
 
 
 def main():
-    env = dict(os.environ, GDK_BACKEND="x11", LIBGL_ALWAYS_SOFTWARE="1")
+    env = dict(os.environ, GDK_BACKEND="x11", LIBGL_ALWAYS_SOFTWARE="1", WIRE_LOG=os.path.join(WORK, "wire.log"))
     env.pop("DBUS_SESSION_BUS_ADDRESS", None)
     ghostty = subprocess.Popen(
         ["ghostty", "--gtk-single-instance=false", "--config-default-files=false",
          "--window-decoration=false", "--font-size=18", "--window-width=150", "--window-height=46",
-         "-e", "herdr", "--session", SESSION],
+         "-e", "python3", os.path.join(os.path.dirname(os.path.abspath(__file__)), "wire_proxy.py"), "herdr", "--session", SESSION],
         env=env, stdout=subprocess.DEVNULL, stderr=open(os.path.join(WORK, "ghostty.log"), "w"))
     try:
         pane = wait_until(lambda: (jherdr("pane", "list") or {}).get("panes", [{}])[0].get("pane_id"), 60)
@@ -144,7 +145,14 @@ def main():
         settled()
         herdr("tab", "create")
         time.sleep(1)
-        tabs = tab_ids()
+        tabs = tab_ids()[:2]
+        herdr("tab", "create")
+        time.sleep(1)
+        text_tab = tab_ids()[-1]
+        text_pane = [p["pane_id"] for p in jherdr("pane", "list")["panes"] if p["tab_id"] == text_tab][0]
+        herdr("pane", "run", text_pane, "ls -la /usr/bin | head -60")
+        time.sleep(1)
+        measure("control-text-only", text_tab, tabs[-1])
         print("tabs", tabs, flush=True)
         home, away = tabs[0], tabs[-1]
         measure("termleaf-tiles", home, away)
@@ -188,6 +196,32 @@ def main():
     finally:
         herdr("server", "stop")
         ghostty.kill()
+        summarise()
+
+
+def summarise():
+    marks = []
+    for line in open(os.path.join(WORK, "stdout.log")) if os.path.exists(os.path.join(WORK, "stdout.log")) else []:
+        pass
+    path = os.path.join(WORK, "wire.log")
+    if not os.path.exists(path):
+        print("no wire log"); return
+    lines = [l.split(" ", 4) for l in open(path)]
+    for label, round, start in MARKS:
+        window = [l for l in lines if l[1] == "out" and start <= float(l[0]) <= start + 3]
+        total = sum(int(l[2]) for l in window)
+        heads = [h for l in window for h in (l[4].strip().split(" | ") if len(l) > 4 and l[4].strip() else [])]
+        kinds = {}
+        for h in heads:
+            key = ",".join(p for p in h.split(",") if p.split("=")[0] in ("a", "t", "f", "q"))
+            kinds[key] = kinds.get(key, 0) + 1
+        print(f"WIRE {label} {round}: {total} bytes out in 3s, commands {kinds}", flush=True)
+    for l in lines:
+        if l[1] == "in":
+            print("WIRE reply", " ".join(l)[:200].strip(), flush=True)
+
+
+MARKS = []
 
 
 main()
