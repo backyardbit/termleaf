@@ -11,7 +11,7 @@ use crossterm::event::{
     MouseEventKind,
 };
 use crossterm::execute;
-use image::{DynamicImage, RgbImage, RgbaImage};
+use image::{RgbImage, Rgba, RgbaImage};
 use ratatui::DefaultTerminal;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -695,12 +695,12 @@ fn pad_to_cells(image: RgbImage, cell: CellSize) -> RgbaImage {
     let width = image.width().div_ceil(cell.width) * cell.width;
     let height = image.height().div_ceil(cell.height) * cell.height;
     let mut padded = RgbaImage::new(width, height);
-    image::imageops::overlay(
-        &mut padded,
-        &DynamicImage::ImageRgb8(image).to_rgba8(),
-        0,
-        0,
-    );
+    for (padded_row, row) in padded.rows_mut().zip(image.rows()) {
+        for (padded_pixel, pixel) in padded_row.zip(row) {
+            let [red, green, blue] = pixel.0;
+            *padded_pixel = Rgba([red, green, blue, u8::MAX]);
+        }
+    }
     padded
 }
 
