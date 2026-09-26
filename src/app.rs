@@ -20,13 +20,14 @@ use ratatui_image::FontSize;
 use ratatui_image::picker::cap_parser::QueryStdioOptions;
 use ratatui_image::picker::{Capability, Picker, ProtocolType};
 
-use crate::encoder::{self, Encoded, Encoder, Job};
+use crate::encoder::{self, Encoded, Encoder, Job, Wanted};
 use crate::keys::{Command, Key, KeyParser, ScreenCell};
-use crate::kitty::{self, CellGrid, EncodedImage, ImageId, Payload, Placeholders, Placement};
+use crate::kitty::{self, CellGrid, ImageId, Payload, Placeholders, Placement};
 use crate::layout::{CellSize, Pane, RenderedTile, Stretched, StretchedGrid, View};
 use crate::mouse::{Gestures, MouseInput, Wheel};
 use crate::pinch::{self, PinchGate, PinchInput};
 use crate::renderer::{Generation, RenderKey, Renderer, Response};
+use crate::shelf::Shelf;
 use crate::viewer::Viewer;
 use crate::watch::watch;
 
@@ -34,6 +35,7 @@ const RELOAD_SETTLE: Duration = Duration::from_millis(100);
 const RELOAD_RETRY: Duration = Duration::from_millis(250);
 const MAX_RELOAD_RETRIES: u32 = 3;
 const TILE_BYTE_BUDGET: usize = 192 * 1024 * 1024;
+const SHELF_BYTES: usize = 48 * 1024 * 1024;
 const IDLE_WAIT: Duration = Duration::from_secs(3600);
 const RESIZE_SETTLE: Duration = Duration::from_millis(300);
 const ZOOM_SETTLE: Duration = Duration::from_millis(150);
@@ -59,6 +61,7 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
     }
     let (events, inbox) = mpsc::channel();
     let (jobs, queued) = encoder::queue();
+    let wanted = Wanted::default();
     let renderer = {
         let events = events.clone();
         Renderer::spawn(
@@ -103,9 +106,15 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
     let cell = cell_size(picker.font_size());
     let encoder = {
         let events = events.clone();
-        Encoder::spawn(queued, cell, payload_for(&picker), move |encoded| {
-            let _ = events.send(Event::Encoded(encoded));
-        })
+        Encoder::spawn(
+            queued,
+            wanted.clone(),
+            cell,
+            payload_for(&picker),
+            move |encoded| {
+                let _ = events.send(Event::Encoded(encoded));
+            },
+        )
     };
     spawn_input(events);
 
@@ -118,6 +127,9 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
         pinch: PinchGate::default(),
         renderer,
         encoder,
+        wanted,
+        shelf: Shelf::new(SHELF_BYTES),
+        shelved_prefetch: false,
         generation: 0,
         requested_generation: 0,
         reload_at: None,
@@ -276,6 +288,9 @@ struct App {
     pinch: PinchGate,
     renderer: Renderer,
     encoder: Encoder,
+    wanted: Wanted,
+    shelf: Shelf,
+    shelved_prefetch: bool,
     generation: Generation,
     requested_generation: Generation,
     reload_at: Option<Instant>,
@@ -310,12 +325,7 @@ impl App {
                 self.flush(terminal)?;
             }
             terminal.draw(|frame| self.draw(frame))?;
-            let wait = [self.reload_at, self.resize_settles_at, self.zooming_until]
-                .into_iter()
-                .flatten()
-                .min()
-                .map_or(IDLE_WAIT, |at| at.saturating_duration_since(Instant::now()));
-            let first = match inbox.recv_timeout(wait) {
+            let first = match inbox.recv_timeout(self.idle_wait(Instant::now())) {
                 Ok(event) => event,
                 Err(RecvTimeoutError::Timeout) => {
                     if self.reload_at.is_some_and(|at| at <= Instant::now()) {
@@ -331,6 +341,17 @@ impl App {
                 }
             }
         }
+    }
+
+    fn idle_wait(&self, now: Instant) -> Duration {
+        if self.shelved_prefetch {
+            return Duration::ZERO;
+        }
+        [self.reload_at, self.resize_settles_at, self.zooming_until]
+            .into_iter()
+            .flatten()
+            .min()
+            .map_or(IDLE_WAIT, |at| at.saturating_duration_since(now))
     }
 
     fn handle(&mut self, event: Event) -> Flow {
@@ -457,6 +478,7 @@ impl App {
                 self.forget_tiles(|key| {
                     key.generation != generation && Some(key.generation) != shown
                 });
+                self.shelf.forget(|key| key.generation != generation);
                 self.in_flight.clear();
             }
             Response::Unchanged { generation } if generation == self.requested_generation => {
@@ -474,24 +496,28 @@ impl App {
         }
     }
 
-    fn receive_encoded(&mut self, encoded: Encoded) {
-        match encoded {
-            Encoded::Tile { key, image, bytes } => {
-                self.encoder.claimed();
-                self.in_flight.retain(|pending| *pending != key);
-                if key.generation == self.generation {
-                    self.store(key, &image, bytes);
-                }
-            }
-            Encoded::Dropped { key } => self.in_flight.retain(|pending| *pending != key),
+    fn receive_encoded(&mut self, tile: Encoded) {
+        self.encoder.claimed();
+        self.in_flight.retain(|pending| *pending != tile.key);
+        if tile.key.generation != self.generation || self.cached(tile.key).is_some() {
+            return;
+        }
+        if self.wanted.contains(&tile.key) {
+            self.store(&tile);
+        } else {
+            self.shelf.park(tile);
         }
     }
 
-    fn store(&mut self, key: RenderKey, image: &EncodedImage, bytes: usize) {
+    fn store(&mut self, tile: &Encoded) {
         let id = self.next_id;
         self.next_id = id.next();
-        kitty::transmit(id, image, &mut self.outgoing);
-        self.tiles.push(CachedTile { key, id, bytes });
+        kitty::transmit(id, &tile.image, &mut self.outgoing);
+        self.tiles.push(CachedTile {
+            key: tile.key,
+            id,
+            bytes: tile.bytes,
+        });
         self.evict();
     }
 
@@ -548,6 +574,7 @@ impl App {
     }
 
     fn request_tiles_at(&mut self, now: Instant) {
+        self.shelved_prefetch = false;
         let view = self.viewer.view().clone();
         if view.pane.columns == 0 || view.pane.rows == 0 {
             return;
@@ -565,11 +592,21 @@ impl App {
             Vec::new()
         };
         let wanted = tile_keys(self.generation, &view);
-        self.encoder
-            .want(prefetch.iter().chain(&wanted).copied().collect());
-        for key in prefetch.iter().chain(&wanted) {
+        self.wanted
+            .set(prefetch.iter().chain(&wanted).copied().collect());
+        let view_ready = wanted.iter().all(|key| self.cached(*key).is_some());
+        let mut deferred = false;
+        for key in &prefetch {
+            if !view_ready && !wanted.contains(key) && self.shelf.holds(*key) {
+                deferred = true;
+            } else {
+                self.request(*key);
+            }
+        }
+        for key in &wanted {
             self.request(*key);
         }
+        self.shelved_prefetch = deferred && wanted.iter().all(|key| self.cached(*key).is_some());
         if self.only_scrolled_from_shown(&view) {
             self.shown = Some(Shown {
                 generation: self.generation,
@@ -613,6 +650,10 @@ impl App {
 
     fn request(&mut self, key: RenderKey) {
         if self.cached(key).is_some() || self.in_flight.contains(&key) {
+            return;
+        }
+        if let Some(tile) = self.shelf.take(key) {
+            self.store(&tile);
             return;
         }
         self.in_flight.retain(|pending| pending.scale == key.scale);
@@ -722,6 +763,7 @@ mod tests {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/three-pages.pdf");
         let (events, inbox) = mpsc::channel();
         let (jobs, queued) = encoder::queue();
+        let wanted = Wanted::default();
         let renderer = {
             let events = events.clone();
             Renderer::spawn(
@@ -734,7 +776,7 @@ mod tests {
                 },
             )
         };
-        let encoder = Encoder::spawn(queued, CELL, Payload::Raw, move |encoded| {
+        let encoder = Encoder::spawn(queued, wanted.clone(), CELL, Payload::Raw, move |encoded| {
             let _ = events.send(Event::Encoded(encoded));
         });
         renderer.load(0);
@@ -749,6 +791,9 @@ mod tests {
             pinch: PinchGate::default(),
             renderer,
             encoder,
+            wanted,
+            shelf: Shelf::new(SHELF_BYTES),
+            shelved_prefetch: false,
             generation: 0,
             requested_generation: 0,
             reload_at: None,
@@ -1087,6 +1132,12 @@ mod tests {
         encoder::encode(Job { key, image }, cell, Payload::Raw)
     }
 
+    fn transmission(id: ImageId, tile: &Encoded) -> String {
+        let mut expected = String::new();
+        kitty::transmit(id, &tile.image, &mut expected);
+        expected
+    }
+
     #[test]
     fn an_encoded_tile_is_queued_for_the_terminal_before_it_can_be_placed() {
         let (mut app, _inbox) = headless_app(Pane {
@@ -1094,31 +1145,105 @@ mod tests {
             rows: 30,
         });
         let key = tile_keys(app.generation, app.viewer.view())[0];
+        app.wanted.set(vec![key]);
         assert_eq!(app.cached(key), None);
-        let encoded = encoded_tile(&app, key);
-        app.handle(Event::Encoded(encoded));
+        app.handle(Event::Encoded(encoded_tile(&app, key)));
         let id = app.cached(key).expect("the tile is cached");
-        let Encoded::Tile { image, .. } = encoded_tile(&app, key) else {
-            panic!("a tile encodes to a transmission");
-        };
-        let mut expected = String::new();
-        kitty::transmit(id, &image, &mut expected);
-        assert_eq!(app.outgoing, expected);
+        assert_eq!(app.outgoing, transmission(id, &encoded_tile(&app, key)));
     }
 
     #[test]
-    fn a_dropped_tile_is_requested_again_when_it_is_wanted() {
+    fn a_tile_that_arrives_after_scrolling_away_waits_off_the_terminal() {
         let (mut app, _inbox) = headless_app(Pane {
             columns: 80,
             rows: 30,
         });
-        app.request_tiles_at(Instant::now());
         let key = tile_keys(app.generation, app.viewer.view())[0];
-        assert!(app.in_flight.contains(&key));
-        app.handle(Event::Encoded(Encoded::Dropped { key }));
-        assert!(!app.in_flight.contains(&key));
+        app.handle(Event::Encoded(encoded_tile(&app, key)));
+        assert_eq!(app.cached(key), None);
+        assert!(app.outgoing.is_empty());
+    }
+
+    #[test]
+    fn scrolling_back_transmits_a_waiting_tile_without_rendering_it_again() {
+        let (mut app, _inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        let key = tile_keys(app.generation, app.viewer.view())[0];
+        app.handle(Event::Encoded(encoded_tile(&app, key)));
         app.request_tiles_at(Instant::now());
-        assert!(app.in_flight.contains(&key));
+        assert!(!app.in_flight.contains(&key));
+        let id = app.cached(key).expect("the waiting tile is cached");
+        assert!(
+            app.outgoing
+                .starts_with(&transmission(id, &encoded_tile(&app, key)))
+        );
+    }
+
+    #[test]
+    fn view_tiles_waiting_on_the_shelf_go_out_a_frame_before_prefetched_ones() {
+        let (mut app, _inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        let view = app.viewer.view().clone();
+        let shown = tile_keys(app.generation, &view);
+        let prefetched = app
+            .neighbour_keys(&view)
+            .into_iter()
+            .find(|key| !shown.contains(key))
+            .expect("a tile below the view");
+        for key in shown.iter().chain([&prefetched]) {
+            app.handle(Event::Encoded(encoded_tile(&app, *key)));
+        }
+        let now = Instant::now() + RESIZE_SETTLE;
+        app.request_tiles_at(now);
+        assert!(shown.iter().all(|key| app.cached(*key).is_some()));
+        assert_eq!(app.cached(prefetched), None);
+        assert_eq!(app.idle_wait(now), Duration::ZERO);
+        app.request_tiles_at(now);
+        assert!(app.cached(prefetched).is_some());
+        assert!(!app.in_flight.contains(&prefetched));
+        assert_ne!(app.idle_wait(now), Duration::ZERO);
+    }
+
+    #[test]
+    fn prefetched_tiles_on_the_shelf_do_not_spin_the_loop_while_the_view_renders() {
+        let (mut app, _inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        let view = app.viewer.view().clone();
+        let shown = tile_keys(app.generation, &view);
+        let prefetched = app
+            .neighbour_keys(&view)
+            .into_iter()
+            .find(|key| !shown.contains(key))
+            .expect("a tile below the view");
+        app.handle(Event::Encoded(encoded_tile(&app, prefetched)));
+        let now = Instant::now() + RESIZE_SETTLE;
+        app.request_tiles_at(now);
+        assert_eq!(app.cached(prefetched), None);
+        assert_ne!(app.idle_wait(now), Duration::ZERO);
+    }
+
+    #[test]
+    fn a_tile_the_terminal_already_holds_is_not_transmitted_twice() {
+        let (mut app, _inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        let key = tile_keys(app.generation, app.viewer.view())[0];
+        app.wanted.set(vec![key]);
+        app.handle(Event::Encoded(encoded_tile(&app, key)));
+        app.outgoing.clear();
+        app.handle(Event::Encoded(encoded_tile(&app, key)));
+        app.wanted.set(Vec::new());
+        app.handle(Event::Encoded(encoded_tile(&app, key)));
+        assert!(app.outgoing.is_empty());
+        assert!(app.shelf.take(key).is_none());
+        assert_eq!(app.tiles.iter().filter(|tile| tile.key == key).count(), 1);
     }
 
     #[test]

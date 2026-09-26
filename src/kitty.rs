@@ -102,6 +102,12 @@ pub fn encode(image: &RgbaImage, grid: CellGrid, payload: Payload) -> EncodedIma
     }
 }
 
+impl EncodedImage {
+    pub fn encoded_bytes(&self) -> usize {
+        self.chunks.len()
+    }
+}
+
 pub fn transmit(id: ImageId, image: &EncodedImage, sequence: &mut String) {
     if image.chunks.is_empty() {
         return;
@@ -522,6 +528,19 @@ mod tests {
             Payload::Raw,
         );
         assert_eq!(payload(&sequence), image.as_raw().clone());
+    }
+
+    #[test]
+    fn an_encoded_image_weighs_about_as_much_as_its_base64_payload() {
+        let image = RgbaImage::new(70, 50);
+        let grid = CellGrid {
+            columns: 7,
+            rows: 5,
+        };
+        let encoded = encode(&image, grid, Payload::Raw);
+        let base64 = image.as_raw().len().div_ceil(3) * 4;
+        assert!(encoded.encoded_bytes() >= base64);
+        assert!(encoded.encoded_bytes() < base64 + base64 / 10);
     }
 
     #[test]

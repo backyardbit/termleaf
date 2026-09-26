@@ -16,15 +16,10 @@ pub struct Job {
     pub image: RgbImage,
 }
 
-pub enum Encoded {
-    Tile {
-        key: RenderKey,
-        image: EncodedImage,
-        bytes: usize,
-    },
-    Dropped {
-        key: RenderKey,
-    },
+pub struct Encoded {
+    pub key: RenderKey,
+    pub image: EncodedImage,
+    pub bytes: usize,
 }
 
 pub fn queue() -> (SyncSender<Job>, Receiver<Job>) {
@@ -32,44 +27,38 @@ pub fn queue() -> (SyncSender<Job>, Receiver<Job>) {
 }
 
 #[derive(Clone, Default)]
-struct Window(Arc<Mutex<Vec<RenderKey>>>);
+pub struct Wanted(Arc<Mutex<Vec<RenderKey>>>);
 
-impl Window {
-    fn set(&self, keys: Vec<RenderKey>) {
+impl Wanted {
+    pub fn set(&self, keys: Vec<RenderKey>) {
         if let Ok(mut wanted) = self.0.lock() {
             *wanted = keys;
         }
     }
 
-    fn contains(&self, key: &RenderKey) -> bool {
+    pub fn contains(&self, key: &RenderKey) -> bool {
         self.0.lock().map_or(true, |wanted| wanted.contains(key))
     }
 }
 
 pub struct Encoder {
-    window: Window,
     claims: Sender<()>,
 }
 
 impl Encoder {
     pub fn spawn(
         jobs: Receiver<Job>,
+        wanted: Wanted,
         cell: CellSize,
         payload: Payload,
         deliver: impl Fn(Encoded) + Send + 'static,
     ) -> Self {
-        let window = Window::default();
         let (claims, claimed) = mpsc::channel();
         for _ in 0..UNCLAIMED_TILES {
             let _ = claims.send(());
         }
-        let wanted = window.clone();
         thread::spawn(move || serve(&jobs, &claimed, &wanted, cell, payload, &deliver));
-        Self { window, claims }
-    }
-
-    pub fn want(&self, keys: Vec<RenderKey>) {
-        self.window.set(keys);
+        Self { claims }
     }
 
     pub fn claimed(&self) {
@@ -80,16 +69,19 @@ impl Encoder {
 fn serve(
     jobs: &Receiver<Job>,
     claimed: &Receiver<()>,
-    window: &Window,
+    wanted: &Wanted,
     cell: CellSize,
     payload: Payload,
     deliver: &impl Fn(Encoded),
 ) {
+    let mut waiting: Vec<Job> = Vec::with_capacity(QUEUED_TILES);
     let mut free_slots = 0;
-    for job in jobs {
-        if !window.contains(&job.key) {
-            deliver(Encoded::Dropped { key: job.key });
-            continue;
+    loop {
+        if waiting.is_empty() {
+            match jobs.recv() {
+                Ok(job) => waiting.push(job),
+                Err(_) => return,
+            }
         }
         if free_slots == 0 {
             if claimed.recv().is_err() {
@@ -97,19 +89,25 @@ fn serve(
             }
             free_slots += 1;
         }
-        if !window.contains(&job.key) {
-            deliver(Encoded::Dropped { key: job.key });
-            continue;
+        while waiting.len() < QUEUED_TILES {
+            match jobs.try_recv() {
+                Ok(job) => waiting.push(job),
+                Err(_) => break,
+            }
         }
+        let next = waiting
+            .iter()
+            .position(|job| wanted.contains(&job.key))
+            .unwrap_or(0);
         free_slots -= 1;
-        deliver(encode(job, cell, payload));
+        deliver(encode(waiting.remove(next), cell, payload));
     }
 }
 
 pub fn encode(job: Job, cell: CellSize, payload: Payload) -> Encoded {
     let padded = pad_to_cells(job.image, cell);
     let grid = grid_of(&padded, cell);
-    Encoded::Tile {
+    Encoded {
         key: job.key,
         bytes: padded.as_raw().len(),
         image: kitty::encode(&padded, grid, payload),
@@ -170,10 +168,10 @@ mod tests {
         }
     }
 
-    fn spawn() -> (Encoder, SyncSender<Job>, Receiver<Encoded>) {
+    fn spawn(wanted: &Wanted) -> (Encoder, SyncSender<Job>, Receiver<Encoded>) {
         let (jobs, queued) = queue();
         let (sender, encoded) = mpsc::channel();
-        let encoder = Encoder::spawn(queued, CELL, Payload::Zlib, move |tile| {
+        let encoder = Encoder::spawn(queued, wanted.clone(), CELL, Payload::Zlib, move |tile| {
             let _ = sender.send(tile);
         });
         (encoder, jobs, encoded)
@@ -189,48 +187,59 @@ mod tests {
         sequence
     }
 
-    #[test]
-    fn a_wanted_tile_arrives_padded_and_encoded() {
-        let (encoder, jobs, encoded) = spawn();
-        encoder.want(vec![key(0)]);
-        jobs.send(job(0)).unwrap();
-        let Encoded::Tile {
-            key: got,
-            image,
-            bytes,
-        } = next(&encoded)
-        else {
-            panic!("the wanted tile was dropped");
-        };
-        assert_eq!(got, key(0));
-        assert_eq!(bytes, 100 * 60 * 4);
-        let padded = pad_to_cells(job(0).image, CELL);
-        let expected = kitty::encode(&padded, grid_of(&padded, CELL), Payload::Zlib);
-        assert_eq!(written(&image), written(&expected));
+    fn wanting(pages: &[usize]) -> Wanted {
+        let wanted = Wanted::default();
+        wanted.set(pages.iter().map(|page| key(*page)).collect());
+        wanted
     }
 
     #[test]
-    fn a_tile_scrolled_out_of_the_window_is_dropped_without_encoding() {
-        let (encoder, jobs, encoded) = spawn();
-        encoder.want(vec![key(1)]);
+    fn a_wanted_tile_arrives_padded_and_encoded() {
+        let (_encoder, jobs, encoded) = spawn(&wanting(&[0]));
         jobs.send(job(0)).unwrap();
-        assert!(matches!(next(&encoded), Encoded::Dropped { key: got } if got == key(0)));
+        let tile = next(&encoded);
+        assert_eq!(tile.key, key(0));
+        assert_eq!(tile.bytes, 100 * 60 * 4);
+        let padded = pad_to_cells(job(0).image, CELL);
+        let expected = kitty::encode(&padded, grid_of(&padded, CELL), Payload::Zlib);
+        assert_eq!(written(&tile.image), written(&expected));
+    }
+
+    #[test]
+    fn a_tile_scrolled_out_of_the_window_is_still_encoded() {
+        let (_encoder, jobs, encoded) = spawn(&wanting(&[1]));
+        jobs.send(job(0)).unwrap();
+        assert_eq!(next(&encoded).key, key(0));
+    }
+
+    #[test]
+    fn a_wanted_tile_is_encoded_before_an_unwanted_one_that_waited_longer() {
+        let (encoder, jobs, encoded) = spawn(&wanting(&[1, 10, 11]));
+        jobs.send(job(10)).unwrap();
+        jobs.send(job(11)).unwrap();
+        next(&encoded);
+        next(&encoded);
+        jobs.send(job(0)).unwrap();
+        jobs.send(job(1)).unwrap();
+        encoder.claimed();
+        assert_eq!(next(&encoded).key, key(1));
+        encoder.claimed();
+        assert_eq!(next(&encoded).key, key(0));
     }
 
     #[test]
     fn encoding_waits_once_the_ui_has_unclaimed_tiles_to_write() {
-        let (encoder, jobs, encoded) = spawn();
         let pages: Vec<usize> = (0..=UNCLAIMED_TILES).collect();
-        encoder.want(pages.iter().map(|page| key(*page)).collect());
+        let (encoder, jobs, encoded) = spawn(&wanting(&pages));
         for page in &pages {
             jobs.send(job(*page)).unwrap();
         }
         for _ in 0..UNCLAIMED_TILES {
-            assert!(matches!(next(&encoded), Encoded::Tile { .. }));
+            next(&encoded);
         }
         assert!(encoded.recv_timeout(Duration::from_millis(300)).is_err());
         encoder.claimed();
-        assert!(matches!(next(&encoded), Encoded::Tile { .. }));
+        next(&encoded);
     }
 
     #[test]

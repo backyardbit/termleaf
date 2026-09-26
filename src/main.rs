@@ -7,6 +7,7 @@ mod mouse;
 mod pdf;
 mod pinch;
 mod renderer;
+mod shelf;
 mod viewer;
 mod watch;
 
