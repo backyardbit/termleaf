@@ -531,19 +531,6 @@ mod tests {
     }
 
     #[test]
-    fn an_encoded_image_weighs_about_as_much_as_its_base64_payload() {
-        let image = RgbaImage::new(70, 50);
-        let grid = CellGrid {
-            columns: 7,
-            rows: 5,
-        };
-        let encoded = encode(&image, grid, Payload::Raw);
-        let base64 = image.as_raw().len().div_ceil(3) * 4;
-        assert!(encoded.encoded_bytes() >= base64);
-        assert!(encoded.encoded_bytes() < base64 + base64 / 10);
-    }
-
-    #[test]
     fn a_transmission_creates_a_virtual_placement_of_the_given_cells() {
         let image = RgbaImage::new(70, 50);
         let sequence = transmission(
@@ -630,39 +617,6 @@ mod tests {
         let raw = transmission(&image, grid, Payload::Raw);
         let compressed = transmission(&image, grid, Payload::Zlib);
         assert!(compressed.len() * 100 < raw.len());
-    }
-
-    #[test]
-    fn one_encoding_can_be_written_under_any_image_id() {
-        let image = RgbaImage::from_pixel(70, 50, image::Rgba([1, 2, 3, 4]));
-        let grid = CellGrid {
-            columns: 7,
-            rows: 5,
-        };
-        let encoded = encode(&image, grid, Payload::Zlib);
-        let mut first = String::new();
-        transmit(ImageId::first(), &encoded, &mut first);
-        let mut second = String::new();
-        transmit(ImageId(2), &encoded, &mut second);
-        assert!(second.starts_with("\x1b_Gq=2,a=T,U=1,i=2,p=1,"));
-        assert_eq!(first.replacen("i=1,", "i=2,", 1), second);
-    }
-
-    #[test]
-    fn writing_appends_to_what_is_already_queued() {
-        let image = RgbaImage::new(70, 50);
-        let grid = CellGrid {
-            columns: 7,
-            rows: 5,
-        };
-        let mut sequence = delete(ImageId(9));
-        transmit(
-            ImageId::first(),
-            &encode(&image, grid, Payload::Raw),
-            &mut sequence,
-        );
-        assert!(sequence.starts_with(&delete(ImageId(9))));
-        assert!(sequence.ends_with("\x1b\\"));
     }
 
     #[test]

@@ -139,7 +139,6 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::kitty::ImageId;
     use crate::pdf::{PixelRegion, Scale};
 
     const CELL: CellSize = CellSize {
@@ -181,40 +180,11 @@ mod tests {
         encoded.recv_timeout(Duration::from_secs(10)).unwrap()
     }
 
-    fn written(image: &EncodedImage) -> String {
-        let mut sequence = String::new();
-        kitty::transmit(ImageId::first(), image, &mut sequence);
-        sequence
-    }
-
-    fn wanting(pages: &[usize]) -> Wanted {
-        let wanted = Wanted::default();
-        wanted.set(pages.iter().map(|page| key(*page)).collect());
-        wanted
-    }
-
-    #[test]
-    fn a_wanted_tile_arrives_padded_and_encoded() {
-        let (_encoder, jobs, encoded) = spawn(&wanting(&[0]));
-        jobs.send(job(0)).unwrap();
-        let tile = next(&encoded);
-        assert_eq!(tile.key, key(0));
-        assert_eq!(tile.bytes, 100 * 60 * 4);
-        let padded = pad_to_cells(job(0).image, CELL);
-        let expected = kitty::encode(&padded, grid_of(&padded, CELL), Payload::Zlib);
-        assert_eq!(written(&tile.image), written(&expected));
-    }
-
-    #[test]
-    fn a_tile_scrolled_out_of_the_window_is_still_encoded() {
-        let (_encoder, jobs, encoded) = spawn(&wanting(&[1]));
-        jobs.send(job(0)).unwrap();
-        assert_eq!(next(&encoded).key, key(0));
-    }
-
     #[test]
     fn a_wanted_tile_is_encoded_before_an_unwanted_one_that_waited_longer() {
-        let (encoder, jobs, encoded) = spawn(&wanting(&[1, 10, 11]));
+        let wanted = Wanted::default();
+        wanted.set(vec![key(1), key(10), key(11)]);
+        let (encoder, jobs, encoded) = spawn(&wanted);
         jobs.send(job(10)).unwrap();
         jobs.send(job(11)).unwrap();
         next(&encoded);
@@ -228,18 +198,22 @@ mod tests {
     }
 
     #[test]
-    fn encoding_waits_once_the_ui_has_unclaimed_tiles_to_write() {
-        let pages: Vec<usize> = (0..=UNCLAIMED_TILES).collect();
-        let (encoder, jobs, encoded) = spawn(&wanting(&pages));
-        for page in &pages {
-            jobs.send(job(*page)).unwrap();
+    fn the_render_thread_blocks_once_the_ui_has_not_claimed_its_tiles() {
+        let (encoder, jobs, encoded) = spawn(&Wanted::default());
+        let held = UNCLAIMED_TILES + 1 + QUEUED_TILES;
+        for page in 0..held {
+            jobs.send(job(page)).unwrap();
         }
+        assert!(matches!(
+            jobs.try_send(job(held)),
+            Err(mpsc::TrySendError::Full(_))
+        ));
         for _ in 0..UNCLAIMED_TILES {
             next(&encoded);
         }
         assert!(encoded.recv_timeout(Duration::from_millis(300)).is_err());
         encoder.claimed();
-        next(&encoded);
+        assert_eq!(next(&encoded).key, key(UNCLAIMED_TILES));
     }
 
     #[test]

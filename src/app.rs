@@ -1161,7 +1161,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tile_that_arrives_after_scrolling_away_waits_off_the_terminal() {
+    fn a_tile_that_arrives_after_scrolling_away_is_sent_on_return_without_rendering_again() {
         let (mut app, _inbox) = headless_app(Pane {
             columns: 80,
             rows: 30,
@@ -1170,18 +1170,7 @@ mod tests {
         app.handle(Event::Encoded(encoded_tile(&app, key)));
         assert_eq!(app.cached(key), None);
         assert!(app.outgoing.is_empty());
-    }
-
-    #[test]
-    fn scrolling_back_transmits_a_waiting_tile_without_rendering_it_again() {
-        let (mut app, _inbox) = headless_app(Pane {
-            columns: 80,
-            rows: 30,
-        });
-        let key = tile_keys(app.generation, app.viewer.view())[0];
-        app.handle(Event::Encoded(encoded_tile(&app, key)));
         app.request_tiles_at(Instant::now());
-        assert_eq!(app.cached(key), None);
         app.request_tiles_at(Instant::now());
         assert!(!app.in_flight.contains(&key));
         let id = app.cached(key).expect("the waiting tile is cached");
@@ -1192,7 +1181,7 @@ mod tests {
     }
 
     #[test]
-    fn shelved_tiles_go_out_after_the_view_is_drawn_and_prefetched_ones_a_frame_later() {
+    fn shelved_tiles_wait_for_the_view_to_be_drawn_and_prefetched_ones_for_it_to_complete() {
         let (mut app, _inbox) = headless_app(Pane {
             columns: 80,
             rows: 30,
@@ -1204,71 +1193,22 @@ mod tests {
             .into_iter()
             .find(|key| !shown.contains(key))
             .expect("a tile below the view");
-        for key in shown.iter().chain([&prefetched]) {
-            app.handle(Event::Encoded(encoded_tile(&app, *key)));
-        }
+        app.handle(Event::Encoded(encoded_tile(&app, shown[0])));
+        app.handle(Event::Encoded(encoded_tile(&app, prefetched)));
         let now = Instant::now() + RESIZE_SETTLE;
         app.request_tiles_at(now);
         assert!(app.outgoing.is_empty());
-        assert!(!shown.iter().any(|key| app.in_flight.contains(key)));
         assert_eq!(app.idle_wait(now), Duration::ZERO);
         app.request_tiles_at(now);
-        assert!(shown.iter().all(|key| app.cached(*key).is_some()));
+        assert!(app.cached(shown[0]).is_some());
         assert_eq!(app.cached(prefetched), None);
-        assert_eq!(app.idle_wait(now), Duration::ZERO);
+        assert_ne!(app.idle_wait(now), Duration::ZERO);
+        for key in &shown[1..] {
+            app.handle(Event::Encoded(encoded_tile(&app, *key)));
+        }
         app.request_tiles_at(now);
         assert!(app.cached(prefetched).is_some());
         assert!(!app.in_flight.contains(&prefetched));
-        assert_ne!(app.idle_wait(now), Duration::ZERO);
-    }
-
-    #[test]
-    fn returning_to_tiles_the_terminal_holds_draws_them_before_shelved_prefetch_goes_out() {
-        let (mut app, _inbox) = headless_app(Pane {
-            columns: 80,
-            rows: 30,
-        });
-        let view = app.viewer.view().clone();
-        let shown = tile_keys(app.generation, &view);
-        let prefetched = app
-            .neighbour_keys(&view)
-            .into_iter()
-            .find(|key| !shown.contains(key))
-            .expect("a tile below the view");
-        app.wanted.set(shown.clone());
-        for key in &shown {
-            app.handle(Event::Encoded(encoded_tile(&app, *key)));
-        }
-        app.wanted.set(Vec::new());
-        app.handle(Event::Encoded(encoded_tile(&app, prefetched)));
-        app.outgoing.clear();
-        let now = Instant::now() + RESIZE_SETTLE;
-        app.request_tiles_at(now);
-        assert!(app.outgoing.is_empty());
-        assert_eq!(app.idle_wait(now), Duration::ZERO);
-        app.request_tiles_at(now);
-        assert!(app.cached(prefetched).is_some());
-    }
-
-    #[test]
-    fn prefetched_tiles_on_the_shelf_do_not_spin_the_loop_while_the_view_renders() {
-        let (mut app, _inbox) = headless_app(Pane {
-            columns: 80,
-            rows: 30,
-        });
-        let view = app.viewer.view().clone();
-        let shown = tile_keys(app.generation, &view);
-        let prefetched = app
-            .neighbour_keys(&view)
-            .into_iter()
-            .find(|key| !shown.contains(key))
-            .expect("a tile below the view");
-        app.handle(Event::Encoded(encoded_tile(&app, prefetched)));
-        let now = Instant::now() + RESIZE_SETTLE;
-        app.request_tiles_at(now);
-        app.request_tiles_at(now);
-        assert_eq!(app.cached(prefetched), None);
-        assert_ne!(app.idle_wait(now), Duration::ZERO);
     }
 
     #[test]
@@ -1285,24 +1225,34 @@ mod tests {
         app.wanted.set(Vec::new());
         app.handle(Event::Encoded(encoded_tile(&app, key)));
         assert!(app.outgoing.is_empty());
-        assert!(app.shelf.take(key).is_none());
+        assert!(!app.shelf.holds(key));
         assert_eq!(app.tiles.iter().filter(|tile| tile.key == key).count(), 1);
     }
 
     #[test]
-    fn tiles_for_a_stale_file_are_encoded_but_not_kept() {
+    fn a_reload_clears_shelved_tiles_of_the_old_file_and_drops_its_late_ones() {
         let (mut app, _inbox) = headless_app(Pane {
             columns: 80,
             rows: 30,
         });
-        let key = RenderKey {
-            generation: app.generation + 1,
-            ..tile_keys(app.generation, app.viewer.view())[0]
-        };
-        let encoded = encoded_tile(&app, key);
-        app.handle(Event::Encoded(encoded));
-        assert_eq!(app.cached(key), None);
-        assert!(app.outgoing.is_empty());
+        let old = tile_keys(app.generation, app.viewer.view());
+        app.handle(Event::Encoded(encoded_tile(&app, old[0])));
+        let bytes = std::fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/three-pages.pdf"),
+        )
+        .unwrap();
+        let pages = crate::pdf::Pdf::from_bytes(&bytes).unwrap().pages();
+        app.requested_generation = 1;
+        app.handle(Event::Renderer(Response::Loaded {
+            generation: 1,
+            pages,
+        }));
+        assert!(!app.shelf.holds(old[0]));
+        app.wanted.set(old.clone());
+        app.handle(Event::Encoded(encoded_tile(&app, old[1])));
+        assert_eq!(app.cached(old[1]), None);
+        assert!(!app.shelf.holds(old[1]));
+        assert!(!app.outgoing.contains("a=T"));
     }
 
     #[test]

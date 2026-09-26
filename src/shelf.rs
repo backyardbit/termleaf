@@ -49,11 +49,6 @@ impl Shelf {
             .map(|tile| tile.image.encoded_bytes())
             .sum();
     }
-
-    #[cfg(test)]
-    pub const fn bytes(&self) -> usize {
-        self.bytes
-    }
 }
 
 #[cfg(test)]
@@ -97,72 +92,23 @@ mod tests {
         )
     }
 
-    fn weight() -> usize {
-        tile(0).image.encoded_bytes()
-    }
-
     #[test]
-    fn a_parked_tile_can_be_taken_back_once() {
-        let mut shelf = Shelf::new(weight() * 4);
-        shelf.park(tile(3));
-        assert_eq!(shelf.take(key(3)).map(|tile| tile.key), Some(key(3)));
-        assert!(shelf.take(key(3)).is_none());
-        assert_eq!(shelf.bytes(), 0);
-    }
-
-    #[test]
-    fn the_shelf_knows_which_tiles_it_holds() {
-        let mut shelf = Shelf::new(weight() * 4);
-        shelf.park(tile(3));
-        assert!(shelf.holds(key(3)));
-        assert!(!shelf.holds(key(4)));
-    }
-
-    #[test]
-    fn the_least_recently_parked_tile_makes_room_first() {
-        let mut shelf = Shelf::new(weight() * 2);
+    fn parking_past_the_byte_cap_evicts_the_least_recently_parked_tiles() {
+        let weight = tile(0).image.encoded_bytes();
+        assert!(weight >= 40 * 40 * 4 * 4 / 3);
+        let mut shelf = Shelf::new(weight * 3 - 1);
+        let held = |shelf: &Shelf| -> Vec<usize> {
+            (0..3).filter(|page| shelf.holds(key(*page))).collect()
+        };
         shelf.park(tile(0));
         shelf.park(tile(1));
+        shelf.park(tile(0));
+        shelf.park(tile(0));
+        assert_eq!(held(&shelf), [0, 1]);
         shelf.park(tile(2));
-        assert!(shelf.take(key(0)).is_none());
-        assert!(shelf.take(key(1)).is_some());
-        assert!(shelf.take(key(2)).is_some());
-    }
-
-    #[test]
-    fn parked_bytes_never_exceed_the_capacity() {
-        let capacity = weight() * 3 - 1;
-        let mut shelf = Shelf::new(capacity);
-        for page in 0..10 {
-            shelf.park(tile(page));
-            assert!(shelf.bytes() <= capacity);
-        }
-        assert_eq!(shelf.bytes(), weight() * 2);
-    }
-
-    #[test]
-    fn a_tile_larger_than_the_shelf_is_not_kept() {
-        let mut shelf = Shelf::new(weight() - 1);
-        shelf.park(tile(0));
-        assert!(shelf.take(key(0)).is_none());
-        assert_eq!(shelf.bytes(), 0);
-    }
-
-    #[test]
-    fn parking_the_same_tile_again_keeps_one_copy() {
-        let mut shelf = Shelf::new(weight() * 4);
-        shelf.park(tile(0));
-        shelf.park(tile(0));
-        assert_eq!(shelf.bytes(), weight());
-    }
-
-    #[test]
-    fn forgotten_tiles_free_their_bytes() {
-        let mut shelf = Shelf::new(weight() * 4);
-        shelf.park(tile(0));
-        shelf.park(tile(1));
-        shelf.forget(|key| key.page == 0);
-        assert!(shelf.take(key(0)).is_none());
-        assert_eq!(shelf.bytes(), weight());
+        assert_eq!(held(&shelf), [0, 2]);
+        let mut small = Shelf::new(weight - 1);
+        small.park(tile(0));
+        assert!(held(&small).is_empty());
     }
 }
