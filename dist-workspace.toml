@@ -8,9 +8,7 @@ cargo-dist-version = "0.33.0"
 # CI backends to support
 ci = "github"
 # The installers to generate for each app
-installers = ["shell", "homebrew"]
-# A GitHub repo to push Homebrew formulas to
-tap = "backyardbit/homebrew-tap"
+installers = ["shell"]
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"]
 # Path that installers should place binaries in
@@ -19,7 +17,7 @@ install-path = "CARGO_HOME"
 hosting = "github"
 # Whether to install an updater program
 install-updater = false
-publish-jobs = ["homebrew", "./publish-crates"]
+publish-jobs = ["./publish-crates"]
 
 [dist.github-custom-runners]
 aarch64-apple-darwin = "macos-15"
