@@ -1,11 +1,13 @@
 mod app;
 mod encoder;
+mod graphics;
 mod keys;
 mod kitty;
 mod layout;
 mod mouse;
 mod pdf;
 mod pinch;
+mod raster;
 mod renderer;
 mod shelf;
 mod viewer;
