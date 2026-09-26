@@ -1,0 +1,62 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+
+\title{Heat Flow in a Thin Rod}
+\author{A.~Student}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We derive the one-dimensional heat equation
+for a thin, insulated rod and solve it by
+separation of variables. The solution is a
+sum of decaying Fourier modes.
+\end{abstract}
+
+\section{The heat equation}
+Let $u(x,t)$ be the temperature of a rod of
+length $L$ with diffusivity $\alpha > 0$.
+Conservation of energy and Fourier's law give
+\begin{equation}
+  \frac{\partial u}{\partial t}
+    = \alpha \, \frac{\partial^2 u}{\partial x^2},
+  \qquad 0 < x < L.
+  \label{eq:heat}
+\end{equation}
+With the ends held at zero, \eqref{eq:heat} has the solution
+\begin{equation}
+  u(x,t) = \sum_{n=1}^{\infty} b_n
+    \sin\!\left(\frac{n\pi x}{L}\right)
+    e^{-\alpha (n\pi/L)^2 t}.
+\end{equation}
+
+\section{Separation of variables}
+Substituting $u(x,t) = X(x)\,T(t)$ into \eqref{eq:heat} and dividing
+by $\alpha X T$ separates the equation into two ordinary differential
+equations, one in space and one in time:
+\begin{equation}
+  X'' + \lambda X = 0, \qquad T' + \alpha \lambda T = 0.
+\end{equation}
+The boundary conditions $X(0) = X(L) = 0$ admit nonzero solutions only
+when $\lambda_n = (n\pi/L)^2$ for $n = 1, 2, \dots$, giving the
+eigenfunctions $X_n(x) = \sin(n\pi x / L)$. Each time factor decays as
+$T_n(t) = e^{-\alpha \lambda_n t}$, so higher modes vanish fastest and
+the temperature profile smooths out over time.
+
+The coefficients $b_n$ follow from the initial temperature $f(x) = u(x,0)$
+by orthogonality of the sine functions on $[0, L]$:
+\begin{equation}
+  b_n = \frac{2}{L} \int_0^L f(x) \sin\!\left(\frac{n\pi x}{L}\right) dx.
+\end{equation}
+
+\section{Discussion}
+Because every mode decays exponentially, the rod approaches the uniform
+temperature of its ends. The slowest mode, $n = 1$, sets the time scale
+$\tau = L^2 / (\alpha \pi^2)$ on which this happens.
+
+\end{document}
+% Rebuild ../sample-page-1.png from this directory with
+% pdflatex paper.tex && pdflatex paper.tex && pdftoppm -png -singlefile -scale-to-x 1020 -scale-to-y -1 paper.pdf ../sample-page-1

@@ -18,10 +18,10 @@ termleaf runs on macOS and Linux.
 
 ## Install
 
-With Homebrew on macOS or Linux:
+With the shell installer on macOS or Linux:
 
 ```sh
-brew install backyardbit/tap/termleaf
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/backyardbit/termleaf/releases/latest/download/termleaf-installer.sh | sh
 ```
 
 With Cargo:

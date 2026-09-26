@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>termleaf · PDF viewer for the terminal</title>
+  <meta name="description" content="A PDF viewer for the terminal that reloads whenever the file changes.">
+  <link rel="icon" href="assets/leaf.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Noto+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="nav">
+    <div class="container nav-inner">
+      <a class="brand" href="./" aria-label="termleaf home">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+          <rect width="32" height="32" rx="8" fill="currentColor"/>
+          <path d="M8.5 23.5C8 15 13 8.5 24 8c.4 10.6-5.6 16.2-14 15.8" fill="#fff"/>
+          <path d="M9 23.2c3-4.4 6.4-7.7 11-10.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+        <span class="brand-name">termleaf</span>
+      </a>
+      <nav aria-label="Main">
+        <ul class="nav-links">
+          <li class="hide-sm"><a href="#features">Features</a></li>
+          <li><a href="#install">Install</a></li>
+          <li class="hide-sm"><a href="#keys">Keys</a></li>
+          <li><a class="btn btn-outline btn-sm" href="https://github.com/backyardbit/termleaf">
+            <svg class="gh-icon" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+            GitHub</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero">
+      <div class="container hero-copy">
+        <p class="eyebrow"><span class="dot" aria-hidden="true"></span> v0.1.1 &middot; macOS and Linux</p>
+        <h1>A PDF viewer for your terminal that reloads on every build.</h1>
+        <p class="lead">Run it in a pane next to your editor while you write LaTeX.</p>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="#install">Install</a>
+          <a class="btn btn-secondary" href="https://github.com/backyardbit/termleaf">View on GitHub</a>
+        </div>
+      </div>
+
+      <div class="visual-band">
+      <div class="container hero-visual">
+        <figure class="term" aria-label="Illustration of a terminal split into an editor with LaTeX source and termleaf with the compiled page">
+          <div class="term-bar">
+            <span class="lights" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span class="term-title">~/paper</span>
+          </div>
+          <div class="term-body">
+            <div class="pane pane-editor" aria-hidden="true">
+<pre class="code"><span class="ln">1</span><span class="c">\documentclass</span><span class="o">[11pt]</span><span class="a">{article}</span>
+<span class="ln">2</span><span class="c">\usepackage</span><span class="o">[margin=1in]</span><span class="a">{geometry}</span>
+<span class="ln">3</span><span class="c">\usepackage</span><span class="a">{amsmath}</span>
+<span class="ln">4</span>
+<span class="ln">5</span><span class="c">\title</span><span class="a">{Heat Flow in a Thin Rod}</span>
+<span class="ln">6</span><span class="c">\author</span><span class="a">{A.~Student}</span>
+<span class="ln">7</span><span class="c">\date</span><span class="a">{<span class="c">\today</span>}</span>
+<span class="ln">8</span>
+<span class="ln">9</span><span class="k">\begin</span><span class="a">{document}</span>
+<span class="ln">10</span><span class="c">\maketitle</span>
+<span class="ln">11</span>
+<span class="ln">12</span><span class="k">\begin</span><span class="a">{abstract}</span>
+<span class="ln">13</span>We derive the one-dimensional heat equation
+<span class="ln">14</span>for a thin, insulated rod and solve it by
+<span class="ln">15</span>separation of variables. The solution is a
+<span class="ln">16</span>sum of decaying Fourier modes.
+<span class="ln">17</span><span class="k">\end</span><span class="a">{abstract}</span>
+<span class="ln">18</span>
+<span class="ln">19</span><span class="s">\section</span><span class="a">{The heat equation}</span>
+<span class="ln">20</span>Let <span class="m">$u(x,t)$</span> be the temperature of a rod of
+<span class="ln">21</span>length <span class="m">$L$</span> with diffusivity <span class="m">$\alpha &gt; 0$</span>.
+<span class="ln">22</span>Conservation of energy and Fourier's law give
+<span class="ln">23</span><span class="k">\begin</span><span class="a">{equation}</span>
+<span class="ln">24</span><span class="m">  \frac{\partial u}{\partial t}</span>
+<span class="ln">25</span><span class="m">    = \alpha \, \frac{\partial^2 u}{\partial x^2},</span>
+<span class="ln">26</span><span class="m">  \qquad 0 &lt; x &lt; L.</span>
+<span class="ln">27</span>  <span class="c">\label</span><span class="a">{eq:heat}</span>
+<span class="ln">28</span><span class="k">\end</span><span class="a">{equation}</span><span class="cursor"> </span>
+<span class="ln">29</span>With the ends held at zero, <span class="c">\eqref</span><span class="a">{eq:heat}</span> has
+</pre>
+              <div class="editor-status"><span class="mode">NORMAL</span><span class="fname">paper.tex</span><span class="pos">28:14</span></div>
+            </div>
+            <div class="pane pane-viewer">
+              <div class="viewer-page">
+                <img src="assets/sample-page-1.png" width="1020" height="1320" alt="Page 1 of the compiled sample paper, Heat Flow in a Thin Rod">
+              </div>
+              <div class="viewer-status" aria-hidden="true">page 1/1 &middot; fit page &middot; paper.pdf</div>
+            </div>
+          </div>
+        </figure>
+        <p class="caption">Illustration of your editor and <code>termleaf paper.pdf</code> in two panes. The page is a real render of the source.</p>
+      </div>
+      </div>
+    </section>
+
+    <section id="features" class="section">
+      <div class="container">
+        <div class="section-head">
+          <h2>Features</h2>
+        </div>
+        <div class="grid cards">
+          <article class="card">
+            <div class="icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.3-4.9L4 8M4 4v4h4M4 13a8 8 0 0 0 14.3 4.9L20 16m0 4v-4h-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+            <h3>Live reload</h3>
+            <p>When <code>latexmk -pvc</code>, texlab or <code>tectonic</code> writes the PDF, termleaf redraws it on the same page.</p>
+          </article>
+          <article class="card">
+            <div class="icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6l8-3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M8.5 12l2.5 2.5 4.5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+            <h3>Broken builds</h3>
+            <p>If a build leaves the PDF broken, termleaf keeps showing the last good page.</p>
+          </article>
+          <article class="card">
+            <div class="icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="9" cy="10" r="1.8" fill="currentColor"/><path d="M4 18l5-5 3.5 3.5L16 13l4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+            </div>
+            <h3>Image rendering</h3>
+            <p>MuPDF renders each page, and termleaf draws it with the Kitty graphics protocol.</p>
+          </article>
+          <article class="card">
+            <div class="icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            </div>
+            <h3>Keys and mouse</h3>
+            <p>Vim keys move between pages, and the mouse scrolls, zooms and follows links.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="install" class="section section-tint">
+      <div class="container narrow">
+        <div class="section-head">
+          <h2>Install</h2>
+          <p>termleaf runs on macOS and Linux. The latest release is <a href="https://github.com/backyardbit/termleaf/releases/latest">v0.1.1</a>.</p>
+        </div>
+
+        <div class="tabs">
+          <div class="tab-list" role="tablist" aria-label="Install method">
+            <button class="tab" role="tab" id="tab-sh" aria-controls="panel-sh" aria-selected="true">Shell installer</button>
+            <button class="tab" role="tab" id="tab-cargo" aria-controls="panel-cargo" aria-selected="false">Cargo</button>
+          </div>
+
+          <div class="tab-panel" role="tabpanel" id="panel-sh" aria-labelledby="tab-sh">
+            <p class="panel-note">Installs a prebuilt binary from the latest release.</p>
+            <div class="codeblock">
+              <pre><code><span class="prompt">$ </span><span class="nw">curl</span> <span class="nw">--proto</span> <span class="nw">'=https'</span> <span class="nw">--tlsv1.2</span> <span class="nw">-LsSf</span> <span class="url">https://github.com/<wbr>backyardbit/<wbr>termleaf/<wbr>releases/<wbr>latest/<wbr>download/<wbr>termleaf-installer.sh</span> <span class="nw">| sh</span></code></pre>
+              <button class="copy" type="button" data-copy="curl --proto '=https' --tlsv1.2 -LsSf https://github.com/backyardbit/termleaf/releases/latest/download/termleaf-installer.sh | sh">Copy</button>
+            </div>
+            <p class="panel-foot">Prebuilt tarballs for macOS (Apple Silicon, Intel) and Linux (x64, ARM64) are on the <a href="https://github.com/backyardbit/termleaf/releases">releases page</a>.</p>
+          </div>
+
+          <div class="tab-panel" role="tabpanel" id="panel-cargo" aria-labelledby="tab-cargo" hidden>
+            <p class="panel-note">Builds from source.</p>
+            <div class="codeblock">
+              <pre><code><span class="prompt">$ </span>cargo install termleaf</code></pre>
+              <button class="copy" type="button" data-copy="cargo install termleaf">Copy</button>
+            </div>
+            <p class="panel-foot">Building from source compiles MuPDF, which needs a C compiler, <code>make</code> and libclang. On Linux it also needs <code>pkg-config</code> and the fontconfig headers (<code>libfontconfig-dev</code> on Debian and Ubuntu).</p>
+          </div>
+        </div>
+
+        <div class="then">
+          <span class="then-label">Usage</span>
+          <div class="codeblock">
+            <pre><code><span class="prompt">$ </span>termleaf thesis.pdf</code></pre>
+            <button class="copy" type="button" data-copy="termleaf thesis.pdf">Copy</button>
+          </div>
+          <p class="panel-foot">The file must exist when termleaf starts.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="terminals">
+      <div class="container narrow">
+        <div class="support">
+          <div class="support-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><rect x="2.5" y="4" width="19" height="16" rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M7 9.5l3 2.5-3 2.5M12.5 15H17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div>
+            <h2>Terminal support</h2>
+            <p>termleaf needs a terminal with the Kitty graphics protocol.</p>
+            <ul class="term-list">
+              <li><a href="https://sw.kovidgoyal.net/kitty/">Kitty</a></li>
+              <li><a href="https://ghostty.org/">Ghostty</a></li>
+              <li><a href="https://github.com/herdrdev/herdr">herdr</a> inside Kitty or Ghostty</li>
+            </ul>
+            <p class="muted">In other terminals, termleaf exits with an error. Sixel and iTerm2 images are not supported yet.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="keys" class="section section-tint">
+      <div class="container">
+        <div class="section-head">
+          <h2>Keys and mouse</h2>
+        </div>
+        <div class="grid keys-grid">
+          <div class="table-card">
+            <table>
+              <caption>Keyboard</caption>
+              <thead><tr><th scope="col">Key</th><th scope="col">Action</th></tr></thead>
+              <tbody>
+                <tr><td><kbd>j</kbd> / <kbd>k</kbd></td><td>next / previous page (takes a count, e.g. <code>5j</code>)</td></tr>
+                <tr><td><kbd>gg</kbd> / <kbd>G</kbd></td><td>first / last page</td></tr>
+                <tr><td><kbd>&lt;n&gt;G</kbd> <kbd>&lt;n&gt;gg</kbd> <kbd>:&lt;n&gt;</kbd></td><td>go to page <em>n</em></td></tr>
+                <tr><td><kbd>:$</kbd></td><td>last page</td></tr>
+                <tr><td><kbd>+</kbd> / <kbd>-</kbd></td><td>zoom in / out (<code>=</code> also zooms in; takes a count)</td></tr>
+                <tr><td><kbd>s</kbd> / <kbd>a</kbd></td><td>fit width / fit page</td></tr>
+                <tr><td><kbd>q</kbd> <kbd>:q</kbd> <kbd>Ctrl-C</kbd></td><td>quit</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="table-card">
+            <table>
+              <caption>Mouse</caption>
+              <thead><tr><th scope="col">Input</th><th scope="col">Action</th></tr></thead>
+              <tbody>
+                <tr><td>wheel</td><td>scroll</td></tr>
+                <tr><td>shift + wheel, sideways swipe</td><td>pan left / right</td></tr>
+                <tr><td><kbd>Ctrl</kbd> + wheel</td><td>zoom at the pointer</td></tr>
+                <tr><td>drag</td><td>pan</td></tr>
+                <tr><td>click</td><td>follow a link (<code>\ref</code>, citations, table of contents)</td></tr>
+                <tr><td>double-click</td><td>switch between fit width and fit page</td></tr>
+                <tr><td>pinch</td><td>zoom at the pointer</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <p class="note">Pinch to zoom needs an OS permission. On macOS, the terminal app needs Input Monitoring. On Linux, your user must be in the <code>input</code> group. <code>termleaf --no-pinch</code> turns it off. <a href="https://github.com/backyardbit/termleaf#pinch-to-zoom">Details are in the README.</a></p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container footer-inner">
+      <div class="footer-brand">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+          <rect width="32" height="32" rx="8" fill="#fff"/>
+          <path d="M8.5 23.5C8 15 13 8.5 24 8c.4 10.6-5.6 16.2-14 15.8" fill="#046530"/>
+          <path d="M9 23.2c3-4.4 6.4-7.7 11-10.4" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+        <span>termleaf</span>
+      </div>
+      <p class="footer-license">Licensed under <a href="https://github.com/backyardbit/termleaf/blob/master/LICENSE">AGPL-3.0-or-later</a>, matching <a href="https://mupdf.com/">MuPDF</a>, which termleaf uses to render pages.</p>
+      <ul class="footer-links">
+        <li><a href="https://github.com/backyardbit/termleaf">GitHub</a></li>
+        <li><a href="https://github.com/backyardbit/termleaf/releases">Releases</a></li>
+      </ul>
+    </div>
+  </footer>
+
+  <script src="assets/site.js"></script>
+</body>
+</html>
