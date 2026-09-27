@@ -25,7 +25,7 @@ use crate::viewer::Viewer;
 const RELOAD_SETTLE: Duration = Duration::from_millis(100);
 const RELOAD_RETRY: Duration = Duration::from_millis(250);
 const MAX_RELOAD_RETRIES: u32 = 3;
-const TILE_BYTE_BUDGET: usize = 96 * 1024 * 1024;
+const TILE_BYTE_BUDGET: usize = 48 * 1024 * 1024;
 const IDLE_WAIT: Duration = Duration::from_secs(3600);
 pub const RESIZE_SETTLE: Duration = Duration::from_millis(300);
 const ZOOM_SETTLE: Duration = Duration::from_millis(150);
