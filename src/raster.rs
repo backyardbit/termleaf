@@ -23,7 +23,9 @@ use crate::app::Options;
 use crate::graphics::Raster;
 use crate::layout::CellSize;
 use crate::pinch;
-use crate::raster::app::{App, Event, PARTIAL_REPAINT_INTERVAL, Parts, page_area, pane_of};
+use crate::raster::app::{
+    App, Event, FRAME_INTERVAL, PARTIAL_REPAINT_INTERVAL, Parts, page_area, pane_of,
+};
 use crate::raster::painter::{Encode, Painter};
 use crate::renderer::{Renderer, Response};
 use crate::watch::watch;
@@ -45,6 +47,13 @@ fn partial_repaint_interval(raster: Raster) -> Duration {
     match raster {
         Raster::Sixel => Duration::ZERO,
         Raster::Iterm2 => PARTIAL_REPAINT_INTERVAL,
+    }
+}
+
+fn frame_interval(raster: Raster) -> Duration {
+    match raster {
+        Raster::Sixel => Duration::ZERO,
+        Raster::Iterm2 => FRAME_INTERVAL,
     }
 }
 
@@ -141,6 +150,7 @@ fn show(
         renderer,
         painter,
         partial_repaint_interval: partial_repaint_interval(raster),
+        frame_interval: frame_interval(raster),
     });
     app.event_loop(terminal, &inbox)
 }
@@ -175,6 +185,12 @@ mod tests {
             partial_repaint_interval(Raster::Iterm2),
             PARTIAL_REPAINT_INTERVAL
         );
+    }
+
+    #[test]
+    fn only_iterm2_images_cap_the_frame_rate() {
+        assert_eq!(frame_interval(Raster::Sixel), Duration::ZERO);
+        assert_eq!(frame_interval(Raster::Iterm2), FRAME_INTERVAL);
     }
 
     #[test]
