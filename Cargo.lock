@@ -2751,6 +2751,7 @@ dependencies = [
 name = "xtask"
 version = "0.1.0"
 dependencies = [
+ "icy_sixel",
  "image",
  "ra-ap-rustc_lexer",
  "serde_json",

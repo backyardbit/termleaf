@@ -92,9 +92,9 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
     let mut terminal = ratatui::init();
     let picker = match graphics::detect(options.graphics) {
         Ok((Protocol::Kitty, picker)) => picker,
-        Ok((Protocol::Raster(protocol), _)) => {
-            ratatui::restore();
-            return raster::run(protocol);
+        Ok((Protocol::Raster(protocol), picker)) => {
+            drop((renderer, _watcher));
+            return raster::run(&path, options, terminal, &picker, protocol);
         }
         Err(error) => {
             ratatui::restore();

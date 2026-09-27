@@ -4,8 +4,8 @@ use anyhow::{Context, Result, bail};
 use ratatui_image::picker::cap_parser::QueryStdioOptions;
 use ratatui_image::picker::{Picker, ProtocolType};
 
-pub const NEEDS_KITTY: &str = "termleaf needs a terminal that supports the Kitty graphics protocol \
-     (for example Kitty or Ghostty, optionally inside herdr)";
+pub const NEEDS_IMAGES: &str = "termleaf needs a terminal that supports Kitty graphics or Sixel \
+     (for example Kitty, Ghostty, herdr, foot, or xterm -ti vt340)";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protocol {
@@ -64,7 +64,8 @@ fn decide(found: ProtocolType, choice: Choice) -> Result<Protocol> {
         (Choice::Auto, ProtocolType::Iterm2) => Ok(Protocol::Raster(Raster::Iterm2)),
         (Choice::Auto, ProtocolType::Halfblocks) => {
             bail!(
-                "{NEEDS_KITTY}; if this terminal does support it, run termleaf with --graphics kitty"
+                "{NEEDS_IMAGES}; if this terminal does support one of them, \
+                 run termleaf with --graphics kitty or --graphics sixel"
             )
         }
     }
@@ -113,9 +114,10 @@ mod tests {
             decide(ProtocolType::Halfblocks, Choice::Auto)
                 .unwrap_err()
                 .to_string(),
-            "termleaf needs a terminal that supports the Kitty graphics protocol \
-             (for example Kitty or Ghostty, optionally inside herdr); \
-             if this terminal does support it, run termleaf with --graphics kitty"
+            "termleaf needs a terminal that supports Kitty graphics or Sixel \
+             (for example Kitty, Ghostty, herdr, foot, or xterm -ti vt340); \
+             if this terminal does support one of them, \
+             run termleaf with --graphics kitty or --graphics sixel"
         );
     }
 
