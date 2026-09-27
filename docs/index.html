@@ -128,7 +128,7 @@
               <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="9" cy="10" r="1.8" fill="currentColor"/><path d="M4 18l5-5 3.5 3.5L16 13l4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
             </div>
             <h3>Image rendering</h3>
-            <p>MuPDF renders each page, and termleaf draws it with the Kitty graphics protocol.</p>
+            <p>MuPDF renders each page, and termleaf draws it with Kitty graphics, Sixel or iTerm2 images.</p>
           </article>
           <article class="card">
             <div class="icon" aria-hidden="true">
@@ -192,13 +192,20 @@
           </div>
           <div>
             <h2>Terminal support</h2>
-            <p>termleaf needs a terminal with the Kitty graphics protocol.</p>
-            <ul class="term-list">
-              <li><a href="https://sw.kovidgoyal.net/kitty/">Kitty</a></li>
-              <li><a href="https://ghostty.org/">Ghostty</a></li>
-              <li><a href="https://github.com/herdrdev/herdr">herdr</a> inside Kitty or Ghostty</li>
-            </ul>
-            <p class="muted">In other terminals, termleaf exits with an error. Sixel and iTerm2 images are not supported yet.</p>
+            <p>termleaf needs a terminal that can show images. It picks the protocol from what the terminal reports.</p>
+            <div class="table-card">
+              <table>
+                <thead><tr><th scope="col">Terminal</th><th scope="col">Protocol</th><th scope="col">Scrolling</th></tr></thead>
+                <tbody>
+                  <tr><td><a href="https://sw.kovidgoyal.net/kitty/">Kitty</a>, <a href="https://ghostty.org/">Ghostty</a></td><td>Kitty graphics</td><td>smooth</td></tr>
+                  <tr><td><a href="https://github.com/herdrdev/herdr">herdr</a> inside Kitty or Ghostty</td><td>Kitty graphics</td><td>smooth</td></tr>
+                  <tr><td>foot, <code>xterm -ti vt340</code>, mlterm, Windows Terminal (from WSL or SSH)</td><td>Sixel</td><td>repaints the page area</td></tr>
+                  <tr><td>tmux 3.6 or later built with Sixel, inside a Sixel terminal</td><td>Sixel</td><td>repaints the page area</td></tr>
+                  <tr><td>WezTerm, iTerm2, Konsole</td><td>iTerm2 images</td><td>repaints the page area</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="muted">With Kitty graphics, each piece of a page is sent once and scrolling only moves it. Sixel and iTerm2 images are one picture of the whole page area, sent again on every scroll, zoom and page change, which is slower, especially over SSH. <code>--graphics kitty|sixel|iterm2</code> overrides the choice. In other terminals, termleaf exits with an error.</p>
           </div>
         </div>
       </div>

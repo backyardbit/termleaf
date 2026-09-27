@@ -228,10 +228,9 @@ kbd {
 .support-icon svg { width: 28px; height: 28px; }
 .support h2 { font-size: 1.5rem; font-weight: 600; letter-spacing: -.01em; margin-bottom: 10px; }
 .support p { margin: 0 0 12px; }
-.term-list { margin: 0 0 14px; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 10px; }
-.term-list li { background: var(--green-tint); color: var(--ink); border-radius: 999px; padding: 6px 14px; font-size: 15px; }
-.term-list a { font-weight: 600; text-decoration: none; }
 .support .muted { margin: 0; color: var(--muted); font-size: 15.5px; }
+.support .table-card { margin: 0 0 14px; }
+.support td:first-child { width: 50%; }
 
 .keys-grid { grid-template-columns: 1fr 1fr; align-items: start; }
 .table-card { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: #fff; }
