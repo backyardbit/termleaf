@@ -1,4 +1,5 @@
 mod e2e;
+mod xterm;
 
 use std::fmt;
 use std::fs;
@@ -43,12 +44,16 @@ fn main() -> ExitCode {
         Some("lint") => lint(),
         Some("check") => check(),
         Some("e2e") => e2e::run(&workspace_root()),
+        Some("xterm") => xterm::run(&workspace_root()),
         _ => {
-            eprintln!("usage: cargo xtask <lint|check|e2e>");
+            eprintln!("usage: cargo xtask <lint|check|e2e|xterm>");
             eprintln!("  lint   run the anti-slop source checks");
             eprintln!("  check  run fmt, clippy, tests and lint");
             eprintln!(
                 "  e2e    drive termleaf in Ghostty and herdr on a virtual display (CI only)"
+            );
+            eprintln!(
+                "  xterm  check termleaf's Sixel frames in xterm on a virtual display (CI only)"
             );
             ExitCode::FAILURE
         }
