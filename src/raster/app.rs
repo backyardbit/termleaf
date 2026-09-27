@@ -29,7 +29,7 @@ const TILE_BYTE_BUDGET: usize = 48 * 1024 * 1024;
 const IDLE_WAIT: Duration = Duration::from_secs(3600);
 pub const RESIZE_SETTLE: Duration = Duration::from_millis(300);
 const ZOOM_SETTLE: Duration = Duration::from_millis(150);
-const PARTIAL_REPAINT_INTERVAL: Duration = Duration::from_millis(100);
+pub const PARTIAL_REPAINT_INTERVAL: Duration = Duration::from_millis(100);
 const PAGE_ORIGIN: &str = "\x1b[1;1H";
 
 pub enum Event {
@@ -79,6 +79,7 @@ pub struct App {
     resize_settles_at: Option<Instant>,
     zooming_until: Option<Instant>,
     submitted: Option<Submitted>,
+    partial_repaint_interval: Duration,
     partial_painted_at: Option<Instant>,
     partial_due: Option<Instant>,
     next_job: u64,
@@ -95,6 +96,7 @@ pub struct Parts {
     pub pane: Pane,
     pub renderer: Renderer,
     pub painter: Painter,
+    pub partial_repaint_interval: Duration,
 }
 
 impl App {
@@ -116,6 +118,7 @@ impl App {
             resize_settles_at: None,
             zooming_until: None,
             submitted: None,
+            partial_repaint_interval: parts.partial_repaint_interval,
             partial_painted_at: None,
             partial_due: None,
             next_job: 0,
@@ -295,7 +298,7 @@ impl App {
         let held_back = (!complete && self.filling_in(&submission))
             .then(|| {
                 self.partial_painted_at
-                    .map(|at| at + PARTIAL_REPAINT_INTERVAL)
+                    .map(|at| at + self.partial_repaint_interval)
             })
             .flatten()
             .filter(|due| now < *due);
@@ -514,6 +517,14 @@ mod tests {
     }
 
     fn headless_app(path: PathBuf, pane: Pane) -> (App, Receiver<Event>) {
+        headless_app_with(path, pane, PARTIAL_REPAINT_INTERVAL)
+    }
+
+    fn headless_app_with(
+        path: PathBuf,
+        pane: Pane,
+        partial_repaint_interval: Duration,
+    ) -> (App, Receiver<Event>) {
         let (events, inbox) = mpsc::channel();
         let renderer = {
             let responses = events.clone();
@@ -542,6 +553,7 @@ mod tests {
             pane,
             renderer,
             painter,
+            partial_repaint_interval,
         });
         (app, inbox)
     }
@@ -905,6 +917,20 @@ mod tests {
                 assert!(app.idle_wait(soon) <= PARTIAL_REPAINT_INTERVAL);
             }
         }
+        assert_eq!(app.next_job, partial + 1);
+    }
+
+    #[test]
+    fn without_an_interval_each_tile_repaints_the_partial_frame() {
+        let (mut app, inbox) = headless_app_with(fixture("three-pages.pdf"), PANE, Duration::ZERO);
+        settle(&mut app, &inbox);
+        app.apply_at(Command::Last, Instant::now());
+        let start = settled();
+        app.prepare_frame(start);
+        let partial = app.next_job;
+        next_tile(&mut app, &inbox);
+        assert!(!all_visible_rendered(&app));
+        app.prepare_frame(start);
         assert_eq!(app.next_job, partial + 1);
     }
 

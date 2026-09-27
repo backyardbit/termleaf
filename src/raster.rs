@@ -9,6 +9,7 @@ mod tiles;
 use std::path::Path;
 use std::process::Command;
 use std::sync::mpsc;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use crossterm::event::{
@@ -22,7 +23,7 @@ use crate::app::Options;
 use crate::graphics::Raster;
 use crate::layout::CellSize;
 use crate::pinch;
-use crate::raster::app::{App, Event, Parts, page_area, pane_of};
+use crate::raster::app::{App, Event, PARTIAL_REPAINT_INTERVAL, Parts, page_area, pane_of};
 use crate::raster::painter::{Encode, Painter};
 use crate::renderer::{Renderer, Response};
 use crate::watch::watch;
@@ -38,6 +39,13 @@ pub fn run(
     let _ = execute!(std::io::stdout(), DisableFocusChange, DisableMouseCapture);
     ratatui::restore();
     result
+}
+
+fn partial_repaint_interval(raster: Raster) -> Duration {
+    match raster {
+        Raster::Sixel => Duration::ZERO,
+        Raster::Iterm2 => PARTIAL_REPAINT_INTERVAL,
+    }
 }
 
 fn encoder_for(raster: Raster) -> Encode {
@@ -132,6 +140,7 @@ fn show(
         pane: pane_of(page_area(terminal.get_frame().area())),
         renderer,
         painter,
+        partial_repaint_interval: partial_repaint_interval(raster),
     });
     app.event_loop(terminal, &inbox)
 }
@@ -156,6 +165,15 @@ mod tests {
             encoder_for(Raster::Iterm2)(frame, pane)
                 .unwrap()
                 .starts_with("\x1b]1337;File=")
+        );
+    }
+
+    #[test]
+    fn only_iterm2_images_coalesce_partial_frames() {
+        assert_eq!(partial_repaint_interval(Raster::Sixel), Duration::ZERO);
+        assert_eq!(
+            partial_repaint_interval(Raster::Iterm2),
+            PARTIAL_REPAINT_INTERVAL
         );
     }
 
