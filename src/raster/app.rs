@@ -31,6 +31,7 @@ pub const RESIZE_SETTLE: Duration = Duration::from_millis(300);
 const ZOOM_SETTLE: Duration = Duration::from_millis(150);
 pub const PARTIAL_REPAINT_INTERVAL: Duration = Duration::from_millis(100);
 pub const FRAME_INTERVAL: Duration = Duration::from_millis(33);
+const UNRENDERED_VIEW_WAIT: Duration = Duration::from_millis(100);
 const PAGE_ORIGIN: &str = "\x1b[1;1H";
 
 pub enum Event {
@@ -84,6 +85,7 @@ pub struct App {
     partial_painted_at: Option<Instant>,
     frame_interval: Duration,
     painted_at: Option<Instant>,
+    unrendered_view: Option<(View, Instant)>,
     paint_due: Option<Instant>,
     next_job: u64,
     first_valid_job: u64,
@@ -126,6 +128,7 @@ impl App {
             partial_painted_at: None,
             frame_interval: parts.frame_interval,
             painted_at: None,
+            unrendered_view: None,
             paint_due: None,
             next_job: 0,
             first_valid_job: 0,
@@ -290,7 +293,16 @@ impl App {
             .filter(|key| self.tiles.contains(*key))
             .collect();
         let complete = present.len() == wanted.len();
-        if !complete && !self.only_scrolled_from_screen(&view) {
+        if !complete
+            && present.is_empty()
+            && !self
+                .unrendered_view
+                .as_ref()
+                .is_some_and(|(seen, _)| *seen == view)
+        {
+            self.unrendered_view = Some((view.clone(), now));
+        }
+        if !complete && (present.is_empty() || !self.only_scrolled_from_screen(&view)) {
             return;
         }
         let submission = Submitted {
@@ -308,9 +320,15 @@ impl App {
             })
             .flatten();
         let frame_due = self.painted_at.map(|at| at + self.frame_interval);
+        let unrendered_due = self
+            .unrendered_view
+            .as_ref()
+            .filter(|(seen, _)| !complete && *seen == submission.view)
+            .map(|(_, at)| *at + UNRENDERED_VIEW_WAIT);
         let held_back = partial_due
             .into_iter()
             .chain(frame_due)
+            .chain(unrendered_due)
             .max()
             .filter(|due| now < *due);
         if let Some(due) = held_back {
@@ -680,12 +698,22 @@ mod tests {
         assert_eq!(frames_written(&app), 1);
     }
 
+    fn scroll_past_the_prefetch(app: &mut App) {
+        app.apply_at(
+            Command::Scroll {
+                columns: 0,
+                rows: PANE.rows.cast_signed() * 3 / 2,
+            },
+            Instant::now(),
+        );
+    }
+
     #[test]
     fn a_scroll_is_painted_at_once_and_filled_in_when_its_tiles_arrive() {
         let (mut app, inbox) = headless_app(fixture("three-pages.pdf"), PANE);
         settle(&mut app, &inbox);
         app.outgoing.clear();
-        app.apply_at(Command::Last, Instant::now());
+        scroll_past_the_prefetch(&mut app);
         app.prepare_frame(settled());
         let first = app.submitted.clone().unwrap();
         assert_eq!(&first.view, app.viewer.view());
@@ -913,10 +941,54 @@ mod tests {
     }
 
     #[test]
+    fn a_jump_to_unrendered_pages_is_painted_once_when_its_tiles_arrive_quickly() {
+        let (mut app, inbox) = headless_app(fixture("five-pages.pdf"), PANE);
+        settle(&mut app, &inbox);
+        let shown = app.next_job;
+        app.apply_at(Command::Last, Instant::now());
+        assert!(wanted(&app).iter().all(|key| !app.tiles.contains(*key)));
+        let start = settled();
+        app.prepare_frame(start);
+        assert_eq!(app.next_job, shown);
+        while !all_visible_rendered(&app) {
+            next_tile(&mut app, &inbox);
+            app.prepare_frame(start);
+        }
+        assert_eq!(app.next_job, shown + 1);
+        assert!(
+            app.submitted
+                .as_ref()
+                .is_some_and(|submitted| submitted.present == wanted(&app))
+        );
+    }
+
+    #[test]
+    fn a_jump_whose_tiles_are_slow_is_painted_partially_after_a_wait() {
+        let (mut app, inbox) = headless_app(fixture("five-pages.pdf"), PANE);
+        settle(&mut app, &inbox);
+        let shown = app.next_job;
+        app.apply_at(Command::Last, Instant::now());
+        let start = settled();
+        app.prepare_frame(start);
+        next_tile(&mut app, &inbox);
+        assert!(!all_visible_rendered(&app));
+        app.prepare_frame(start);
+        assert_eq!(app.next_job, shown);
+        assert!(app.idle_wait(start) <= UNRENDERED_VIEW_WAIT);
+        app.prepare_frame(start + UNRENDERED_VIEW_WAIT);
+        assert_eq!(app.next_job, shown + 1);
+        assert!(
+            app.submitted
+                .as_ref()
+                .is_some_and(|submitted| !submitted.present.is_empty())
+        );
+    }
+
+    #[test]
     fn tiles_arriving_soon_after_a_partial_frame_are_painted_together() {
         let (mut app, inbox) = headless_app(fixture("three-pages.pdf"), PANE);
         settle(&mut app, &inbox);
-        app.apply_at(Command::Last, Instant::now());
+        scroll_past_the_prefetch(&mut app);
         let start = settled();
         app.prepare_frame(start);
         let missing = wanted(&app).len() - app.submitted.as_ref().unwrap().present.len();
@@ -943,7 +1015,7 @@ mod tests {
             Duration::ZERO,
         );
         settle(&mut app, &inbox);
-        app.apply_at(Command::Last, Instant::now());
+        scroll_past_the_prefetch(&mut app);
         let start = settled();
         app.prepare_frame(start);
         let partial = app.next_job;
@@ -957,7 +1029,7 @@ mod tests {
     fn a_partial_frame_is_repainted_once_the_interval_has_passed() {
         let (mut app, inbox) = headless_app(fixture("three-pages.pdf"), PANE);
         settle(&mut app, &inbox);
-        app.apply_at(Command::Last, Instant::now());
+        scroll_past_the_prefetch(&mut app);
         let start = settled();
         app.prepare_frame(start);
         let partial = app.next_job;
