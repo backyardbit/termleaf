@@ -4,19 +4,12 @@ use image::RgbImage;
 
 const COLOURS: u16 = 256;
 
-pub fn encode(frame: &RgbImage) -> Result<String> {
-    let mut rgba = Vec::with_capacity(frame.as_raw().len() / 3 * 4);
-    for pixel in frame.as_raw().as_chunks::<3>().0 {
-        rgba.extend_from_slice(pixel);
-        rgba.push(u8::MAX);
-    }
+pub fn encode(frame: RgbImage) -> Result<String> {
+    let width = usize::try_from(frame.width())?;
+    let height = usize::try_from(frame.height())?;
     let image = SixelImage {
         background_mode: BackgroundMode::Transparent,
-        ..SixelImage::try_from_rgba(
-            rgba,
-            usize::try_from(frame.width())?,
-            usize::try_from(frame.height())?,
-        )?
+        ..SixelImage::try_from_rgba(opaque_rgba(frame.into_raw()), width, height)?
     };
     let options = EncodeOptions {
         max_colors: COLOURS,
@@ -24,6 +17,17 @@ pub fn encode(frame: &RgbImage) -> Result<String> {
         ..EncodeOptions::default()
     };
     Ok(image.encode_with(&options)?)
+}
+
+fn opaque_rgba(mut pixels: Vec<u8>) -> Vec<u8> {
+    let count = pixels.len() / 3;
+    pixels.reserve_exact(count);
+    pixels.resize(count * 4, u8::MAX);
+    for index in (0..count).rev() {
+        pixels.copy_within(index * 3..index * 3 + 3, index * 4);
+        pixels[index * 4 + 3] = u8::MAX;
+    }
+    pixels
 }
 
 #[cfg(test)]
@@ -40,7 +44,11 @@ mod tests {
     }
 
     fn round_trip(frame: &RgbImage) -> RgbImage {
-        decoded(&encode(frame).unwrap(), frame.width(), frame.height())
+        decoded(
+            &encode(frame.clone()).unwrap(),
+            frame.width(),
+            frame.height(),
+        )
     }
 
     fn checkerboard(width: u32, height: u32, colours: &[Rgb<u8>]) -> RgbImage {
@@ -71,14 +79,14 @@ mod tests {
             }
         });
         assert_eq!(
-            encode(&frame).unwrap(),
+            encode(frame).unwrap(),
             "\x1bP9;1;0q\"1;1;4;2#0;2;100;100;100#1;2;0;0;0#0BB??$#1??BB$-\x1b\\"
         );
     }
 
     #[test]
     fn the_frame_declares_its_size_and_leaves_the_pixels_below_it_alone() {
-        let sixel = encode(&RgbImage::new(30, 25)).unwrap();
+        let sixel = encode(RgbImage::new(30, 25)).unwrap();
         assert!(sixel.starts_with("\x1bP9;1;0q\"1;1;30;25"), "{sixel:?}");
     }
 
@@ -125,6 +133,6 @@ mod tests {
 
     #[test]
     fn an_empty_frame_is_an_error() {
-        assert!(encode(&RgbImage::new(0, 0)).is_err());
+        assert!(encode(RgbImage::new(0, 0)).is_err());
     }
 }

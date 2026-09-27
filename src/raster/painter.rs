@@ -8,7 +8,7 @@ use crate::layout::{Pane, View};
 use crate::raster::frame::{Rendered, compose};
 use crate::renderer::Generation;
 
-pub type Encode = Box<dyn Fn(&RgbImage, Pane) -> Result<String> + Send>;
+pub type Encode = Box<dyn Fn(RgbImage, Pane) -> Result<String> + Send>;
 
 pub struct Job {
     pub id: u64,
@@ -47,7 +47,7 @@ impl Painter {
         thread::spawn(move || {
             while let Some(job) = inbox.take() {
                 let frame = compose(&job.view, job.generation, &job.tiles);
-                if let Ok(bytes) = encode(&frame, job.view.pane) {
+                if let Ok(bytes) = encode(frame, job.view.pane) {
                     deliver(Painting {
                         id: job.id,
                         view: job.view,

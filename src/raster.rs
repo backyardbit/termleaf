@@ -43,7 +43,7 @@ pub fn run(
 fn encoder_for(raster: Raster) -> Encode {
     match raster {
         Raster::Sixel => Box::new(|frame, _| sixel::encode(frame)),
-        Raster::Iterm2 => Box::new(iterm2::encode),
+        Raster::Iterm2 => Box::new(|frame, pane| iterm2::encode(&frame, pane)),
     }
 }
 
@@ -148,12 +148,12 @@ mod tests {
             rows: 1,
         };
         assert!(
-            encoder_for(Raster::Sixel)(&frame, pane)
+            encoder_for(Raster::Sixel)(frame.clone(), pane)
                 .unwrap()
                 .starts_with("\x1bP")
         );
         assert!(
-            encoder_for(Raster::Iterm2)(&frame, pane)
+            encoder_for(Raster::Iterm2)(frame, pane)
                 .unwrap()
                 .starts_with("\x1b]1337;File=")
         );
