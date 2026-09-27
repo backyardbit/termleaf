@@ -52,16 +52,32 @@ pub fn detect(choice: Choice) -> Result<(Protocol, Picker)> {
         ..QueryStdioOptions::default()
     };
     let picker = Picker::from_query_stdio_with_options(options).context("querying the terminal")?;
-    let protocol = decide(picker.protocol_type(), choice)?;
+    let protocol = decide(picker.protocol_type(), choice, Hints::from_env())?;
     Ok((protocol, picker))
 }
 
-fn decide(found: ProtocolType, choice: Choice) -> Result<Protocol> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Hints {
+    konsole: bool,
+}
+
+impl Hints {
+    fn from_env() -> Self {
+        Self {
+            konsole: std::env::var_os("KONSOLE_VERSION").is_some_and(|version| !version.is_empty()),
+        }
+    }
+}
+
+fn decide(found: ProtocolType, choice: Choice, hints: Hints) -> Result<Protocol> {
     match (choice, found) {
         (Choice::Force(protocol), _) => Ok(protocol),
         (Choice::Auto, ProtocolType::Kitty) => Ok(Protocol::Kitty),
         (Choice::Auto, ProtocolType::Sixel) => Ok(Protocol::Raster(Raster::Sixel)),
         (Choice::Auto, ProtocolType::Iterm2) => Ok(Protocol::Raster(Raster::Iterm2)),
+        (Choice::Auto, ProtocolType::Halfblocks) if hints.konsole => {
+            Ok(Protocol::Raster(Raster::Iterm2))
+        }
         (Choice::Auto, ProtocolType::Halfblocks) => {
             bail!(
                 "{NEEDS_IMAGES}; if this terminal does support one of them, \
@@ -77,33 +93,46 @@ mod tests {
 
     const SIXEL: Protocol = Protocol::Raster(Raster::Sixel);
     const ITERM2: Protocol = Protocol::Raster(Raster::Iterm2);
+    const ELSEWHERE: Hints = Hints { konsole: false };
+    const KONSOLE: Hints = Hints { konsole: true };
 
     #[test]
     fn a_kitty_terminal_keeps_the_kitty_path() {
         assert_eq!(
-            decide(ProtocolType::Kitty, Choice::Auto).unwrap(),
+            decide(ProtocolType::Kitty, Choice::Auto, ELSEWHERE).unwrap(),
             Protocol::Kitty
         );
     }
 
     #[test]
     fn sixel_and_iterm2_terminals_take_the_raster_path() {
-        assert_eq!(decide(ProtocolType::Sixel, Choice::Auto).unwrap(), SIXEL);
-        assert_eq!(decide(ProtocolType::Iterm2, Choice::Auto).unwrap(), ITERM2);
+        assert_eq!(
+            decide(ProtocolType::Sixel, Choice::Auto, ELSEWHERE).unwrap(),
+            SIXEL
+        );
+        assert_eq!(
+            decide(ProtocolType::Iterm2, Choice::Auto, ELSEWHERE).unwrap(),
+            ITERM2
+        );
     }
 
     #[test]
     fn a_forced_protocol_wins_over_what_the_terminal_reports() {
         assert_eq!(
-            decide(ProtocolType::Halfblocks, Choice::Force(Protocol::Kitty)).unwrap(),
+            decide(
+                ProtocolType::Halfblocks,
+                Choice::Force(Protocol::Kitty),
+                KONSOLE
+            )
+            .unwrap(),
             Protocol::Kitty
         );
         assert_eq!(
-            decide(ProtocolType::Kitty, Choice::Force(SIXEL)).unwrap(),
+            decide(ProtocolType::Kitty, Choice::Force(SIXEL), ELSEWHERE).unwrap(),
             SIXEL
         );
         assert_eq!(
-            decide(ProtocolType::Sixel, Choice::Force(ITERM2)).unwrap(),
+            decide(ProtocolType::Sixel, Choice::Force(ITERM2), ELSEWHERE).unwrap(),
             ITERM2
         );
     }
@@ -111,13 +140,33 @@ mod tests {
     #[test]
     fn a_terminal_without_image_support_is_pointed_at_the_flag() {
         assert_eq!(
-            decide(ProtocolType::Halfblocks, Choice::Auto)
+            decide(ProtocolType::Halfblocks, Choice::Auto, ELSEWHERE)
                 .unwrap_err()
                 .to_string(),
             "termleaf needs a terminal that supports Kitty graphics, Sixel or iTerm2 images \
              (for example Kitty, Ghostty, herdr, WezTerm, iTerm2, Konsole, foot, or xterm -ti vt340); \
              if this terminal does support one of them, \
              run termleaf with --graphics kitty, sixel or iterm2"
+        );
+    }
+
+    #[test]
+    fn konsole_gets_iterm2_images_when_nothing_else_was_found() {
+        assert_eq!(
+            decide(ProtocolType::Halfblocks, Choice::Auto, KONSOLE).unwrap(),
+            ITERM2
+        );
+    }
+
+    #[test]
+    fn the_konsole_hint_never_overrides_what_the_terminal_reports() {
+        assert_eq!(
+            decide(ProtocolType::Kitty, Choice::Auto, KONSOLE).unwrap(),
+            Protocol::Kitty
+        );
+        assert_eq!(
+            decide(ProtocolType::Sixel, Choice::Auto, KONSOLE).unwrap(),
+            SIXEL
         );
     }
 
