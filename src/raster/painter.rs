@@ -8,7 +8,7 @@ use crate::layout::{Pane, View};
 use crate::raster::frame::{Rendered, compose};
 use crate::renderer::Generation;
 
-pub type Encode = Box<dyn Fn(&RgbImage, Pane) -> Result<String> + Send>;
+pub type Encode = Box<dyn Fn(RgbImage, Pane) -> Result<String> + Send>;
 
 pub struct Job {
     pub id: u64,
@@ -45,13 +45,20 @@ impl Painter {
         let mailbox = Arc::new(Mailbox::default());
         let inbox = Arc::clone(&mailbox);
         thread::spawn(move || {
-            while let Some(job) = inbox.take() {
-                let frame = compose(&job.view, job.generation, &job.tiles);
-                if let Ok(bytes) = encode(&frame, job.view.pane) {
+            while let Some(Job {
+                id,
+                view,
+                generation,
+                tiles,
+            }) = inbox.take()
+            {
+                let frame = compose(&view, generation, &tiles);
+                drop(tiles);
+                if let Ok(bytes) = encode(frame, view.pane) {
                     deliver(Painting {
-                        id: job.id,
-                        view: job.view,
-                        generation: job.generation,
+                        id,
+                        view,
+                        generation,
                         bytes,
                     });
                 }
