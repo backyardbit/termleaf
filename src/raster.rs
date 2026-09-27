@@ -1,6 +1,7 @@
 mod app;
 mod frame;
 mod input;
+mod iterm2;
 mod painter;
 mod sixel;
 mod tiles;
@@ -17,7 +18,7 @@ use ratatui::DefaultTerminal;
 use ratatui_image::picker::Picker;
 
 use crate::app::Options;
-use crate::graphics::{NEEDS_IMAGES, Raster};
+use crate::graphics::Raster;
 use crate::layout::CellSize;
 use crate::pinch;
 use crate::raster::app::{App, Event, Parts, page_area, pane_of};
@@ -38,10 +39,10 @@ pub fn run(
     result
 }
 
-fn encoder_for(raster: Raster) -> Result<Encode> {
+fn encoder_for(raster: Raster) -> Encode {
     match raster {
-        Raster::Sixel => Ok(Box::new(|frame, _| sixel::encode(frame))),
-        Raster::Iterm2 => bail!("{raster} images are not supported yet; {NEEDS_IMAGES}"),
+        Raster::Sixel => Box::new(|frame, _| sixel::encode(frame)),
+        Raster::Iterm2 => Box::new(iterm2::encode),
     }
 }
 
@@ -59,7 +60,7 @@ fn show(
     picker: &Picker,
     raster: Raster,
 ) -> Result<()> {
-    let encode = encoder_for(raster)?;
+    let encode = encoder_for(raster);
     outside_tmux(raster, picker.tmux_detected())?;
     let (events, inbox) = mpsc::channel();
     let renderer = {
@@ -124,19 +125,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sixel_has_an_encoder() {
-        assert!(encoder_for(Raster::Sixel).is_ok());
-    }
-
-    #[test]
-    fn iterm2_says_it_is_not_supported_yet() {
-        assert_eq!(
-            encoder_for(Raster::Iterm2)
-                .err()
-                .map(|error| error.to_string()),
-            Some(format!(
-                "iTerm2 images are not supported yet; {NEEDS_IMAGES}"
-            ))
+    fn each_raster_protocol_writes_its_own_escape_sequence() {
+        let frame = image::RgbImage::new(20, 20);
+        let pane = crate::layout::Pane {
+            columns: 2,
+            rows: 1,
+        };
+        assert!(
+            encoder_for(Raster::Sixel)(&frame, pane)
+                .unwrap()
+                .starts_with("\x1bP")
+        );
+        assert!(
+            encoder_for(Raster::Iterm2)(&frame, pane)
+                .unwrap()
+                .starts_with("\x1b]1337;File=")
         );
     }
 
