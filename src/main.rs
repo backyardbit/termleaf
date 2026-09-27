@@ -44,9 +44,8 @@ membership of the `input` group on Linux; without it, pinch stays off.
 
 options:
   --no-pinch              never read the trackpad from the OS
-  --graphics <protocol>   auto (the default), or kitty or sixel to use that
-                          protocol whatever the terminal reports; iterm2 is
-                          accepted but not supported yet";
+  --graphics <protocol>   auto (the default), or kitty, sixel or iterm2 to use
+                          that protocol whatever the terminal reports";
 
 #[derive(Debug, PartialEq, Eq)]
 enum Invocation {

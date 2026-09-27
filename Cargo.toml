@@ -16,7 +16,7 @@ base64-simd = "0.8"
 flate2 = "1"
 icy_sixel = "0.5"
 crossterm = "0.29"
-image = { version = "0.25", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png"] }
 mupdf = "0.8"
 notify = "8"
 ratatui = "0.30"
