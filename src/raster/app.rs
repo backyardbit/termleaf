@@ -31,6 +31,7 @@ pub const RESIZE_SETTLE: Duration = Duration::from_millis(300);
 const ZOOM_SETTLE: Duration = Duration::from_millis(150);
 pub const PARTIAL_REPAINT_INTERVAL: Duration = Duration::from_millis(100);
 pub const FRAME_INTERVAL: Duration = Duration::from_millis(33);
+const UNRENDERED_VIEW_WAIT: Duration = Duration::from_millis(100);
 const PAGE_ORIGIN: &str = "\x1b[1;1H";
 
 pub enum Event {
@@ -84,6 +85,7 @@ pub struct App {
     partial_painted_at: Option<Instant>,
     frame_interval: Duration,
     painted_at: Option<Instant>,
+    unrendered_view: Option<(View, Instant)>,
     paint_due: Option<Instant>,
     next_job: u64,
     first_valid_job: u64,
@@ -126,6 +128,7 @@ impl App {
             partial_painted_at: None,
             frame_interval: parts.frame_interval,
             painted_at: None,
+            unrendered_view: None,
             paint_due: None,
             next_job: 0,
             first_valid_job: 0,
@@ -290,6 +293,15 @@ impl App {
             .filter(|key| self.tiles.contains(*key))
             .collect();
         let complete = present.len() == wanted.len();
+        if !complete
+            && present.is_empty()
+            && !self
+                .unrendered_view
+                .as_ref()
+                .is_some_and(|(seen, _)| *seen == view)
+        {
+            self.unrendered_view = Some((view.clone(), now));
+        }
         if !complete && (present.is_empty() || !self.only_scrolled_from_screen(&view)) {
             return;
         }
@@ -308,9 +320,15 @@ impl App {
             })
             .flatten();
         let frame_due = self.painted_at.map(|at| at + self.frame_interval);
+        let unrendered_due = self
+            .unrendered_view
+            .as_ref()
+            .filter(|(seen, _)| !complete && *seen == submission.view)
+            .map(|(_, at)| *at + UNRENDERED_VIEW_WAIT);
         let held_back = partial_due
             .into_iter()
             .chain(frame_due)
+            .chain(unrendered_due)
             .max()
             .filter(|due| now < *due);
         if let Some(due) = held_back {
@@ -923,23 +941,47 @@ mod tests {
     }
 
     #[test]
-    fn a_jump_to_unrendered_pages_keeps_the_old_frame_until_a_tile_arrives() {
+    fn a_jump_to_unrendered_pages_is_painted_once_when_its_tiles_arrive_quickly() {
         let (mut app, inbox) = headless_app(fixture("five-pages.pdf"), PANE);
         settle(&mut app, &inbox);
         let shown = app.next_job;
         app.apply_at(Command::Last, Instant::now());
         assert!(wanted(&app).iter().all(|key| !app.tiles.contains(*key)));
-        app.prepare_frame(settled());
+        let start = settled();
+        app.prepare_frame(start);
         assert_eq!(app.next_job, shown);
         while !all_visible_rendered(&app) {
             next_tile(&mut app, &inbox);
-            app.prepare_frame(settled());
-            if let Some(submitted) = &app.submitted {
-                assert!(!submitted.present.is_empty());
-            }
+            app.prepare_frame(start);
         }
+        assert_eq!(app.next_job, shown + 1);
+        assert!(
+            app.submitted
+                .as_ref()
+                .is_some_and(|submitted| submitted.present == wanted(&app))
+        );
+    }
+
+    #[test]
+    fn a_jump_whose_tiles_are_slow_is_painted_partially_after_a_wait() {
+        let (mut app, inbox) = headless_app(fixture("five-pages.pdf"), PANE);
         settle(&mut app, &inbox);
-        assert!(fully_painted(&app));
+        let shown = app.next_job;
+        app.apply_at(Command::Last, Instant::now());
+        let start = settled();
+        app.prepare_frame(start);
+        next_tile(&mut app, &inbox);
+        assert!(!all_visible_rendered(&app));
+        app.prepare_frame(start);
+        assert_eq!(app.next_job, shown);
+        assert!(app.idle_wait(start) <= UNRENDERED_VIEW_WAIT);
+        app.prepare_frame(start + UNRENDERED_VIEW_WAIT);
+        assert_eq!(app.next_job, shown + 1);
+        assert!(
+            app.submitted
+                .as_ref()
+                .is_some_and(|submitted| !submitted.present.is_empty())
+        );
     }
 
     #[test]
