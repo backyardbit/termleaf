@@ -17,15 +17,16 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui_image::FontSize;
-use ratatui_image::picker::cap_parser::QueryStdioOptions;
-use ratatui_image::picker::{Capability, Picker, ProtocolType};
+use ratatui_image::picker::{Capability, Picker};
 
 use crate::encoder::{self, Encoded, Encoder, Job, Wanted};
+use crate::graphics::{self, Choice, Protocol};
 use crate::keys::{Command, Key, KeyParser, ScreenCell};
 use crate::kitty::{self, CellGrid, ImageId, Payload, Placeholders, Placement};
 use crate::layout::{CellSize, Pane, RenderedTile, Stretched, StretchedGrid, View};
 use crate::mouse::{Gestures, MouseInput, Wheel};
 use crate::pinch::{self, PinchGate, PinchInput};
+use crate::raster;
 use crate::renderer::{Generation, RenderKey, Renderer, Response};
 use crate::shelf::Shelf;
 use crate::viewer::Viewer;
@@ -42,6 +43,7 @@ const ZOOM_SETTLE: Duration = Duration::from_millis(150);
 
 pub struct Options {
     pub pinch: bool,
+    pub graphics: Choice,
 }
 
 enum Event {
@@ -88,8 +90,12 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
     };
 
     let mut terminal = ratatui::init();
-    let picker = match kitty_picker() {
-        Ok(picker) => picker,
+    let picker = match graphics::detect(options.graphics) {
+        Ok((Protocol::Kitty, picker)) => picker,
+        Ok((Protocol::Raster(protocol), _)) => {
+            ratatui::restore();
+            return raster::run(protocol);
+        }
         Err(error) => {
             ratatui::restore();
             return Err(error);
@@ -151,21 +157,6 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
     let _ = execute!(std::io::stdout(), DisableFocusChange, DisableMouseCapture);
     ratatui::restore();
     result
-}
-
-fn kitty_picker() -> Result<Picker> {
-    let options = QueryStdioOptions {
-        kitty_compression: true,
-        ..QueryStdioOptions::default()
-    };
-    let picker = Picker::from_query_stdio_with_options(options).context("querying the terminal")?;
-    if picker.protocol_type() != ProtocolType::Kitty {
-        bail!(
-            "termleaf needs a terminal that supports the Kitty graphics protocol \
-             (for example Kitty or Ghostty, optionally inside herdr)"
-        );
-    }
-    Ok(picker)
 }
 
 fn payload_for(picker: &Picker) -> Payload {
