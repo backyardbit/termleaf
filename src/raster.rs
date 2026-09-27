@@ -1,3 +1,20 @@
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the raster loop that draws frames is not built yet"
+    )
+)]
+mod frame;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the raster loop that draws frames is not built yet"
+    )
+)]
+mod sixel;
+
 use anyhow::{Result, bail};
 
 use crate::graphics::{NEEDS_KITTY, Raster};

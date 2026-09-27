@@ -2117,6 +2117,7 @@ dependencies = [
  "core-foundation",
  "crossterm",
  "flate2",
+ "icy_sixel",
  "image",
  "mupdf",
  "notify",

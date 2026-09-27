@@ -14,6 +14,7 @@ categories = ["command-line-utilities", "visualization"]
 anyhow = "1"
 base64-simd = "0.8"
 flate2 = "1"
+icy_sixel = "0.5"
 crossterm = "0.29"
 image = { version = "0.25", default-features = false }
 mupdf = "0.8"
