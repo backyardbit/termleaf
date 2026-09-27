@@ -247,12 +247,13 @@ impl App {
         if self.zooming(now) && rescaling {
             return;
         }
+        let visible = tile_keys(self.generation, &view);
         let prefetch = if self.may_paint(now) {
-            self.neighbour_keys(&view)
+            self.window(&view).split_off(visible.len())
         } else {
             Vec::new()
         };
-        for key in prefetch.iter().chain(&tile_keys(self.generation, &view)) {
+        for key in prefetch.iter().chain(&visible) {
             self.request(*key);
         }
     }
@@ -297,6 +298,13 @@ impl App {
                 && shown.view.pane == view.pane
                 && shown.view.layout == view.layout
         })
+    }
+
+    fn window(&self, view: &View) -> Vec<RenderKey> {
+        self.tiles.window(
+            &tile_keys(self.generation, view),
+            &self.neighbour_keys(view),
+        )
     }
 
     fn neighbour_keys(&self, view: &View) -> Vec<RenderKey> {
@@ -361,9 +369,7 @@ impl App {
         if key.generation != self.generation {
             return;
         }
-        let view = self.viewer.view();
-        let mut window = tile_keys(self.generation, view);
-        window.extend(self.neighbour_keys(view));
+        let window = self.window(self.viewer.view());
         self.tiles.insert(key, image, &window);
     }
 
@@ -765,5 +771,74 @@ mod tests {
         }
         app.prepare_frame(settled());
         assert!(app.in_flight.is_empty());
+    }
+
+    fn settle_counting_renders(app: &mut App, inbox: &Receiver<Event>, budget: usize) -> usize {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut renders = 0;
+        loop {
+            app.prepare_frame(settled());
+            if fully_painted(app) && app.in_flight.is_empty() {
+                return renders;
+            }
+            let wait = deadline.saturating_duration_since(Instant::now());
+            match inbox.recv_timeout(wait) {
+                Ok(event) => {
+                    if matches!(event, Event::Tile(..)) {
+                        renders += 1;
+                    }
+                    app.handle(event);
+                    assert!(app.tiles.bytes() <= budget);
+                }
+                Err(_) => panic!("renders never stopped; in flight: {:?}", app.in_flight),
+            }
+        }
+    }
+
+    #[test]
+    fn scrolls_zooms_and_jumps_render_each_window_at_most_once_within_the_budget() {
+        let (mut app, inbox) = headless_app(fixture("five-pages.pdf"), PANE);
+        let budget = 4 * 640 * 960 * 3;
+        app.tiles = Tiles::new(budget);
+        let scroll = Command::Scroll {
+            columns: 0,
+            rows: 10,
+        };
+        let zoom_in = Command::Zoom {
+            steps: 1,
+            anchor: None,
+        };
+        let zoom_out = Command::Zoom {
+            steps: -1,
+            anchor: None,
+        };
+        let steps = [
+            None,
+            Some(scroll),
+            Some(scroll),
+            Some(scroll),
+            Some(scroll),
+            Some(zoom_in),
+            Some(zoom_in),
+            Some(zoom_in),
+            Some(scroll),
+            Some(zoom_out),
+            Some(Command::Last),
+            Some(Command::First),
+            Some(Command::GoTo(3)),
+        ];
+        for step in steps {
+            if let Some(command) = step {
+                app.apply_at(command, Instant::now());
+            }
+            let renders = settle_counting_renders(&mut app, &inbox, budget);
+            let window = app.window(app.viewer.view()).len();
+            assert!(
+                renders <= window,
+                "{step:?} rendered {renders} tiles for a window of {window}"
+            );
+            app.prepare_frame(settled());
+            assert!(app.in_flight.is_empty(), "{step:?} kept rendering");
+        }
     }
 }

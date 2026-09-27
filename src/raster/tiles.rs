@@ -43,7 +43,7 @@ impl Tiles {
             key,
             image: Arc::new(image),
         });
-        let mut total: usize = self.held.iter().map(bytes_of).sum();
+        let mut total = self.bytes();
         let mut index = 0;
         while total > self.budget && index < self.held.len() {
             if protected.contains(&self.held[index].key) {
@@ -54,6 +54,26 @@ impl Tiles {
         }
     }
 
+    pub fn window(&self, visible: &[RenderKey], prefetch: &[RenderKey]) -> Vec<RenderKey> {
+        let mut window = visible.to_vec();
+        let mut total: usize = visible.iter().map(|key| bytes_for(*key)).sum();
+        for key in prefetch {
+            if window.contains(key) {
+                continue;
+            }
+            total += bytes_for(*key);
+            if total > self.budget {
+                break;
+            }
+            window.push(*key);
+        }
+        window
+    }
+
+    pub fn bytes(&self) -> usize {
+        self.held.iter().map(bytes_of).sum()
+    }
+
     pub fn forget(&mut self, forget: impl Fn(&RenderKey) -> bool) {
         self.held.retain(|tile| !forget(&tile.key));
     }
@@ -61,6 +81,11 @@ impl Tiles {
 
 fn bytes_of(tile: &Rendered) -> usize {
     tile.image.as_raw().len()
+}
+
+fn bytes_for(key: RenderKey) -> usize {
+    usize::try_from(u64::from(key.region.width) * u64::from(key.region.height) * 3)
+        .unwrap_or(usize::MAX)
 }
 
 #[cfg(test)]
@@ -118,6 +143,38 @@ mod tests {
         tiles.insert(key(1), tile(), &[]);
         tiles.insert(key(2), tile(), &[key(1), key(2)]);
         assert_eq!(held_pages(&tiles), [1, 2]);
+    }
+
+    #[test]
+    fn the_window_keeps_every_visible_tile_and_only_the_prefetch_that_fits() {
+        let tiles = Tiles::new(TILE_BYTES * 3);
+        assert_eq!(
+            tiles.window(&[key(1), key(2)], &[key(3), key(4), key(5)]),
+            [key(1), key(2), key(3)]
+        );
+    }
+
+    #[test]
+    fn visible_tiles_stay_in_the_window_even_past_the_budget() {
+        let tiles = Tiles::new(TILE_BYTES);
+        assert_eq!(tiles.window(&[key(1), key(2)], &[key(3)]), [key(1), key(2)]);
+    }
+
+    #[test]
+    fn a_prefetch_tile_that_is_also_visible_is_counted_once() {
+        let tiles = Tiles::new(TILE_BYTES * 2);
+        assert_eq!(tiles.window(&[key(1)], &[key(1), key(2)]), [key(1), key(2)]);
+    }
+
+    #[test]
+    fn while_the_window_fits_the_cache_stays_within_its_budget() {
+        let mut tiles = Tiles::new(TILE_BYTES * 3);
+        let window = tiles.window(&[key(1)], &[key(2), key(3), key(4)]);
+        for page in 0..8 {
+            tiles.insert(key(page), tile(), &window);
+            assert!(tiles.bytes() <= TILE_BYTES * 3);
+        }
+        assert_eq!(held_pages(&tiles), [1, 2, 3]);
     }
 
     #[test]
