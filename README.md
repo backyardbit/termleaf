@@ -6,13 +6,20 @@ Run it in a pane next to your editor while you write LaTeX. Every time your buil
 
 ## Requirements
 
-termleaf draws pages as real images using the **Kitty graphics protocol**, and it only works in terminals that support it:
+termleaf draws pages as real images, so it needs a terminal that can show them. It picks the protocol from what the terminal reports:
 
-- [Kitty](https://sw.kovidgoyal.net/kitty/)
-- [Ghostty](https://ghostty.org/)
-- [herdr](https://github.com/herdrdev/herdr) running inside one of the above (`terminal.kitty_graphics` is on by default)
+| Terminal | Protocol | Scrolling |
+| --- | --- | --- |
+| [Kitty](https://sw.kovidgoyal.net/kitty/) | Kitty graphics | smooth |
+| [Ghostty](https://ghostty.org/) | Kitty graphics | smooth |
+| [herdr](https://github.com/herdrdev/herdr) inside Kitty or Ghostty (`terminal.kitty_graphics` is on by default) | Kitty graphics | smooth |
+| [foot](https://codeberg.org/dnkl/foot), `xterm -ti vt340`, mlterm, Windows Terminal (from WSL or SSH) | Sixel | repaints the page area |
+| [tmux](https://github.com/tmux/tmux) 3.6 or later built with Sixel, inside a Sixel terminal | Sixel | repaints the page area |
+| [WezTerm](https://wezterm.org/), [iTerm2](https://iterm2.com/), Konsole | iTerm2 images | repaints the page area |
 
-In any other terminal, termleaf exits with an error. Sixel and iTerm2 images are not supported yet.
+With Kitty graphics, each piece of a page is sent to the terminal once, and scrolling only moves it, so scrolling stays smooth even under herdr. Sixel and iTerm2 images are one picture of the whole page area, so every scroll, zoom and page change sends that picture again. That is slower, and over SSH it is much slower. iTerm2 images don't work inside tmux.
+
+`--graphics kitty`, `--graphics sixel` or `--graphics iterm2` uses that protocol whatever the terminal reports. In a terminal with none of them, termleaf exits with an error. There is no text-block fallback.
 
 termleaf runs on macOS and Linux.
 

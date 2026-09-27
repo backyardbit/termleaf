@@ -7,6 +7,7 @@ mod sixel;
 mod tiles;
 
 use std::path::Path;
+use std::process::Command;
 use std::sync::mpsc;
 
 use anyhow::{Context, Result, bail};
@@ -46,11 +47,25 @@ fn encoder_for(raster: Raster) -> Encode {
     }
 }
 
-fn outside_tmux(raster: Raster, tmux: bool) -> Result<()> {
-    if tmux {
-        bail!("{raster} images inside tmux are not supported yet; run termleaf outside tmux");
+fn allowed_in_tmux(raster: Raster, sixel_support: Option<&str>) -> Result<()> {
+    match (raster, sixel_support) {
+        (_, None) | (Raster::Sixel, Some("1")) => Ok(()),
+        (Raster::Sixel, Some(_)) => bail!(
+            "Sixel images inside tmux need tmux 3.6 or later built with Sixel support; \
+             run termleaf outside tmux"
+        ),
+        (Raster::Iterm2, Some(_)) => {
+            bail!("iTerm2 images do not survive tmux redraws; run termleaf outside tmux")
+        }
     }
-    Ok(())
+}
+
+fn tmux_sixel_support() -> String {
+    Command::new("tmux")
+        .args(["display", "-p", "#{sixel_support}"])
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .unwrap_or_default()
 }
 
 fn show(
@@ -61,7 +76,8 @@ fn show(
     raster: Raster,
 ) -> Result<()> {
     let encode = encoder_for(raster);
-    outside_tmux(raster, picker.tmux_detected())?;
+    let sixel_support = picker.tmux_detected().then(tmux_sixel_support);
+    allowed_in_tmux(raster, sixel_support.as_deref())?;
     let (events, inbox) = mpsc::channel();
     let renderer = {
         let responses = events.clone();
@@ -144,11 +160,36 @@ mod tests {
     }
 
     #[test]
-    fn raster_images_refuse_to_start_inside_tmux() {
-        assert!(outside_tmux(Raster::Sixel, false).is_ok());
+    fn outside_tmux_every_raster_protocol_runs() {
+        assert!(allowed_in_tmux(Raster::Sixel, None).is_ok());
+        assert!(allowed_in_tmux(Raster::Iterm2, None).is_ok());
+    }
+
+    #[test]
+    fn sixel_runs_inside_a_tmux_that_reports_sixel_support() {
+        assert!(allowed_in_tmux(Raster::Sixel, Some("1")).is_ok());
+    }
+
+    #[test]
+    fn sixel_refuses_a_tmux_without_sixel_support() {
+        for reported in ["0", ""] {
+            assert_eq!(
+                allowed_in_tmux(Raster::Sixel, Some(reported))
+                    .unwrap_err()
+                    .to_string(),
+                "Sixel images inside tmux need tmux 3.6 or later built with Sixel support; \
+                 run termleaf outside tmux"
+            );
+        }
+    }
+
+    #[test]
+    fn iterm2_images_refuse_to_start_inside_tmux() {
         assert_eq!(
-            outside_tmux(Raster::Sixel, true).unwrap_err().to_string(),
-            "Sixel images inside tmux are not supported yet; run termleaf outside tmux"
+            allowed_in_tmux(Raster::Iterm2, Some("1"))
+                .unwrap_err()
+                .to_string(),
+            "iTerm2 images do not survive tmux redraws; run termleaf outside tmux"
         );
     }
 }
