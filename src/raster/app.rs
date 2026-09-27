@@ -29,6 +29,7 @@ const TILE_BYTE_BUDGET: usize = 48 * 1024 * 1024;
 const IDLE_WAIT: Duration = Duration::from_secs(3600);
 pub const RESIZE_SETTLE: Duration = Duration::from_millis(300);
 const ZOOM_SETTLE: Duration = Duration::from_millis(150);
+const PARTIAL_REPAINT_INTERVAL: Duration = Duration::from_millis(100);
 const PAGE_ORIGIN: &str = "\x1b[1;1H";
 
 pub enum Event {
@@ -78,6 +79,8 @@ pub struct App {
     resize_settles_at: Option<Instant>,
     zooming_until: Option<Instant>,
     submitted: Option<Submitted>,
+    partial_painted_at: Option<Instant>,
+    partial_due: Option<Instant>,
     next_job: u64,
     first_valid_job: u64,
     written_job: Option<u64>,
@@ -113,6 +116,8 @@ impl App {
             resize_settles_at: None,
             zooming_until: None,
             submitted: None,
+            partial_painted_at: None,
+            partial_due: None,
             next_job: 0,
             first_valid_job: 0,
             written_job: None,
@@ -155,11 +160,16 @@ impl App {
     }
 
     fn idle_wait(&self, now: Instant) -> Duration {
-        [self.reload_at, self.resize_settles_at, self.zooming_until]
-            .into_iter()
-            .flatten()
-            .min()
-            .map_or(IDLE_WAIT, |at| at.saturating_duration_since(now))
+        [
+            self.reload_at,
+            self.resize_settles_at,
+            self.zooming_until,
+            self.partial_due,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .map_or(IDLE_WAIT, |at| at.saturating_duration_since(now))
     }
 
     fn handle(&mut self, event: Event) -> Flow {
@@ -259,6 +269,7 @@ impl App {
     }
 
     fn paint_at(&mut self, now: Instant) {
+        self.partial_due = None;
         let view = self.viewer.view().clone();
         if view.pane.columns == 0 || view.pane.rows == 0 || !self.may_paint(now) {
             return;
@@ -281,6 +292,18 @@ impl App {
         if self.submitted.as_ref() == Some(&submission) {
             return;
         }
+        let held_back = (!complete && self.filling_in(&submission))
+            .then(|| {
+                self.partial_painted_at
+                    .map(|at| at + PARTIAL_REPAINT_INTERVAL)
+            })
+            .flatten()
+            .filter(|due| now < *due);
+        if let Some(due) = held_back {
+            self.partial_due = Some(due);
+            return;
+        }
+        self.partial_painted_at = (!complete).then_some(now);
         let id = self.next_job;
         self.next_job += 1;
         self.painter.submit(Job {
@@ -290,6 +313,12 @@ impl App {
             tiles: self.tiles.visible(&submission.present),
         });
         self.submitted = Some(submission);
+    }
+
+    fn filling_in(&self, submission: &Submitted) -> bool {
+        self.submitted.as_ref().is_some_and(|submitted| {
+            submitted.view == submission.view && submitted.generation == submission.generation
+        })
     }
 
     fn only_scrolled_from_screen(&self, view: &View) -> bool {
@@ -840,5 +869,56 @@ mod tests {
             app.prepare_frame(settled());
             assert!(app.in_flight.is_empty(), "{step:?} kept rendering");
         }
+    }
+
+    fn all_visible_rendered(app: &App) -> bool {
+        wanted(app).iter().all(|key| app.tiles.contains(*key))
+    }
+
+    fn next_tile(app: &mut App, inbox: &Receiver<Event>) {
+        loop {
+            let event = inbox.recv_timeout(Duration::from_secs(20)).unwrap();
+            let tile = matches!(event, Event::Tile(..));
+            app.handle(event);
+            if tile {
+                return;
+            }
+        }
+    }
+
+    #[test]
+    fn tiles_arriving_soon_after_a_partial_frame_are_painted_together() {
+        let (mut app, inbox) = headless_app(fixture("three-pages.pdf"), PANE);
+        settle(&mut app, &inbox);
+        app.apply_at(Command::Last, Instant::now());
+        let start = settled();
+        app.prepare_frame(start);
+        let missing = wanted(&app).len() - app.submitted.as_ref().unwrap().present.len();
+        assert!(missing >= 2, "only {missing} tiles were missing");
+        let partial = app.next_job;
+        let soon = start + PARTIAL_REPAINT_INTERVAL / 2;
+        while !all_visible_rendered(&app) {
+            next_tile(&mut app, &inbox);
+            app.prepare_frame(soon);
+            if !all_visible_rendered(&app) {
+                assert_eq!(app.next_job, partial);
+                assert!(app.idle_wait(soon) <= PARTIAL_REPAINT_INTERVAL);
+            }
+        }
+        assert_eq!(app.next_job, partial + 1);
+    }
+
+    #[test]
+    fn a_partial_frame_is_repainted_once_the_interval_has_passed() {
+        let (mut app, inbox) = headless_app(fixture("three-pages.pdf"), PANE);
+        settle(&mut app, &inbox);
+        app.apply_at(Command::Last, Instant::now());
+        let start = settled();
+        app.prepare_frame(start);
+        let partial = app.next_job;
+        next_tile(&mut app, &inbox);
+        assert!(!all_visible_rendered(&app));
+        app.prepare_frame(start + PARTIAL_REPAINT_INTERVAL);
+        assert_eq!(app.next_job, partial + 1);
     }
 }
