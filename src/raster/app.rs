@@ -30,6 +30,7 @@ const IDLE_WAIT: Duration = Duration::from_secs(3600);
 pub const RESIZE_SETTLE: Duration = Duration::from_millis(300);
 const ZOOM_SETTLE: Duration = Duration::from_millis(150);
 pub const PARTIAL_REPAINT_INTERVAL: Duration = Duration::from_millis(100);
+pub const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 const PAGE_ORIGIN: &str = "\x1b[1;1H";
 
 pub enum Event {
@@ -81,7 +82,9 @@ pub struct App {
     submitted: Option<Submitted>,
     partial_repaint_interval: Duration,
     partial_painted_at: Option<Instant>,
-    partial_due: Option<Instant>,
+    frame_interval: Duration,
+    painted_at: Option<Instant>,
+    paint_due: Option<Instant>,
     next_job: u64,
     first_valid_job: u64,
     written_job: Option<u64>,
@@ -97,6 +100,7 @@ pub struct Parts {
     pub renderer: Renderer,
     pub painter: Painter,
     pub partial_repaint_interval: Duration,
+    pub frame_interval: Duration,
 }
 
 impl App {
@@ -120,7 +124,9 @@ impl App {
             submitted: None,
             partial_repaint_interval: parts.partial_repaint_interval,
             partial_painted_at: None,
-            partial_due: None,
+            frame_interval: parts.frame_interval,
+            painted_at: None,
+            paint_due: None,
             next_job: 0,
             first_valid_job: 0,
             written_job: None,
@@ -167,7 +173,7 @@ impl App {
             self.reload_at,
             self.resize_settles_at,
             self.zooming_until,
-            self.partial_due,
+            self.paint_due,
         ]
         .into_iter()
         .flatten()
@@ -272,7 +278,7 @@ impl App {
     }
 
     fn paint_at(&mut self, now: Instant) {
-        self.partial_due = None;
+        self.paint_due = None;
         let view = self.viewer.view().clone();
         if view.pane.columns == 0 || view.pane.rows == 0 || !self.may_paint(now) {
             return;
@@ -295,18 +301,24 @@ impl App {
         if self.submitted.as_ref() == Some(&submission) {
             return;
         }
-        let held_back = (!complete && self.filling_in(&submission))
+        let partial_due = (!complete && self.filling_in(&submission))
             .then(|| {
                 self.partial_painted_at
                     .map(|at| at + self.partial_repaint_interval)
             })
-            .flatten()
+            .flatten();
+        let frame_due = self.painted_at.map(|at| at + self.frame_interval);
+        let held_back = partial_due
+            .into_iter()
+            .chain(frame_due)
+            .max()
             .filter(|due| now < *due);
         if let Some(due) = held_back {
-            self.partial_due = Some(due);
+            self.paint_due = Some(due);
             return;
         }
         self.partial_painted_at = (!complete).then_some(now);
+        self.painted_at = Some(now);
         let id = self.next_job;
         self.next_job += 1;
         self.painter.submit(Job {
@@ -517,13 +529,14 @@ mod tests {
     }
 
     fn headless_app(path: PathBuf, pane: Pane) -> (App, Receiver<Event>) {
-        headless_app_with(path, pane, PARTIAL_REPAINT_INTERVAL)
+        headless_app_with(path, pane, PARTIAL_REPAINT_INTERVAL, Duration::ZERO)
     }
 
     fn headless_app_with(
         path: PathBuf,
         pane: Pane,
         partial_repaint_interval: Duration,
+        frame_interval: Duration,
     ) -> (App, Receiver<Event>) {
         let (events, inbox) = mpsc::channel();
         let renderer = {
@@ -554,6 +567,7 @@ mod tests {
             renderer,
             painter,
             partial_repaint_interval,
+            frame_interval,
         });
         (app, inbox)
     }
@@ -922,7 +936,12 @@ mod tests {
 
     #[test]
     fn without_an_interval_each_tile_repaints_the_partial_frame() {
-        let (mut app, inbox) = headless_app_with(fixture("three-pages.pdf"), PANE, Duration::ZERO);
+        let (mut app, inbox) = headless_app_with(
+            fixture("three-pages.pdf"),
+            PANE,
+            Duration::ZERO,
+            Duration::ZERO,
+        );
         settle(&mut app, &inbox);
         app.apply_at(Command::Last, Instant::now());
         let start = settled();
@@ -946,5 +965,54 @@ mod tests {
         assert!(!all_visible_rendered(&app));
         app.prepare_frame(start + PARTIAL_REPAINT_INTERVAL);
         assert_eq!(app.next_job, partial + 1);
+    }
+
+    fn paced_app(frame_interval: Duration) -> (App, Receiver<Event>) {
+        headless_app_with(
+            fixture("three-pages.pdf"),
+            PANE,
+            PARTIAL_REPAINT_INTERVAL,
+            frame_interval,
+        )
+    }
+
+    fn scroll_one_row(app: &mut App) {
+        app.apply_at(
+            Command::Scroll {
+                columns: 0,
+                rows: 1,
+            },
+            Instant::now(),
+        );
+    }
+
+    #[test]
+    fn scrolls_within_the_frame_interval_are_painted_together() {
+        let (mut app, inbox) = paced_app(FRAME_INTERVAL);
+        settle(&mut app, &inbox);
+        let start = settled() + FRAME_INTERVAL;
+        scroll_one_row(&mut app);
+        app.prepare_frame(start);
+        let painted = app.next_job;
+        scroll_one_row(&mut app);
+        let soon = start + FRAME_INTERVAL / 2;
+        app.prepare_frame(soon);
+        assert_eq!(app.next_job, painted);
+        assert!(app.idle_wait(soon) <= FRAME_INTERVAL / 2);
+        app.prepare_frame(start + FRAME_INTERVAL);
+        assert_eq!(app.next_job, painted + 1);
+    }
+
+    #[test]
+    fn without_a_frame_interval_each_scroll_is_painted_at_once() {
+        let (mut app, inbox) = paced_app(Duration::ZERO);
+        settle(&mut app, &inbox);
+        let start = settled();
+        scroll_one_row(&mut app);
+        app.prepare_frame(start);
+        let painted = app.next_job;
+        scroll_one_row(&mut app);
+        app.prepare_frame(start);
+        assert_eq!(app.next_job, painted + 1);
     }
 }
