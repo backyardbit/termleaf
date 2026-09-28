@@ -112,8 +112,17 @@ pub mod fake {
             self.edit(pid, |process| process.uid = uid)
         }
 
+        pub fn started(&mut self, pid: u32, start: u64) -> &mut Self {
+            self.edit(pid, |process| process.identity.start = StartTime(start))
+        }
+
         pub fn in_group(&mut self, pid: u32, group: u32) -> &mut Self {
             self.edit(pid, |process| process.group = Pid(group))
+        }
+
+        pub fn exit(&mut self, pid: u32) -> &mut Self {
+            self.processes.retain(|process| process.pid() != Pid(pid));
+            self
         }
 
         pub fn tty(&mut self, tty: &str, pid: u32) -> &mut Self {

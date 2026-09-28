@@ -5,6 +5,7 @@ mod process;
 #[cfg(target_os = "linux")]
 mod procfs;
 mod ps;
+mod safety;
 
 use process::ProcessTable;
 

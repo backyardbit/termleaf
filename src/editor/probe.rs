@@ -6,6 +6,7 @@ use anyhow::Result;
 use super::detect::MultiplexerKind;
 use super::evidence::neovim_socket;
 use super::process::{Identity, Pid, Process, ProcessTable, is_shell};
+use super::safety::Prompt;
 use crate::synctex::SourceLocation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +38,7 @@ impl EditorKind {
 pub trait Multiplexer {
     fn kind(&self) -> MultiplexerKind;
     fn panes(&self) -> Result<Vec<Pane>>;
+    fn screen(&self, pane: &str) -> Option<String>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,6 +89,9 @@ pub enum Refusal {
     Shell,
     Program(String),
     OtherUser,
+    Replaced,
+    Prompt(Prompt),
+    PathNeedsRpc,
 }
 
 impl fmt::Display for Refusal {
@@ -98,6 +103,9 @@ impl fmt::Display for Refusal {
             Self::Shell => f.write_str("refused: shell"),
             Self::Program(program) => write!(f, "refused: {program}"),
             Self::OtherUser => f.write_str("refused: another user's process"),
+            Self::Replaced => f.write_str("refused: not the same process"),
+            Self::Prompt(prompt) => write!(f, "refused: {prompt} prompt"),
+            Self::PathNeedsRpc => f.write_str("path needs RPC"),
         }
     }
 }
@@ -273,18 +281,21 @@ impl Choice {
 #[cfg(test)]
 pub mod fake {
     use std::cell::RefCell;
+    use std::collections::HashMap;
 
     use super::super::process::fake::FakeTable;
     use super::*;
 
     pub struct FakeMultiplexer {
         pub panes: RefCell<Vec<Pane>>,
+        pub screens: HashMap<String, String>,
     }
 
     impl FakeMultiplexer {
         pub fn new(panes: Vec<Pane>) -> Self {
             Self {
                 panes: RefCell::new(panes),
+                screens: HashMap::new(),
             }
         }
     }
@@ -296,6 +307,10 @@ pub mod fake {
 
         fn panes(&self) -> Result<Vec<Pane>> {
             Ok(self.panes.borrow().clone())
+        }
+
+        fn screen(&self, pane: &str) -> Option<String> {
+            self.screens.get(pane).cloned()
         }
     }
 
@@ -633,6 +648,11 @@ mod tests {
         assert_eq!(
             Refusal::Program("git".to_owned()).to_string(),
             "refused: git"
+        );
+        assert_eq!(Refusal::PathNeedsRpc.to_string(), "path needs RPC");
+        assert_eq!(
+            Refusal::Prompt(Prompt::PressEnter).to_string(),
+            "refused: Press ENTER prompt"
         );
     }
 }
