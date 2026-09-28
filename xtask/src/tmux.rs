@@ -355,11 +355,19 @@ impl Run<'_> {
         self.work.join("chapters/intro.tex")
     }
 
-    fn alt_click(&mut self) -> Outcome<()> {
+    fn click(&mut self, button: u8) -> Outcome<()> {
         let (column, row) = CLICKS[self.clicks % CLICKS.len()];
         self.clicks += 1;
-        let press = format!("\x1b[<8;{column};{row}M\x1b[<8;{column};{row}m");
+        let press = format!("\x1b[<{button};{column};{row}M\x1b[<{button};{column};{row}m");
         self.server.bytes(&self.server.viewer, press.as_bytes())
+    }
+
+    fn alt_click(&mut self) -> Outcome<()> {
+        self.click(8)
+    }
+
+    fn ctrl_click(&mut self) -> Outcome<()> {
+        self.click(16)
     }
 
     fn jumped(&mut self, editor: Editor, trigger: &str) -> Outcome<u32> {
@@ -565,7 +573,13 @@ impl Run<'_> {
                 let line = self.jumped(editor, "e at the pointer")?;
                 self.check(editor, "from e at the pointer", line, |_| true)?;
             }
-            Editor::Helix => {}
+            Editor::Helix => {
+                self.server.keys(&pane, editor.to_last_line())?;
+                self.settle(editor);
+                self.ctrl_click()?;
+                let line = self.jumped(editor, "Ctrl+click")?;
+                self.check(editor, "from Ctrl+click", line, |_| true)?;
+            }
         }
         self.server.quit(editor, &self.work)
     }
