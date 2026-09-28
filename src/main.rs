@@ -1,4 +1,12 @@
 mod app;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the multiplexer adapters and injection call the probe in the next PRs of the stack"
+    )
+)]
+mod editor;
 mod encoder;
 mod graphics;
 mod inverse;
