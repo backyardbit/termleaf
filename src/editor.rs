@@ -1,4 +1,6 @@
 mod detect;
+mod evidence;
+mod probe;
 mod process;
 #[cfg(target_os = "linux")]
 mod procfs;

@@ -103,6 +103,42 @@ pub mod fake {
             });
             self
         }
+
+        pub fn foreground(&mut self, pid: u32, group: u32) -> &mut Self {
+            self.edit(pid, |process| process.foreground_group = Some(Pid(group)))
+        }
+
+        pub fn owned_by(&mut self, pid: u32, uid: u32) -> &mut Self {
+            self.edit(pid, |process| process.uid = uid)
+        }
+
+        pub fn in_group(&mut self, pid: u32, group: u32) -> &mut Self {
+            self.edit(pid, |process| process.group = Pid(group))
+        }
+
+        pub fn tty(&mut self, tty: &str, pid: u32) -> &mut Self {
+            self.ttys.insert(PathBuf::from(tty), Pid(pid));
+            self
+        }
+
+        pub fn listens(&mut self, pid: u32, socket: &str) -> &mut Self {
+            self.sockets
+                .entry(Pid(pid))
+                .or_default()
+                .push(PathBuf::from(socket));
+            self
+        }
+
+        fn edit(&mut self, pid: u32, change: impl FnOnce(&mut Process)) -> &mut Self {
+            if let Some(process) = self
+                .processes
+                .iter_mut()
+                .find(|process| process.pid() == Pid(pid))
+            {
+                change(process);
+            }
+            self
+        }
     }
 
     impl ProcessTable for FakeTable {
