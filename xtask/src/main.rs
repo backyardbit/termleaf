@@ -1,4 +1,5 @@
 mod e2e;
+mod jumps;
 mod tmux;
 mod xterm;
 
@@ -46,7 +47,7 @@ fn main() -> ExitCode {
         Some("check") => check(),
         Some("e2e") => e2e::run(&workspace_root()),
         Some("xterm") => xterm::run(&workspace_root()),
-        Some("tmux") => tmux::run(&workspace_root()),
+        Some("tmux") => jumps::run(&workspace_root(), jumps::Backend::Tmux),
         _ => {
             eprintln!("usage: cargo xtask <lint|check|e2e|xterm|tmux>");
             eprintln!("  lint   run the anti-slop source checks");
