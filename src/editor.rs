@@ -8,6 +8,7 @@ mod process;
 mod procfs;
 mod ps;
 mod safety;
+mod tmux;
 
 use process::ProcessTable;
 

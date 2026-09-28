@@ -39,6 +39,7 @@ pub trait Multiplexer {
     fn kind(&self) -> MultiplexerKind;
     fn panes(&self) -> Result<Vec<Pane>>;
     fn screen(&self, pane: &str) -> Option<String>;
+    fn send(&self, pane: &str, input: &[u8], paste: bool) -> Result<()>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -311,6 +312,10 @@ pub mod fake {
 
         fn screen(&self, pane: &str) -> Option<String> {
             self.screens.get(pane).cloned()
+        }
+
+        fn send(&self, _pane: &str, _input: &[u8], _paste: bool) -> Result<()> {
+            Ok(())
         }
     }
 
