@@ -1,5 +1,7 @@
 mod detect;
 mod evidence;
+#[cfg(test)]
+mod live;
 mod probe;
 mod process;
 #[cfg(target_os = "linux")]
