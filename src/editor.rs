@@ -1,5 +1,6 @@
 mod detect;
 mod evidence;
+mod inject;
 #[cfg(test)]
 mod live;
 mod probe;
