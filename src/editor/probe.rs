@@ -1,5 +1,5 @@
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
@@ -137,6 +137,10 @@ pub fn survey(
             Verdict { pane, editor }
         })
         .collect())
+}
+
+pub trait LoadedFiles {
+    fn holds(&self, editor: &Editor, file: &Path) -> bool;
 }
 
 #[cfg(test)]

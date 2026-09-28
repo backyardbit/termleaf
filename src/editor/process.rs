@@ -121,6 +121,18 @@ pub mod fake {
             self
         }
 
+        pub fn argv(&mut self, pid: u32, arguments: &[&str], cwd: &str) -> &mut Self {
+            self.arguments.insert(
+                Pid(pid),
+                arguments
+                    .iter()
+                    .map(|argument| (*argument).to_owned())
+                    .collect(),
+            );
+            self.cwds.insert(Pid(pid), PathBuf::from(cwd));
+            self
+        }
+
         pub fn listens(&mut self, pid: u32, socket: &str) -> &mut Self {
             self.sockets
                 .entry(Pid(pid))
