@@ -77,13 +77,28 @@ fn parse_listening_unix_sockets(table: &str) -> HashMap<u64, PathBuf> {
         .lines()
         .skip(1)
         .filter_map(|line| {
-            let fields: Vec<&str> = line.split_whitespace().collect();
-            let flags = u32::from_str_radix(fields.get(3)?, 16).ok()?;
-            let inode = fields.get(6)?.parse().ok()?;
-            let path = fields.get(7).filter(|path| path.starts_with('/'))?;
-            (flags & ACCEPTING_CONNECTIONS != 0).then(|| (inode, PathBuf::from(path)))
+            let mut fields = Vec::with_capacity(7);
+            let mut rest = line;
+            while fields.len() < 7 {
+                let (field, after) = next_field(rest)?;
+                fields.push(field);
+                rest = after;
+            }
+            let flags = u32::from_str_radix(fields[3], 16).ok()?;
+            let inode = fields[6].parse().ok()?;
+            let path = rest.trim_start_matches(' ');
+            (path.starts_with('/') && flags & ACCEPTING_CONNECTIONS != 0)
+                .then(|| (inode, PathBuf::from(path)))
         })
         .collect()
+}
+
+fn next_field(text: &str) -> Option<(&str, &str)> {
+    let text = text.trim_start_matches(' ');
+    if text.is_empty() {
+        return None;
+    }
+    Some(text.split_once(' ').unwrap_or((text, "")))
 }
 
 fn socket_inode(link: &Path) -> Option<u64> {
@@ -290,6 +305,16 @@ mod tests {
         assert_eq!(
             listening.get(&2_886_538),
             Some(&PathBuf::from("/tmp/nvim.box/9yDIj6/nvim.378235.0"))
+        );
+    }
+
+    #[test]
+    fn a_socket_path_with_spaces_is_kept_whole() {
+        let table = "Num       RefCount Protocol Flags    Type St Inode Path\n\
+            000000004de22557: 00000002 00000000 00010000 0001 01  2886538 /tmp/my thesis/nvim  pipe\n";
+        assert_eq!(
+            parse_listening_unix_sockets(table).get(&2_886_538),
+            Some(&PathBuf::from("/tmp/my thesis/nvim  pipe"))
         );
     }
 
