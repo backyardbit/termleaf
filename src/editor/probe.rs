@@ -3,8 +3,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
+use super::detect::MultiplexerKind;
 use super::evidence::neovim_socket;
 use super::process::{Identity, Pid, Process, ProcessTable, is_shell};
+use crate::synctex::SourceLocation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorKind {
@@ -33,6 +35,7 @@ impl EditorKind {
 }
 
 pub trait Multiplexer {
+    fn kind(&self) -> MultiplexerKind;
     fn panes(&self) -> Result<Vec<Pane>>;
 }
 
@@ -46,6 +49,9 @@ pub enum Anchor {
 pub struct Pane {
     pub id: String,
     pub anchor: Anchor,
+    pub session: String,
+    pub window: String,
+    pub recency: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +59,24 @@ pub struct Editor {
     pub kind: EditorKind,
     pub identity: Identity,
     pub socket: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Candidate {
+    pub multiplexer: MultiplexerKind,
+    pub pane: Pane,
+    pub editor: Editor,
+}
+
+impl Candidate {
+    pub fn label(&self) -> String {
+        format!(
+            "{} in {} {}",
+            self.editor.kind.name(),
+            self.multiplexer.name(),
+            self.pane.id
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,8 +163,111 @@ pub fn survey(
         .collect())
 }
 
+pub fn candidates(multiplexer: MultiplexerKind, verdicts: &[Verdict]) -> Vec<Candidate> {
+    verdicts
+        .iter()
+        .filter_map(|verdict| {
+            Some(Candidate {
+                multiplexer,
+                pane: verdict.pane.clone(),
+                editor: verdict.editor.clone().ok()?,
+            })
+        })
+        .collect()
+}
+
+pub fn own_pane(verdicts: &[Verdict]) -> Option<&Pane> {
+    verdicts
+        .iter()
+        .find(|verdict| verdict.editor == Err(Refusal::OwnPane))
+        .map(|verdict| &verdict.pane)
+}
+
 pub trait LoadedFiles {
     fn holds(&self, editor: &Editor, file: &Path) -> bool;
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Wanted<'a> {
+    pub at: &'a SourceLocation,
+    pub inputs: &'a [PathBuf],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Rank {
+    file: bool,
+    inputs: bool,
+    same_window: bool,
+    same_session: bool,
+    recency: u64,
+}
+
+fn rank(
+    candidate: &Candidate,
+    wanted: Wanted<'_>,
+    here: Option<&Pane>,
+    loaded: &impl LoadedFiles,
+) -> Rank {
+    let holds = |file: &Path| loaded.holds(&candidate.editor, file);
+    let same_session = here.is_some_and(|here| here.session == candidate.pane.session);
+    Rank {
+        file: holds(&wanted.at.file),
+        inputs: wanted.inputs.iter().any(|input| holds(input)),
+        same_window: same_session && here.is_some_and(|here| here.window == candidate.pane.window),
+        same_session,
+        recency: candidate.pane.recency,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Choice {
+    Editor(Box<Candidate>),
+    NoEditor,
+    Tie(usize),
+}
+
+pub fn choose(
+    candidates: Vec<Candidate>,
+    wanted: Wanted<'_>,
+    here: Option<&Pane>,
+    loaded: &impl LoadedFiles,
+) -> Choice {
+    let mut ranked: Vec<(Rank, Candidate)> = candidates
+        .into_iter()
+        .map(|candidate| (rank(&candidate, wanted, here, loaded), candidate))
+        .collect();
+    ranked.sort_by_key(|(rank, _)| std::cmp::Reverse(*rank));
+    let Some(best) = ranked.first().map(|(rank, _)| *rank) else {
+        return Choice::NoEditor;
+    };
+    let tied = ranked.iter().filter(|(rank, _)| *rank == best).count();
+    if tied > 1 {
+        return Choice::Tie(tied);
+    }
+    ranked
+        .into_iter()
+        .next()
+        .map_or(Choice::NoEditor, |(_, candidate)| {
+            Choice::Editor(Box::new(candidate))
+        })
+}
+
+pub fn location_label(at: &SourceLocation) -> String {
+    let name = at
+        .file
+        .file_name()
+        .map_or_else(|| at.file.to_string_lossy(), |name| name.to_string_lossy());
+    format!("{name}:{}", at.line)
+}
+
+impl Choice {
+    pub fn status(&self, at: &SourceLocation) -> Option<String> {
+        match self {
+            Self::Editor(_) => None,
+            Self::NoEditor => Some(format!("{} · no editor found", location_label(at))),
+            Self::Tie(count) => Some(format!("{count} editors could take {}", location_label(at))),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -163,15 +290,22 @@ pub mod fake {
     }
 
     impl Multiplexer for FakeMultiplexer {
+        fn kind(&self) -> MultiplexerKind {
+            MultiplexerKind::Tmux
+        }
+
         fn panes(&self) -> Result<Vec<Pane>> {
             Ok(self.panes.borrow().clone())
         }
     }
 
-    pub fn pane(id: &str, shell: u32) -> Pane {
+    pub fn pane(id: &str, shell: u32, window: &str) -> Pane {
         Pane {
             id: id.to_owned(),
             anchor: Anchor::Process(Pid(shell)),
+            session: "thesis".to_owned(),
+            window: window.to_owned(),
+            recency: 0,
         }
     }
 
@@ -195,11 +329,11 @@ pub mod fake {
             .spawn(500, 1, "bash")
             .foreground(500, 500);
         let multiplexer = FakeMultiplexer::new(vec![
-            pane("%0", 100),
-            pane("%1", 200),
-            pane("%2", 300),
-            pane("%3", 400),
-            pane("%4", 500),
+            pane("%0", 100, "1"),
+            pane("%1", 200, "1"),
+            pane("%2", 300, "1"),
+            pane("%3", 400, "2"),
+            pane("%4", 500, "1"),
         ]);
         (table, multiplexer)
     }
@@ -288,7 +422,7 @@ mod tests {
             .foreground(10, 11)
             .spawn(11, 10, "less");
         assert_eq!(
-            editor_in(&table, &pane("%9", 10)),
+            editor_in(&table, &pane("%9", 10, "1")),
             Err(Refusal::Program("less".to_owned()))
         );
     }
@@ -301,7 +435,10 @@ mod tests {
             .foreground(10, 11)
             .spawn(11, 10, "nvim")
             .owned_by(11, OUR_UID + 1);
-        assert_eq!(editor_in(&table, &pane("%9", 10)), Err(Refusal::OtherUser));
+        assert_eq!(
+            editor_in(&table, &pane("%9", 10, "1")),
+            Err(Refusal::OtherUser)
+        );
     }
 
     #[test]
@@ -311,7 +448,7 @@ mod tests {
             .spawn(10, 1, "bash")
             .foreground(10, 10)
             .spawn(11, 10, "vim");
-        assert_eq!(editor_in(&table, &pane("%9", 10)), Err(Refusal::Shell));
+        assert_eq!(editor_in(&table, &pane("%9", 10, "1")), Err(Refusal::Shell));
     }
 
     #[test]
@@ -323,7 +460,7 @@ mod tests {
             .spawn(12, 10, "vim")
             .in_group(12, 11);
         assert_eq!(
-            editor_in(&table, &pane("%9", 10)),
+            editor_in(&table, &pane("%9", 10, "1")),
             Err(Refusal::NoForeground)
         );
     }
@@ -331,7 +468,10 @@ mod tests {
     #[test]
     fn a_pane_whose_process_is_gone_is_refused() {
         let table = FakeTable::default();
-        assert_eq!(editor_in(&table, &pane("%9", 10)), Err(Refusal::PaneGone));
+        assert_eq!(
+            editor_in(&table, &pane("%9", 10, "1")),
+            Err(Refusal::PaneGone)
+        );
     }
 
     #[test]
@@ -345,12 +485,146 @@ mod tests {
             .tty("/dev/pts/4", 11);
         let by_tty = Pane {
             anchor: Anchor::Tty(PathBuf::from("/dev/pts/4")),
-            ..pane("4", 0)
+            ..pane("4", 0, "1")
         };
         assert_eq!(
             editor_in(&table, &by_tty).map(|editor| editor.kind),
             Ok(EditorKind::Helix)
         );
+    }
+
+    struct Holding(Vec<(u32, PathBuf)>);
+
+    impl LoadedFiles for Holding {
+        fn holds(&self, editor: &Editor, file: &Path) -> bool {
+            self.0
+                .iter()
+                .any(|(pid, held)| Pid(*pid) == editor.identity.pid && held == file)
+        }
+    }
+
+    fn at(file: &str, line: u32) -> SourceLocation {
+        SourceLocation {
+            file: PathBuf::from(file),
+            line,
+        }
+    }
+
+    fn inputs() -> Vec<PathBuf> {
+        ["/t/thesis.tex", "/t/ch1.tex", "/t/ch5.tex"]
+            .map(PathBuf::from)
+            .to_vec()
+    }
+
+    fn pick(holding: &[(u32, &str)], at: &SourceLocation) -> Choice {
+        let (table, multiplexer) = layout();
+        let verdicts = survey(&multiplexer, &table, Some("%0")).expect("panes");
+        let inputs = inputs();
+        let loaded = Holding(
+            holding
+                .iter()
+                .map(|(pid, file)| (*pid, PathBuf::from(file)))
+                .collect(),
+        );
+        choose(
+            candidates(multiplexer.kind(), &verdicts),
+            Wanted {
+                at,
+                inputs: &inputs,
+            },
+            own_pane(&verdicts),
+            &loaded,
+        )
+    }
+
+    fn chosen(choice: &Choice) -> Option<String> {
+        match choice {
+            Choice::Editor(candidate) => Some(candidate.label()),
+            Choice::NoEditor | Choice::Tie(_) => None,
+        }
+    }
+
+    #[test]
+    fn the_editor_with_the_file_open_wins() {
+        let choice = pick(
+            &[
+                (201, "/t/ch1.tex"),
+                (301, "/t/ch5.tex"),
+                (401, "/t/ch1.tex"),
+            ],
+            &at("/t/ch5.tex", 77),
+        );
+        assert_eq!(chosen(&choice).as_deref(), Some("vim in tmux %2"));
+    }
+
+    #[test]
+    fn an_editor_with_another_input_of_the_pdf_beats_one_without() {
+        let choice = pick(&[(401, "/t/thesis.tex")], &at("/t/ch5.tex", 77));
+        assert_eq!(chosen(&choice).as_deref(), Some("hx in tmux %3"));
+    }
+
+    #[test]
+    fn the_same_window_breaks_a_tie_on_files() {
+        let choice = pick(
+            &[(201, "/t/ch5.tex"), (401, "/t/ch5.tex")],
+            &at("/t/ch5.tex", 77),
+        );
+        assert_eq!(chosen(&choice).as_deref(), Some("nvim in tmux %1"));
+    }
+
+    #[test]
+    fn the_most_recent_pane_breaks_a_tie_on_everything_else() {
+        let (table, multiplexer) = layout();
+        multiplexer.panes.borrow_mut()[2].recency = 5;
+        let verdicts = survey(&multiplexer, &table, Some("%0")).expect("panes");
+        let location = at("/t/ch5.tex", 77);
+        let choice = choose(
+            candidates(multiplexer.kind(), &verdicts),
+            Wanted {
+                at: &location,
+                inputs: &[],
+            },
+            own_pane(&verdicts),
+            &Holding(Vec::new()),
+        );
+        assert_eq!(chosen(&choice).as_deref(), Some("vim in tmux %2"));
+    }
+
+    #[test]
+    fn a_tie_at_every_step_chooses_nothing_and_says_how_many() {
+        let location = at("/t/ch5.tex", 77);
+        let choice = pick(&[(201, "/t/ch5.tex"), (301, "/t/ch5.tex")], &location);
+        assert_eq!(choice, Choice::Tie(2));
+        assert_eq!(
+            choice.status(&location).as_deref(),
+            Some("2 editors could take ch5.tex:77")
+        );
+    }
+
+    #[test]
+    fn no_editor_says_so_after_the_source_location() {
+        let location = at("/t/ch5.tex", 77);
+        let choice = choose(
+            Vec::new(),
+            Wanted {
+                at: &location,
+                inputs: &[],
+            },
+            None,
+            &Holding(Vec::new()),
+        );
+        assert_eq!(choice, Choice::NoEditor);
+        assert_eq!(
+            choice.status(&location).as_deref(),
+            Some("ch5.tex:77 · no editor found")
+        );
+    }
+
+    #[test]
+    fn a_chosen_editor_needs_no_status() {
+        let location = at("/t/ch5.tex", 77);
+        let choice = pick(&[(301, "/t/ch5.tex")], &location);
+        assert_eq!(choice.status(&location), None);
     }
 
     #[test]
