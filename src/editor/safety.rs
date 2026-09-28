@@ -7,6 +7,7 @@ use super::process::ProcessTable;
 const SHELL_ACTIVE: &[char] = &[
     '$', '`', ';', '&', '<', '>', '(', ')', '\'', '"', '\n', '\r',
 ];
+const EDITOR_ACTIVE: &[char] = &['|', '%'];
 const PROMPT_ROWS: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,7 +57,7 @@ pub fn blocking_prompt(screen: &str) -> Option<Prompt> {
 
 pub fn injectable(path: &Path) -> Result<(), Refusal> {
     match path.to_str() {
-        Some(text) if !text.contains(SHELL_ACTIVE) => Ok(()),
+        Some(text) if !text.contains(SHELL_ACTIVE) && !text.contains(EDITOR_ACTIVE) => Ok(()),
         _ => Err(Refusal::PathNeedsRpc),
     }
 }
@@ -146,6 +147,17 @@ mod tests {
         for name in [
             "a$b", "a`b", "a;b", "a&b", "a<b", "a>b", "a(b", "a)b", "a'b", "a\"b", "a\nb", "a\rb",
         ] {
+            assert_eq!(
+                injectable(&PathBuf::from("/tmp").join(name)),
+                Err(Refusal::PathNeedsRpc),
+                "{name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_path_that_the_editor_command_line_would_run_needs_rpc() {
+        for name in ["a.tex|!id", "a %sh{id}", "100%.tex"] {
             assert_eq!(
                 injectable(&PathBuf::from("/tmp").join(name)),
                 Err(Refusal::PathNeedsRpc),
