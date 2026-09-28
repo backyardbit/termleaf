@@ -10,6 +10,14 @@ mod pinch;
 mod raster;
 mod renderer;
 mod shelf;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "inverse and forward search call the parser in the next PRs of the stack"
+    )
+)]
+mod synctex;
 mod viewer;
 mod watch;
 
