@@ -12,7 +12,7 @@ use ratatui::text::Line;
 use ratatui::widgets::Widget;
 use ratatui::{DefaultTerminal, Frame};
 
-use crate::inverse::Inverse;
+use crate::inverse::{Editors, Inverse};
 use crate::keys::{Command, Key, KeyParser};
 use crate::layout::{CellSize, Pane, View};
 use crate::mouse::{Gestures, MouseInput};
@@ -100,6 +100,7 @@ pub struct App {
 pub struct Parts {
     pub file_name: String,
     pub path: PathBuf,
+    pub editors: Box<dyn Editors>,
     pub pages: Vec<PageInfo>,
     pub cell: CellSize,
     pub pane: Pane,
@@ -113,7 +114,7 @@ impl App {
     pub fn new(parts: Parts) -> Self {
         Self {
             file_name: parts.file_name,
-            inverse: Inverse::new(&parts.path),
+            inverse: Inverse::new(&parts.path, parts.editors),
             viewer: Viewer::new(parts.pages, parts.cell, parts.pane),
             keys: KeyParser::default(),
             gestures: Gestures::default(),
@@ -538,6 +539,7 @@ pub fn pane_of(area: Rect) -> Pane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inverse::StatusOnly;
     use std::path::{Path, PathBuf};
     use std::sync::mpsc;
 
@@ -607,6 +609,7 @@ mod tests {
         let app = App::new(Parts {
             file_name: "doc.pdf".to_owned(),
             path,
+            editors: Box::new(StatusOnly),
             pages,
             cell: CELL,
             pane,

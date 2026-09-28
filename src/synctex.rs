@@ -249,6 +249,10 @@ impl Synctex {
         Ok(parser.finish())
     }
 
+    pub fn inputs(&self) -> impl Iterator<Item = &Path> {
+        self.inputs.iter().map(|(_, path)| path.as_path())
+    }
+
     fn path_of(&self, tag: u32) -> Option<PathBuf> {
         self.inputs
             .iter()

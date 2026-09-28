@@ -18,16 +18,30 @@ enum Data {
     Parsed { synctex: Synctex, stale: bool },
 }
 
-#[derive(Debug)]
+pub trait Editors {
+    fn jump(&mut self, at: &SourceLocation, inputs: &[PathBuf], place: &str) -> String;
+}
+
+#[cfg(test)]
+pub struct StatusOnly;
+
+#[cfg(test)]
+impl Editors for StatusOnly {
+    fn jump(&mut self, _at: &SourceLocation, _inputs: &[PathBuf], place: &str) -> String {
+        place.to_owned()
+    }
+}
+
 pub struct Inverse {
     pdf: PathBuf,
     directories: Vec<PathBuf>,
     data: Option<Data>,
     notice: Option<(String, Instant)>,
+    editors: Box<dyn Editors>,
 }
 
 impl Inverse {
-    pub fn new(pdf: &Path) -> Self {
+    pub fn new(pdf: &Path, editors: Box<dyn Editors>) -> Self {
         let mut directories: Vec<PathBuf> =
             [std::path::absolute(pdf).ok(), fs::canonicalize(pdf).ok()]
                 .into_iter()
@@ -40,6 +54,7 @@ impl Inverse {
             directories,
             data: None,
             notice: None,
+            editors,
         }
     }
 
@@ -76,10 +91,22 @@ impl Inverse {
         };
         let stale = *stale;
         let found = at.and_then(|position| synctex.source_at(position));
-        let mut parts = vec![found.map_or_else(
-            || NOTHING_HERE.to_owned(),
-            |location| self.describe(&location),
-        )];
+        let inputs: Vec<PathBuf> = synctex
+            .inputs()
+            .filter(|input| {
+                self.directories
+                    .iter()
+                    .any(|directory| input.starts_with(directory))
+            })
+            .map(Path::to_path_buf)
+            .collect();
+        let mut parts = vec![match found {
+            Some(location) => {
+                let place = self.describe(&location);
+                self.editors.jump(&location, &inputs, &place)
+            }
+            None => NOTHING_HERE.to_owned(),
+        }];
         if stale {
             parts.push(STALE.to_owned());
         }
@@ -119,6 +146,9 @@ fn older(synctex: &Path, pdf: &Path) -> bool {
 mod tests {
     use super::*;
     use std::fs::File;
+    use std::io::Read;
+
+    use flate2::read::GzDecoder;
 
     const INTRO: Position = Position {
         page: 1,
@@ -169,7 +199,7 @@ mod tests {
             .unwrap()
             .set_modified(an_hour_ago)
             .unwrap();
-        let mut inverse = Inverse::new(&pdf);
+        let mut inverse = Inverse::new(&pdf, Box::new(StatusOnly));
         assert_eq!(
             answer(&mut inverse, Some(INTRO)),
             "intro.tex:7 · SyncTeX data is older than the PDF"
@@ -183,7 +213,7 @@ mod tests {
         let pdf = directory.join("doc.pdf");
         fs::copy(fixture("synctex/thesis.pdf"), &pdf).unwrap();
         fs::write(directory.join("doc.synctex.gz"), b"not synctex").unwrap();
-        let mut inverse = Inverse::new(&pdf);
+        let mut inverse = Inverse::new(&pdf, Box::new(StatusOnly));
         assert_eq!(
             answer(&mut inverse, Some(INTRO)),
             "SyncTeX data is unreadable"
@@ -191,10 +221,62 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
+    type Asked = std::rc::Rc<std::cell::RefCell<Vec<(SourceLocation, Vec<PathBuf>, String)>>>;
+
+    struct Recording(Asked);
+
+    impl Editors for Recording {
+        fn jump(&mut self, at: &SourceLocation, inputs: &[PathBuf], place: &str) -> String {
+            self.0
+                .borrow_mut()
+                .push((at.clone(), inputs.to_vec(), place.to_owned()));
+            format!("→ nvim in tmux %1 · {place}")
+        }
+    }
+
+    #[test]
+    fn the_source_line_goes_to_the_editors_with_the_inputs_beside_the_pdf() {
+        let directory = scratch("editors");
+        let pdf = directory.join("doc.pdf");
+        fs::copy(fixture("synctex/thesis.pdf"), &pdf).unwrap();
+        let mut text = String::new();
+        GzDecoder::new(File::open(fixture("synctex/thesis.synctex.gz")).unwrap())
+            .read_to_string(&mut text)
+            .unwrap();
+        let moved = text.replace("/tmp/thesis/", &format!("{}/", directory.display()));
+        fs::write(directory.join("doc.synctex"), moved).unwrap();
+        let asked = Asked::default();
+        let mut inverse = Inverse::new(&pdf, Box::new(Recording(asked.clone())));
+        assert_eq!(
+            answer(&mut inverse, Some(INTRO)),
+            "→ nvim in tmux %1 · chapters/intro.tex:7"
+        );
+        let asked = asked.borrow();
+        let (at, inputs, place) = &asked[0];
+        assert_eq!(at.file, directory.join("chapters/intro.tex"));
+        assert_eq!(at.line, 7);
+        assert_eq!(place, "chapters/intro.tex:7");
+        assert!(inputs.contains(&directory.join("thesis.tex")));
+        assert!(inputs.contains(&directory.join("chapters/intro.tex")));
+        assert!(inputs.contains(&directory.join("chapters/method.tex")));
+        assert!(inputs.iter().all(|input| input.starts_with(&directory)));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_point_without_a_source_asks_no_editor() {
+        let directory = scratch("no-editors");
+        let asked = Asked::default();
+        let mut inverse = Inverse::new(&thesis_in(&directory), Box::new(Recording(asked.clone())));
+        assert_eq!(answer(&mut inverse, None), "no source here");
+        assert!(asked.borrow().is_empty());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn the_answer_stays_in_the_status_bar_for_four_seconds() {
         let directory = scratch("notice");
-        let mut inverse = Inverse::new(&thesis_in(&directory));
+        let mut inverse = Inverse::new(&thesis_in(&directory), Box::new(StatusOnly));
         let asked = Instant::now();
         inverse.search(Some(INTRO), asked);
         assert_eq!(inverse.notice_ends(), Some(asked + NOTICE_FOR));

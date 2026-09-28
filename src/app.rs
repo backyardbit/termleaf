@@ -19,6 +19,7 @@ use ratatui::text::Line;
 use ratatui_image::FontSize;
 use ratatui_image::picker::{Capability, Picker};
 
+use crate::editor::Jumper;
 use crate::encoder::{self, Encoded, Encoder, Job, Wanted};
 use crate::graphics::{self, Choice, Protocol};
 use crate::inverse::Inverse;
@@ -128,7 +129,7 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
     let pane = pane_of(page_area(terminal.get_frame().area()));
     let mut app = App {
         file_name: display_name(&path),
-        inverse: Inverse::new(&path),
+        inverse: Inverse::new(&path, Box::new(Jumper::default())),
         viewer: Viewer::new(pages, cell, pane),
         keys: KeyParser::default(),
         gestures: Gestures::default(),
@@ -784,6 +785,7 @@ fn tile_key(generation: Generation, view: &View, tile: crate::layout::Tile) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inverse::StatusOnly;
 
     const CELL: CellSize = CellSize {
         width: 10,
@@ -826,7 +828,7 @@ mod tests {
             keys: KeyParser::default(),
             gestures: Gestures::default(),
             pinch: PinchGate::default(),
-            inverse: Inverse::new(path),
+            inverse: Inverse::new(path, Box::new(StatusOnly)),
             renderer,
             encoder,
             wanted,

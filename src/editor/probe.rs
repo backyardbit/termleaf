@@ -45,6 +45,13 @@ pub trait Multiplexer {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Anchor {
     Process(Pid),
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "WezTerm names its panes by tty in a later PR of the stack"
+        )
+    )]
     Tty(PathBuf),
 }
 
@@ -261,20 +268,12 @@ pub fn choose(
         })
 }
 
-pub fn location_label(at: &SourceLocation) -> String {
-    let name = at
-        .file
-        .file_name()
-        .map_or_else(|| at.file.to_string_lossy(), |name| name.to_string_lossy());
-    format!("{name}:{}", at.line)
-}
-
 impl Choice {
-    pub fn status(&self, at: &SourceLocation) -> Option<String> {
+    pub fn status(&self, place: &str) -> Option<String> {
         match self {
             Self::Editor(_) => None,
-            Self::NoEditor => Some(format!("{} · no editor found", location_label(at))),
-            Self::Tie(count) => Some(format!("{count} editors could take {}", location_label(at))),
+            Self::NoEditor => Some(format!("{place} · no editor found")),
+            Self::Tie(count) => Some(format!("{count} editors could take {place}")),
         }
     }
 }
@@ -524,7 +523,7 @@ mod tests {
         let choice = pick(&[(201, "/t/ch5.tex"), (301, "/t/ch5.tex")], &location);
         assert_eq!(choice, Choice::Tie(2));
         assert_eq!(
-            choice.status(&location).as_deref(),
+            choice.status("ch5.tex:77").as_deref(),
             Some("2 editors could take ch5.tex:77")
         );
     }
@@ -543,7 +542,7 @@ mod tests {
         );
         assert_eq!(choice, Choice::NoEditor);
         assert_eq!(
-            choice.status(&location).as_deref(),
+            choice.status("ch5.tex:77").as_deref(),
             Some("ch5.tex:77 · no editor found")
         );
     }
@@ -552,7 +551,7 @@ mod tests {
     fn a_chosen_editor_needs_no_status() {
         let location = at("/t/ch5.tex", 77);
         let choice = pick(&[(301, "/t/ch5.tex")], &location);
-        assert_eq!(choice.status(&location), None);
+        assert_eq!(choice.status("ch5.tex:77"), None);
     }
 
     #[test]

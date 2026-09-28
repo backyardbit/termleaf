@@ -141,6 +141,7 @@ fn show(
             |name| name.to_string_lossy().into_owned(),
         ),
         path: path.to_path_buf(),
+        editors: Box::new(crate::editor::Jumper::default()),
         pages,
         cell: CellSize {
             width: u32::from(font.width.max(1)),

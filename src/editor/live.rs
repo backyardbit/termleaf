@@ -178,7 +178,9 @@ fn probe_every_pane_of_the_live_tmux_session() {
                 location.line,
                 candidate.label()
             ),
-            Choice::NoEditor | Choice::Tie(_) => choice.status(location).unwrap_or_default(),
+            Choice::NoEditor | Choice::Tie(_) => choice
+                .status(&format!("{}:{}", short(&location.file), location.line))
+                .unwrap_or_default(),
         };
         println!("  {text}");
     }
