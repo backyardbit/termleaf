@@ -1,4 +1,5 @@
 mod e2e;
+mod herdr;
 mod jumps;
 mod tmux;
 mod xterm;
@@ -48,8 +49,9 @@ fn main() -> ExitCode {
         Some("e2e") => e2e::run(&workspace_root()),
         Some("xterm") => xterm::run(&workspace_root()),
         Some("tmux") => jumps::run(&workspace_root(), jumps::Backend::Tmux),
+        Some("herdr") => jumps::run(&workspace_root(), jumps::Backend::Herdr),
         _ => {
-            eprintln!("usage: cargo xtask <lint|check|e2e|xterm|tmux>");
+            eprintln!("usage: cargo xtask <lint|check|e2e|xterm|tmux|herdr>");
             eprintln!("  lint   run the anti-slop source checks");
             eprintln!("  check  run fmt, clippy, tests and lint");
             eprintln!(
@@ -60,6 +62,9 @@ fn main() -> ExitCode {
             );
             eprintln!(
                 "  tmux   jump nvim, vim and hx from termleaf in a headless tmux (needs tmux and the editors)"
+            );
+            eprintln!(
+                "  herdr  jump nvim, vim and hx from termleaf in a headless herdr (needs herdr, tmux and the editors)"
             );
             ExitCode::FAILURE
         }

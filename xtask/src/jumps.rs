@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-use crate::tmux;
+use crate::{herdr, tmux};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -17,12 +17,14 @@ pub type Outcome<T> = Result<T, String>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
     Tmux,
+    Herdr,
 }
 
 impl Backend {
     fn name(self) -> &'static str {
         match self {
             Self::Tmux => "tmux",
+            Self::Herdr => "herdr",
         }
     }
 }
@@ -107,6 +109,7 @@ fn scenario(root: &Path, backend: Backend) -> Outcome<()> {
     let termleaf = root.join("target/release/termleaf");
     let server = match backend {
         Backend::Tmux => tmux::start(&work, &termleaf)?,
+        Backend::Herdr => herdr::start(&work, &termleaf)?,
     };
     server.wait_for_status("termleaf to open the thesis", |status| {
         status == "page 1/5 · doc.pdf"
