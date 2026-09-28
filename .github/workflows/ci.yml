@@ -49,10 +49,25 @@ jobs:
           sudo install -m 755 "$RUNNER_TEMP/herdr" /usr/local/bin/herdr
           mkdir -p ~/.config/herdr
           printf 'onboarding = false\n' > ~/.config/herdr/config.toml
+      - name: Install tmux, Vim, Neovim 0.10.4 and Helix 25.07.1
+        run: |
+          sudo apt-get install -y tmux vim
+          gh release download v0.10.4 --repo neovim/neovim --pattern nvim-linux-x86_64.tar.gz --dir "$RUNNER_TEMP/nvim"
+          sudo tar -C /opt -xzf "$RUNNER_TEMP/nvim/nvim-linux-x86_64.tar.gz"
+          sudo ln -sf /opt/nvim-linux-x86_64/bin/nvim /usr/local/bin/nvim
+          gh release download 25.07.1 --repo helix-editor/helix --pattern helix-25.07.1-x86_64-linux.tar.xz --dir "$RUNNER_TEMP/helix"
+          sudo tar -C /opt -xJf "$RUNNER_TEMP/helix/helix-25.07.1-x86_64-linux.tar.xz"
+          sudo ln -sf /opt/helix-25.07.1-x86_64-linux/hx /usr/local/bin/hx
+          tmux -V
+          vim --version | head -n 1
+          nvim --version | head -n 1
+          hx --version
       - uses: Swatinem/rust-cache@v2
       - run: xvfb-run --auto-servernum --server-args="-screen 0 1400x900x24" cargo xtask e2e
       - name: Sixel in xterm -ti vt340
         run: xvfb-run --auto-servernum --server-args="-screen 0 1400x900x24" cargo xtask xterm
+      - name: Alt+click, Ctrl+click and e jump nvim, vim and hx in tmux
+        run: cargo xtask tmux
       - if: always()
         uses: actions/upload-artifact@v4
         with:
