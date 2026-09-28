@@ -1,4 +1,5 @@
 mod e2e;
+mod tmux;
 mod xterm;
 
 use std::fmt;
@@ -45,8 +46,9 @@ fn main() -> ExitCode {
         Some("check") => check(),
         Some("e2e") => e2e::run(&workspace_root()),
         Some("xterm") => xterm::run(&workspace_root()),
+        Some("tmux") => tmux::run(&workspace_root()),
         _ => {
-            eprintln!("usage: cargo xtask <lint|check|e2e|xterm>");
+            eprintln!("usage: cargo xtask <lint|check|e2e|xterm|tmux>");
             eprintln!("  lint   run the anti-slop source checks");
             eprintln!("  check  run fmt, clippy, tests and lint");
             eprintln!(
@@ -54,6 +56,9 @@ fn main() -> ExitCode {
             );
             eprintln!(
                 "  xterm  check termleaf's Sixel frames in xterm on a virtual display (CI only)"
+            );
+            eprintln!(
+                "  tmux   jump nvim, vim and hx from termleaf in a headless tmux (needs tmux and the editors)"
             );
             ExitCode::FAILURE
         }
