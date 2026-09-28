@@ -148,7 +148,7 @@ fn scenario(root: &Path) -> Outcome<()> {
         session.send(trigger)?;
         session.wait_for_status(
             &format!("{label} to name a source line"),
-            names_a_source_line,
+            names_a_source_line_without_an_editor,
         )?;
         println!(
             "ok   {label}: {}",
@@ -340,6 +340,12 @@ pub fn first_pane_id(pane_list_json: &str) -> Option<String> {
 
 pub fn status_line(screen: &str) -> Option<&str> {
     screen.lines().map(str::trim).rfind(|line| !line.is_empty())
+}
+
+pub fn names_a_source_line_without_an_editor(status: &str) -> bool {
+    status
+        .strip_suffix(" · no editor found")
+        .is_some_and(names_a_source_line)
 }
 
 pub fn names_a_source_line(status: &str) -> bool {
@@ -574,6 +580,19 @@ mod tests {
     fn a_status_ending_in_a_tex_line_names_a_source_line() {
         assert!(names_a_source_line(
             "page 2/5 · doc.pdf · chapters/intro.tex:4"
+        ));
+    }
+
+    #[test]
+    fn a_source_line_outside_tmux_finds_no_editor() {
+        assert!(names_a_source_line_without_an_editor(
+            "page 2/5 · doc.pdf · chapters/intro.tex:4 · no editor found"
+        ));
+        assert!(!names_a_source_line_without_an_editor(
+            "page 2/5 · doc.pdf · chapters/intro.tex:4"
+        ));
+        assert!(!names_a_source_line_without_an_editor(
+            "page 2/5 · doc.pdf · no editor found"
         ));
     }
 
