@@ -104,16 +104,21 @@ impl Jumper {
             return Jumped::NotChosen(Choice::NoEditor);
         };
         let layers = detect(&env, &ancestors(&table, Pid(std::process::id())));
-        let Some((socket, own)) = layers
-            .iter()
-            .find(|layer| layer.kind == MultiplexerKind::Tmux)
-            .and_then(|layer| Some((layer.control.clone()?, layer.own_pane.clone())))
-        else {
-            return Jumped::NotChosen(Choice::NoEditor);
-        };
         let loaded = OnDisk::new(&table, &env);
-        let tmux = self.tmux(&socket, own.as_deref());
-        jump_with(tmux, &table, own.as_deref(), Wanted { at, inputs }, &loaded)
+        let wanted = Wanted { at, inputs };
+        for layer in &layers {
+            let own = layer.own_pane.as_deref();
+            let jumped = match (layer.kind, layer.control.as_deref()) {
+                (MultiplexerKind::Tmux, Some(socket)) => {
+                    jump_with(self.tmux(socket, own), &table, own, wanted, &loaded)
+                }
+                _ => continue,
+            };
+            if !matches!(jumped, Jumped::NotChosen(Choice::NoEditor)) {
+                return jumped;
+            }
+        }
+        Jumped::NotChosen(Choice::NoEditor)
     }
 }
 
