@@ -11,6 +11,7 @@
 *.fls
 *.fdb_latexmk
 *.synctex.gz
+!tests/fixtures/synctex/*.synctex.gz
 *.synctex(busy)
 *.xdv
 
