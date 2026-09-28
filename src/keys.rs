@@ -36,6 +36,7 @@ pub enum Command {
     FitPage,
     ToggleFit(ScreenCell),
     Click(ScreenCell),
+    Inverse(Option<ScreenCell>),
     Quit,
 }
 
@@ -91,6 +92,7 @@ impl KeyParser {
                     '-' => Some(zoom(repeat, -1)),
                     's' => Some(Command::FitWidth),
                     'a' => Some(Command::FitPage),
+                    'e' => Some(Command::Inverse(None)),
                     'q' => Some(Command::Quit),
                     _ => None,
                 }
@@ -273,6 +275,16 @@ mod tests {
     #[test]
     fn s_and_a_fit_the_width_and_the_page() {
         assert_eq!(run("sa"), [Command::FitWidth, Command::FitPage]);
+    }
+
+    #[test]
+    fn e_asks_for_the_source_under_the_pointer() {
+        assert_eq!(run("e3e"), [Command::Inverse(None), Command::Inverse(None)]);
+    }
+
+    #[test]
+    fn e_inside_the_command_line_is_just_text() {
+        assert!(run(":e\u{1b}").is_empty());
     }
 
     #[test]

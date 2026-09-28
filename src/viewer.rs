@@ -88,7 +88,7 @@ impl Viewer {
                 self.fit(zoom, Some(at));
             }
             Command::Click(at) => self.follow_link(at),
-            Command::Quit => {}
+            Command::Inverse(_) | Command::Quit => {}
         }
     }
 
@@ -132,7 +132,20 @@ impl Viewer {
         self.file_state = FileState::Unreadable;
     }
 
-    pub fn status_line(&self, file_name: &str, command_line: Option<&str>) -> String {
+    pub fn position_under(&self, at: Option<ScreenCell>) -> Option<Position> {
+        let at = at.unwrap_or(ScreenCell {
+            column: u16::try_from(self.view.pane.columns / 2).unwrap_or(u16::MAX),
+            row: u16::try_from(self.view.pane.rows / 2).unwrap_or(u16::MAX),
+        });
+        self.view.page_under(at.column, at.row)
+    }
+
+    pub fn status_line(
+        &self,
+        file_name: &str,
+        command_line: Option<&str>,
+        notice: Option<&str>,
+    ) -> String {
         if let Some(line) = command_line {
             return format!(":{line}");
         }
@@ -150,6 +163,7 @@ impl Viewer {
         if self.file_state == FileState::Unreadable {
             parts.push("✗ unreadable".to_owned());
         }
+        parts.extend(notice.map(str::to_owned));
         parts.join(" · ")
     }
 
@@ -624,7 +638,7 @@ mod tests {
         let mut viewer = viewer(2);
         viewer.unreadable();
         viewer.reloaded(document(2));
-        assert_eq!(viewer.status_line("a.pdf", None), "page 1/2 · a.pdf");
+        assert_eq!(viewer.status_line("a.pdf", None, None), "page 1/2 · a.pdf");
     }
 
     #[test]
@@ -632,7 +646,7 @@ mod tests {
         let mut viewer = viewer(12);
         viewer.apply(Command::GoTo(3));
         assert_eq!(
-            viewer.status_line("thesis.pdf", None),
+            viewer.status_line("thesis.pdf", None, None),
             "page 3/12 · thesis.pdf"
         );
     }
@@ -642,7 +656,7 @@ mod tests {
         let mut viewer = viewer(12);
         viewer.unreadable();
         assert_eq!(
-            viewer.status_line("thesis.pdf", None),
+            viewer.status_line("thesis.pdf", None, None),
             "page 1/12 · thesis.pdf · ✗ unreadable"
         );
     }
@@ -655,12 +669,12 @@ mod tests {
             anchor: None,
         });
         assert_eq!(
-            viewer.status_line("thesis.pdf", None),
+            viewer.status_line("thesis.pdf", None, None),
             "page 1/12 · 110% · thesis.pdf"
         );
         viewer.apply(Command::FitPage);
         assert_eq!(
-            viewer.status_line("thesis.pdf", None),
+            viewer.status_line("thesis.pdf", None, None),
             "page 1/12 · fit page · thesis.pdf"
         );
     }
@@ -668,6 +682,45 @@ mod tests {
     #[test]
     fn status_line_shows_the_command_line_while_typing() {
         let viewer = viewer(12);
-        assert_eq!(viewer.status_line("thesis.pdf", Some("4")), ":4");
+        assert_eq!(viewer.status_line("thesis.pdf", Some("4"), None), ":4");
+        assert_eq!(
+            viewer.status_line("thesis.pdf", Some("4"), Some("intro.tex:7")),
+            ":4"
+        );
+    }
+
+    #[test]
+    fn status_line_ends_with_the_notice() {
+        let viewer = viewer(12);
+        assert_eq!(
+            viewer.status_line("thesis.pdf", None, Some("intro.tex:7")),
+            "page 1/12 · thesis.pdf · intro.tex:7"
+        );
+    }
+
+    #[test]
+    fn the_source_is_looked_up_under_the_pointer() {
+        let viewer = viewer(2);
+        let at = cell_over(&viewer, 150.0, 110.0);
+        let position = viewer.position_under(Some(at)).unwrap();
+        assert_eq!(position.page, 0);
+        assert!((position.x - 150.0).abs() < 10.0);
+        assert!((position.y - 110.0).abs() < 10.0);
+    }
+
+    #[test]
+    fn without_a_pointer_the_source_is_looked_up_at_the_middle_of_the_pane() {
+        let viewer = viewer(2);
+        assert_eq!(
+            viewer.position_under(None),
+            viewer.view().page_under(40, 12)
+        );
+    }
+
+    #[test]
+    fn a_pointer_beside_the_page_has_no_position() {
+        let mut viewer = viewer(2);
+        viewer.apply(Command::FitPage);
+        assert_eq!(viewer.position_under(Some(cell(0, 5))), None);
     }
 }

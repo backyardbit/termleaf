@@ -140,6 +140,7 @@ fn show(
             || path.display().to_string(),
             |name| name.to_string_lossy().into_owned(),
         ),
+        path: path.to_path_buf(),
         pages,
         cell: CellSize {
             width: u32::from(font.width.max(1)),

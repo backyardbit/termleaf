@@ -18,6 +18,7 @@ pub enum Wheel {
 pub enum MouseInput {
     Hover(ScreenCell),
     Press(ScreenCell),
+    ModifierPress(ScreenCell),
     Drag(ScreenCell),
     Release(ScreenCell),
     Wheel {
@@ -31,7 +32,11 @@ pub enum MouseInput {
 impl MouseInput {
     pub fn at(self) -> ScreenCell {
         match self {
-            Self::Hover(at) | Self::Press(at) | Self::Drag(at) | Self::Release(at) => at,
+            Self::Hover(at)
+            | Self::Press(at)
+            | Self::ModifierPress(at)
+            | Self::Drag(at)
+            | Self::Release(at) => at,
             Self::Wheel { at, .. } => at,
         }
     }
@@ -42,16 +47,23 @@ struct Press {
     last: ScreenCell,
     dragged: bool,
     double: bool,
+    inverse: bool,
 }
 
 #[derive(Debug, Default)]
 pub struct Gestures {
     press: Option<Press>,
     last_click: Option<(ScreenCell, Instant)>,
+    pointer: Option<ScreenCell>,
 }
 
 impl Gestures {
+    pub fn pointer(&self) -> Option<ScreenCell> {
+        self.pointer
+    }
+
     pub fn feed(&mut self, input: MouseInput, now: Instant) -> Option<Command> {
+        self.pointer = Some(input.at());
         match input {
             MouseInput::Wheel {
                 direction,
@@ -68,11 +80,22 @@ impl Gestures {
                     last: at,
                     dragged: false,
                     double,
+                    inverse: false,
                 });
                 if double {
                     self.last_click = None;
                     return Some(Command::ToggleFit(at));
                 }
+                None
+            }
+            MouseInput::ModifierPress(at) => {
+                self.last_click = None;
+                self.press = Some(Press {
+                    last: at,
+                    dragged: false,
+                    double: false,
+                    inverse: true,
+                });
                 None
             }
             MouseInput::Drag(at) => {
@@ -91,6 +114,9 @@ impl Gestures {
                 let press = self.press.take()?;
                 if press.dragged || press.double {
                     return None;
+                }
+                if press.inverse {
+                    return Some(Command::Inverse(Some(at)));
                 }
                 self.last_click = Some((at, now));
                 Some(Command::Click(at))
@@ -304,5 +330,58 @@ mod tests {
             ]),
             [Command::Click(cell(5, 5)), Command::Click(cell(20, 5))]
         );
+    }
+
+    #[test]
+    fn a_modifier_click_asks_for_the_source_at_the_pointer() {
+        assert_eq!(
+            feed_all(&[
+                (MouseInput::ModifierPress(cell(7, 9)), 0),
+                (MouseInput::Release(cell(7, 9)), 40)
+            ]),
+            [Command::Inverse(Some(cell(7, 9)))]
+        );
+    }
+
+    #[test]
+    fn a_modifier_click_never_counts_towards_a_double_click() {
+        assert_eq!(
+            feed_all(&[
+                (MouseInput::Press(cell(5, 5)), 0),
+                (MouseInput::Release(cell(5, 5)), 50),
+                (MouseInput::ModifierPress(cell(5, 5)), 100),
+                (MouseInput::Release(cell(5, 5)), 150),
+                (MouseInput::Press(cell(5, 5)), 200),
+                (MouseInput::Release(cell(5, 5)), 250)
+            ]),
+            [
+                Command::Click(cell(5, 5)),
+                Command::Inverse(Some(cell(5, 5))),
+                Command::Click(cell(5, 5))
+            ]
+        );
+    }
+
+    #[test]
+    fn a_modifier_drag_scrolls_instead_of_asking_for_the_source() {
+        assert_eq!(
+            feed_all(&[
+                (MouseInput::ModifierPress(cell(10, 10)), 0),
+                (MouseInput::Drag(cell(10, 12)), 10),
+                (MouseInput::Release(cell(10, 12)), 20)
+            ]),
+            [Command::Scroll {
+                columns: 0,
+                rows: -2
+            }]
+        );
+    }
+
+    #[test]
+    fn the_pointer_is_wherever_the_mouse_was_last_seen() {
+        let mut gestures = Gestures::default();
+        assert_eq!(gestures.pointer(), None);
+        gestures.feed(MouseInput::Hover(cell(12, 3)), Instant::now());
+        assert_eq!(gestures.pointer(), Some(cell(12, 3)));
     }
 }
