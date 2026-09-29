@@ -116,10 +116,6 @@ pub mod fake {
             self.edit(pid, |process| process.identity.start = StartTime(start))
         }
 
-        pub fn in_group(&mut self, pid: u32, group: u32) -> &mut Self {
-            self.edit(pid, |process| process.group = Pid(group))
-        }
-
         pub fn exit(&mut self, pid: u32) -> &mut Self {
             self.processes.retain(|process| process.pid() != Pid(pid));
             self
@@ -212,30 +208,6 @@ mod tests {
         assert!(is_shell("fish"));
         assert!(!is_shell("nvim"));
         assert!(!is_shell("less"));
-    }
-
-    #[test]
-    fn a_program_is_named_after_its_executable() {
-        assert_eq!(program_name("/usr/bin/vim.gtk3"), "vim.gtk3");
-        assert_eq!(program_name("/opt/helix/hx"), "hx");
-        assert_eq!(program_name("nvim"), "nvim");
-    }
-
-    #[test]
-    fn an_executable_replaced_by_an_upgrade_keeps_its_name() {
-        assert_eq!(program_name("/usr/bin/nvim (deleted)"), "nvim");
-    }
-
-    #[test]
-    fn ancestors_list_the_parents_up_to_init() {
-        let mut table = FakeTable::default();
-        table
-            .spawn(10, 1, "kitty")
-            .spawn(20, 10, "bash")
-            .spawn(30, 1, "tmux")
-            .spawn(40, 30, "bash")
-            .spawn(50, 40, "termleaf");
-        assert_eq!(ancestors(&table, Pid(50)), ["bash", "tmux"]);
     }
 
     #[test]

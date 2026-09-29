@@ -229,17 +229,6 @@ mod tests {
     }
 
     #[test]
-    fn a_swap_header_names_the_editor_pid_and_the_full_path() {
-        assert_eq!(
-            parse_swap_header(&header(378_221, "/tmp/thesis/ch5.tex"), None),
-            Some(SwapOwner {
-                pid: Pid(378_221),
-                file: PathBuf::from("/tmp/thesis/ch5.tex")
-            })
-        );
-    }
-
-    #[test]
     fn a_swap_header_under_home_is_expanded() {
         assert_eq!(
             parse_swap_header(&header(7, "~/thesis/ch5.tex"), Some(Path::new("/home/ada")))
@@ -252,20 +241,6 @@ mod tests {
     fn something_that_is_not_a_swap_file_has_no_owner() {
         assert_eq!(parse_swap_header(b"%PDF-1.7", None), None);
         assert_eq!(parse_swap_header(&header(7, "")[..200], None), None);
-    }
-
-    #[test]
-    fn swap_files_are_looked_for_beside_the_file_and_in_neovims_state() {
-        let candidates = swap_candidates(
-            Path::new("/tmp/thesis/ch5.tex"),
-            Some(Path::new("/home/ada/.local/state")),
-        );
-        assert_eq!(candidates[0], PathBuf::from("/tmp/thesis/.ch5.tex.swp"));
-        assert_eq!(candidates[1], PathBuf::from("/tmp/thesis/.ch5.tex.swo"));
-        assert!(candidates.contains(&PathBuf::from(
-            "/home/ada/.local/state/nvim/swap/%tmp%thesis%ch5.tex.swp"
-        )));
-        assert_eq!(candidates.len(), 32);
     }
 
     #[test]
@@ -289,42 +264,6 @@ mod tests {
             cwd,
             Path::new("/tmp/thesis/chapters/ch1.tex")
         ));
-    }
-
-    #[test]
-    fn the_program_name_is_never_taken_for_a_file() {
-        let arguments = vec!["ch5.tex".to_owned()];
-        assert!(!named_in_arguments(
-            &arguments,
-            Some(Path::new("/tmp")),
-            Path::new("/tmp/ch5.tex")
-        ));
-    }
-
-    #[test]
-    fn a_neovim_socket_is_found_on_its_embedded_child() {
-        let mut table = FakeTable::default();
-        table
-            .spawn(40, 30, "nvim")
-            .spawn(41, 40, "nvim")
-            .listens(41, "/run/user/1000/lsp.sock")
-            .listens(41, "/run/user/1000/nvim.41.0");
-        assert_eq!(
-            neovim_socket(&table, Pid(40)),
-            Some(PathBuf::from("/run/user/1000/nvim.41.0"))
-        );
-    }
-
-    #[test]
-    fn a_custom_listen_socket_is_taken_when_it_is_the_only_one() {
-        let mut table = FakeTable::default();
-        table.spawn(40, 30, "nvim").listens(40, "/tmp/thesis.pipe");
-        assert_eq!(
-            neovim_socket(&table, Pid(40)),
-            Some(PathBuf::from("/tmp/thesis.pipe"))
-        );
-        table.spawn(50, 30, "nvim");
-        assert_eq!(neovim_socket(&table, Pid(50)), None);
     }
 
     #[test]

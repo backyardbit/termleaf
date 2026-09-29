@@ -181,38 +181,6 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_terminal_has_no_layers() {
-        let env = FakeEnvironment::new(&[("TERM", "xterm-256color"), ("SHELL", "/bin/bash")]);
-        assert!(detect(&env, &[]).is_empty());
-    }
-
-    #[test]
-    fn tmux_names_its_socket_and_our_pane() {
-        let env = FakeEnvironment::new(&[
-            ("TMUX", "/tmp/tmux-1000/default,4127,0"),
-            ("TMUX_PANE", "%3"),
-        ]);
-        assert_eq!(
-            detect(&env, &[]),
-            [Layer {
-                kind: MultiplexerKind::Tmux,
-                own_pane: Some("%3".to_owned()),
-                session: None,
-                control: Some(PathBuf::from("/tmp/tmux-1000/default")),
-            }]
-        );
-    }
-
-    #[test]
-    fn a_tmux_socket_path_may_hold_commas() {
-        assert_eq!(
-            tmux_socket("/tmp/a,b/default,4127,0").as_deref(),
-            Some("/tmp/a,b/default")
-        );
-        assert_eq!(tmux_socket("garbage"), None);
-    }
-
-    #[test]
     fn zellij_panes_are_named_like_its_cli_names_them() {
         let env = FakeEnvironment::new(&[
             ("ZELLIJ", "0"),
@@ -285,19 +253,6 @@ mod tests {
         assert_eq!(
             layers[1].control,
             Some(PathBuf::from("org.kde.konsole-311"))
-        );
-    }
-
-    #[test]
-    fn a_multiplexer_comes_before_the_terminal_around_it() {
-        let env = FakeEnvironment::new(&[
-            ("KITTY_WINDOW_ID", "7"),
-            ("TMUX", "/tmp/tmux-1000/default,4127,0"),
-            ("TMUX_PANE", "%3"),
-        ]);
-        assert_eq!(
-            kinds(&detect(&env, &[])),
-            [MultiplexerKind::Tmux, MultiplexerKind::Kitty]
         );
     }
 

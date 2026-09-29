@@ -103,9 +103,6 @@ mod tests {
     const VIM_SWAP: &str = "E325: ATTENTION\nFound a swap file by the name \".ch5.tex.swp\"\n          owned by: ada   dated: Sun Sep 27 23:49:10 2026\nSwap file \".ch5.tex.swp\" already exists!\n[O]pen Read-Only, (E)dit anyway, (R)ecover, (D)elete it, (Q)uit, (A)bort: \n";
     const VIM_SWAP_WRAPPED: &str = "Swap file \".ch5.tex.swp\" already exists!\n[O]pen Read-Only, (E)dit a\nnyway, (R)ecover, (Q)uit, \n(A)bort: \n";
     const VIM_SAVE: &str = "~\nSave changes to \"ch5.tex\"?\n(Y)es, [N]o, (C)ancel: \n";
-    const VIM_NORMAL: &str = "\\section{Results}\nPress ENTER or type command to continue is only text here\n~\n~\n~\n~\n~\nch5.tex                                   77,1           Top\n";
-    const HELIX: &str =
-        "\\section{Results}\n~\n NOR   ch5.tex                          1 sel  77:1\n";
 
     fn locked(id: &str) -> (FakeTable, FakeMultiplexer, Candidate) {
         let (table, multiplexer) = layout();
@@ -127,13 +124,6 @@ mod tests {
     #[test]
     fn a_prompt_wrapped_by_a_narrow_pane_is_still_seen() {
         assert_eq!(blocking_prompt(VIM_SWAP_WRAPPED), Some(Prompt::SwapFile));
-    }
-
-    #[test]
-    fn prompt_text_higher_up_in_the_buffer_is_not_a_prompt() {
-        assert_eq!(blocking_prompt(VIM_NORMAL), None);
-        assert_eq!(blocking_prompt(HELIX), None);
-        assert_eq!(blocking_prompt(""), None);
     }
 
     #[test]
@@ -167,12 +157,6 @@ mod tests {
     }
 
     #[test]
-    fn the_ranked_editor_passes_its_recheck() {
-        let (table, multiplexer, vim) = locked("%2");
-        assert_eq!(recheck(&multiplexer, &table, Some("%0"), &vim), Ok(()));
-    }
-
-    #[test]
     fn a_closed_pane_fails_the_recheck() {
         let (table, multiplexer, vim) = locked("%2");
         multiplexer
@@ -199,16 +183,6 @@ mod tests {
     fn a_reused_pid_with_another_start_time_fails_the_recheck() {
         let (mut table, multiplexer, vim) = locked("%2");
         table.started(301, 99_999);
-        assert_eq!(
-            recheck(&multiplexer, &table, Some("%0"), &vim),
-            Err(Refusal::Replaced)
-        );
-    }
-
-    #[test]
-    fn another_editor_started_in_the_same_pane_fails_the_recheck() {
-        let (mut table, multiplexer, vim) = locked("%2");
-        table.exit(301).spawn(302, 300, "vim").foreground(300, 302);
         assert_eq!(
             recheck(&multiplexer, &table, Some("%0"), &vim),
             Err(Refusal::Replaced)

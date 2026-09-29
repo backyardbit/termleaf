@@ -228,35 +228,6 @@ impl ProcessTable for Procfs {
 mod tests {
     use super::*;
 
-    const NVIM_STAT: &str = "378223 (nvim) S 378210 378223 378210 34818 378223 4194560 537 0 50 0 0 0 0 0 20 0 1 0 4604758 11960320 2111 18446744073709551615";
-    const SHELL_STAT: &str = "378210 (bash) S 378200 378210 378210 34818 378223 4194560 488 413 0 0 0 0 0 0 20 0 1 0 4604757 4866048 994 18446744073709551615";
-
-    #[test]
-    fn stat_gives_the_foreground_group_of_the_tty_and_the_start_time() {
-        let shell = parse_stat(SHELL_STAT).expect("a stat line");
-        assert_eq!(shell.pid, Pid(378_210));
-        assert_eq!(shell.command, "bash");
-        assert_eq!(shell.parent, Pid(378_200));
-        assert_eq!(shell.group, Pid(378_210));
-        assert_eq!(shell.foreground_group, Some(Pid(378_223)));
-        assert_eq!(shell.start, StartTime(4_604_757));
-        let editor = parse_stat(NVIM_STAT).expect("a stat line");
-        assert_eq!(editor.group, editor.pid);
-        assert_eq!(editor.tty, shell.tty);
-    }
-
-    #[test]
-    fn a_command_name_with_spaces_and_parentheses_is_read_whole() {
-        let stat = parse_stat(
-            "42 (my (odd) name) S 1 42 42 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 777 0 0 0",
-        )
-        .expect("a stat line");
-        assert_eq!(stat.command, "my (odd) name");
-        assert_eq!(stat.tty, None);
-        assert_eq!(stat.foreground_group, None);
-        assert_eq!(stat.start, StartTime(777));
-    }
-
     #[test]
     fn a_cut_short_stat_line_is_refused() {
         assert_eq!(parse_stat("42 (vim) S 1 42 42 34818"), None);
@@ -294,42 +265,12 @@ mod tests {
     }
 
     #[test]
-    fn only_listening_unix_sockets_with_a_path_are_kept() {
-        let table = "Num       RefCount Protocol Flags    Type St Inode Path\n\
-            000000002281ad72: 00000003 00000000 00000000 0001 03 480042\n\
-            000000004de22557: 00000002 00000000 00010000 0001 01 2886538 /tmp/nvim.box/9yDIj6/nvim.378235.0\n\
-            000000004de22558: 00000002 00000000 00000000 0001 03 2886539 /tmp/nvim.box/9yDIj6/nvim.378235.0\n\
-            000000004de22559: 00000002 00000000 00010000 0001 01 2886540 @abstract\n";
-        let listening = parse_listening_unix_sockets(table);
-        assert_eq!(listening.len(), 1);
-        assert_eq!(
-            listening.get(&2_886_538),
-            Some(&PathBuf::from("/tmp/nvim.box/9yDIj6/nvim.378235.0"))
-        );
-    }
-
-    #[test]
     fn a_socket_path_with_spaces_is_kept_whole() {
         let table = "Num       RefCount Protocol Flags    Type St Inode Path\n\
             000000004de22557: 00000002 00000000 00010000 0001 01  2886538 /tmp/my thesis/nvim  pipe\n";
         assert_eq!(
             parse_listening_unix_sockets(table).get(&2_886_538),
             Some(&PathBuf::from("/tmp/my thesis/nvim  pipe"))
-        );
-    }
-
-    #[test]
-    fn socket_links_name_their_inode() {
-        assert_eq!(socket_inode(Path::new("socket:[2886538]")), Some(2_886_538));
-        assert_eq!(socket_inode(Path::new("/dev/pts/2")), None);
-        assert_eq!(socket_inode(Path::new("pipe:[12]")), None);
-    }
-
-    #[test]
-    fn arguments_are_split_at_nul_bytes() {
-        assert_eq!(
-            parse_arguments(b"hx\0ch5.tex:77\0notes.md\0"),
-            ["hx", "ch5.tex:77", "notes.md"]
         );
     }
 

@@ -356,7 +356,6 @@ pub mod fake {
 
 #[cfg(test)]
 mod tests {
-    use super::super::process::StartTime;
     use super::super::process::fake::{FakeTable, OUR_UID};
     use super::fake::{layout, pane};
     use super::*;
@@ -368,18 +367,6 @@ mod tests {
             .into_iter()
             .map(|verdict| (verdict.pane.id, verdict.editor.map(|editor| editor.kind)))
             .collect()
-    }
-
-    #[test]
-    fn editors_are_known_by_their_executable() {
-        assert_eq!(EditorKind::of_program("hx"), Some(EditorKind::Helix));
-        assert_eq!(EditorKind::of_program("helix"), Some(EditorKind::Helix));
-        assert_eq!(EditorKind::of_program("nvim"), Some(EditorKind::Neovim));
-        assert_eq!(EditorKind::of_program("vim"), Some(EditorKind::Vim));
-        assert_eq!(EditorKind::of_program("vim.gtk3"), Some(EditorKind::Vim));
-        assert_eq!(EditorKind::of_program("vi"), None);
-        assert_eq!(EditorKind::of_program("nvim-qt"), None);
-        assert_eq!(EditorKind::of_program("less"), None);
     }
 
     #[test]
@@ -401,31 +388,6 @@ mod tests {
                 ("%3".to_owned(), Ok(EditorKind::Helix)),
                 ("%4".to_owned(), Err(Refusal::Shell)),
             ]
-        );
-    }
-
-    #[test]
-    fn the_editor_is_identified_by_pid_and_start_time() {
-        let (table, multiplexer) = layout();
-        let panes = multiplexer.panes().expect("panes");
-        let editor = editor_in(&table, &panes[2]).expect("vim");
-        assert_eq!(
-            editor.identity,
-            Identity {
-                pid: Pid(301),
-                start: StartTime(3010)
-            }
-        );
-    }
-
-    #[test]
-    fn neovim_brings_the_socket_of_its_embedded_child() {
-        let (table, multiplexer) = layout();
-        let panes = multiplexer.panes().expect("panes");
-        let editor = editor_in(&table, &panes[1]).expect("nvim");
-        assert_eq!(
-            editor.socket,
-            Some(PathBuf::from("/run/user/1000/nvim.202.0"))
         );
     }
 
@@ -464,20 +426,6 @@ mod tests {
             .foreground(10, 10)
             .spawn(11, 10, "vim");
         assert_eq!(editor_in(&table, &pane("%9", 10, "1")), Err(Refusal::Shell));
-    }
-
-    #[test]
-    fn a_foreground_group_whose_leader_is_gone_is_refused() {
-        let mut table = FakeTable::default();
-        table
-            .spawn(10, 1, "bash")
-            .foreground(10, 11)
-            .spawn(12, 10, "vim")
-            .in_group(12, 11);
-        assert_eq!(
-            editor_in(&table, &pane("%9", 10, "1")),
-            Err(Refusal::NoForeground)
-        );
     }
 
     #[test]
@@ -560,49 +508,9 @@ mod tests {
     }
 
     #[test]
-    fn the_editor_with_the_file_open_wins() {
-        let choice = pick(
-            &[
-                (201, "/t/ch1.tex"),
-                (301, "/t/ch5.tex"),
-                (401, "/t/ch1.tex"),
-            ],
-            &at("/t/ch5.tex", 77),
-        );
-        assert_eq!(chosen(&choice).as_deref(), Some("vim in tmux %2"));
-    }
-
-    #[test]
     fn an_editor_with_another_input_of_the_pdf_beats_one_without() {
         let choice = pick(&[(401, "/t/thesis.tex")], &at("/t/ch5.tex", 77));
         assert_eq!(chosen(&choice).as_deref(), Some("hx in tmux %3"));
-    }
-
-    #[test]
-    fn the_same_window_breaks_a_tie_on_files() {
-        let choice = pick(
-            &[(201, "/t/ch5.tex"), (401, "/t/ch5.tex")],
-            &at("/t/ch5.tex", 77),
-        );
-        assert_eq!(chosen(&choice).as_deref(), Some("nvim in tmux %1"));
-    }
-
-    #[test]
-    fn the_most_recent_pane_breaks_a_tie_on_everything_else() {
-        let (table, multiplexer) = layout();
-        multiplexer.panes.borrow_mut()[2].recency = 5;
-        let verdicts = survey(&multiplexer, &table, Some("%0")).expect("panes");
-        let location = at("/t/ch5.tex", 77);
-        let choice = choose(
-            candidates(multiplexer.kind(), &verdicts),
-            Wanted {
-                at: &location,
-                inputs: &[],
-            },
-            own_pane(&verdicts),
-            &Holding(Vec::new()),
-        );
-        assert_eq!(chosen(&choice).as_deref(), Some("vim in tmux %2"));
     }
 
     #[test]

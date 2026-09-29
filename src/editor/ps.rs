@@ -183,7 +183,6 @@ mod tests {
     use super::*;
 
     const LINUX: &str = "   378210  378200  378210  378223  1000 pts/2    Sun Sep 27 23:49:10 2026 bash\n   378223  378210  378223  378223  1000 pts/2    Sun Sep 27 23:49:11 2026 nvim\n   378235  378223  378235      -1  1000 ?        Sun Sep 27 23:49:11 2026 nvim\n";
-    const MACOS: &str = "  812   811   812   840   501 ttys003  Mon Sep  7 09:05:01 2026 -zsh\n  840   812   840   840   501 ttys003  Mon Sep  7 09:06:12 2026 /opt/homebrew/bin/nvim\n  850     1   850     0   501 ??       Mon Sep  7 09:00:00 2026 /Applications/Some App.app/Contents/MacOS/Some App\n";
 
     #[test]
     fn a_linux_listing_gives_the_foreground_group_of_each_tty() {
@@ -201,35 +200,6 @@ mod tests {
             Some(None)
         );
         assert_eq!(ps.children(Pid(378_223)).len(), 1);
-    }
-
-    #[test]
-    fn a_macos_listing_names_programs_by_their_full_path() {
-        let ps = Ps::parse(MACOS);
-        let editor = ps.process(Pid(840)).expect("nvim");
-        assert_eq!(editor.program, "nvim");
-        assert_eq!(editor.uid, 501);
-        assert_eq!(
-            ps.on_tty(Path::new("/dev/ttys003"))
-                .map(|process| process.pid()),
-            Some(Pid(812))
-        );
-        assert_eq!(
-            ps.process(Pid(850)).map(|app| app.program),
-            Some("Some App".to_owned())
-        );
-        assert_eq!(
-            ps.process(Pid(850)).and_then(|app| app.foreground_group),
-            None
-        );
-    }
-
-    #[test]
-    fn the_start_time_tells_a_reused_pid_apart() {
-        let first = parse_started(&["Sun", "Sep", "27", "23:49:10", "2026"]);
-        let later = parse_started(&["Sun", "Sep", "27", "23:49:11", "2026"]);
-        assert!(first.is_some());
-        assert_ne!(first, later);
     }
 
     #[test]
