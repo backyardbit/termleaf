@@ -163,6 +163,11 @@ pub struct Placeholders {
 
 impl Widget for Placeholders {
     fn render(self, area: Rect, buffer: &mut Buffer) {
+        let [_, red, green, blue] = self.id.0.to_be_bytes();
+        let colours = format!(
+            "\x1b[38;2;{red};{green};{blue}m\x1b[58;2;0;0;{}m",
+            self.placement.id()
+        );
         let mut symbol = String::new();
         for y in 0..area.height {
             let Some(row) = diacritic(self.first_row.saturating_add(y)) else {
@@ -176,9 +181,11 @@ impl Widget for Placeholders {
                     continue;
                 };
                 symbol.clear();
+                symbol.push_str(&colours);
                 symbol.push(PLACEHOLDER);
                 symbol.push(row);
                 symbol.push(column);
+                symbol.push_str("\x1b[39;59m");
                 cell.set_symbol(&symbol)
                     .set_fg(self.id.colour())
                     .set_style(
@@ -660,7 +667,11 @@ mod tests {
     }
 
     fn marks(buffer: &Buffer, x: u16, y: u16) -> Vec<char> {
-        buffer[(x, y)].symbol().chars().collect()
+        buffer[(x, y)]
+            .symbol()
+            .chars()
+            .filter(|mark| !mark.is_ascii())
+            .collect()
     }
 
     #[test]
