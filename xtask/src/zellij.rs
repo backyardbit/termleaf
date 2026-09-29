@@ -73,6 +73,8 @@ pub fn start(work: &Path, termleaf: &Path) -> Outcome<Server> {
         "show_startup_tips false\nshow_release_notes false\n",
     )
     .map_err(|error| error.to_string())?;
+    let config_dir = work.join("zellij-config");
+    fs::create_dir_all(&config_dir).map_err(|error| error.to_string())?;
     let rc = shell_rc(work)?;
     let layout_file = work.join("layout.kdl");
     fs::write(&layout_file, layout(work, termleaf, &rc)).map_err(|error| error.to_string())?;
@@ -98,7 +100,8 @@ pub fn start(work: &Path, termleaf: &Path) -> Outcome<Server> {
         .arg("-c")
         .arg(work)
         .arg(format!(
-            "env -u TMUX -u TMUX_PANE zellij --config '{}' --new-session-with-layout '{}' --session '{}'",
+            "env -u TMUX -u TMUX_PANE zellij --config-dir '{}' --config '{}' --new-session-with-layout '{}' --session '{}'",
+            config_dir.display(),
             config.display(),
             layout_file.display(),
             zellij.session
