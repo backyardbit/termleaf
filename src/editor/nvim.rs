@@ -712,6 +712,7 @@ mod tests {
             .unwrap_or_default();
         let socket = std::env::temp_dir().join(format!("termleaf-nvim-follow-{nanos}.sock"));
         let listener = UnixListener::bind(&socket).unwrap();
+        let (handed, received) = std::sync::mpsc::channel();
         let server = thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
             let mut reader = BufReader::new(stream.try_clone().unwrap());
@@ -743,10 +744,14 @@ mod tests {
                 write(&message, &mut out);
             }
             writer.write_all(&out).unwrap();
+            let _ = received.recv_timeout(Duration::from_secs(5));
             calls
         });
         let seen = std::cell::RefCell::new(Vec::new());
-        let outcome = follow(&socket, |file, line| seen.borrow_mut().push((file, line)));
+        let outcome = follow(&socket, |file, line| {
+            seen.borrow_mut().push((file, line));
+            let _ = handed.send(());
+        });
         let calls = server.join().unwrap();
         std::fs::remove_file(&socket).unwrap();
         assert!(outcome.is_err());
