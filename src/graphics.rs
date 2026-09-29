@@ -1,6 +1,6 @@
 use std::fmt;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
 use ratatui_image::picker::cap_parser::QueryStdioOptions;
@@ -49,6 +49,14 @@ impl fmt::Display for Raster {
 }
 
 pub fn detect(choice: Choice) -> Result<(Protocol, Picker)> {
+    if std::env::var_os("TMUX").is_some() {
+        let _ = tmux_server()
+            .args(["set", "-p", "allow-passthrough", "on"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
     let options = QueryStdioOptions {
         kitty_compression: true,
         ..QueryStdioOptions::default()
