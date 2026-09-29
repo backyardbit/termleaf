@@ -103,7 +103,7 @@ jobs:
         run: xvfb-run --auto-servernum --server-args="-screen 0 1400x900x24" cargo xtask kitty
       - name: Alt+click, Ctrl+click and e jump nvim, vim and hx between WezTerm panes
         run: cargo xtask wezterm
-      - name: vim with the follow snippet, nvim with no config and termleaf --follow move termleaf once per page
+      - name: vim with the follow snippet, nvim and hx with no config and termleaf --follow move termleaf once per page
         run: cargo xtask follow
       - if: always()
         uses: actions/upload-artifact@v4
