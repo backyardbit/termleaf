@@ -39,6 +39,7 @@ The main use case is writing LaTeX. Helix runs in one herdr pane and termleaf ru
   - Mouse: the wheel scrolls one row per event, shift or a sideways swipe pans, Ctrl+wheel zooms at the pointer, drag pans, click follows an internal link, double-click toggles fit width and fit page.
   - Key bindings live in `keys.rs` and mouse gestures in `mouse.rs`, so both can later be configured. Both produce the same `Command`s for `viewer.rs`.
   - Pinch-to-zoom is on by default (`--no-pinch` turns it off) and lives in `pinch.rs`. No terminal forwards pinches, so termleaf reads them from the OS: a listen-only CoreGraphics event tap on macOS (`pinch/macos.rs`, reading the undocumented gesture fields 110/113/132), and raw `/dev/input` touchpad records on Linux (`pinch/linux.rs`). It needs Input Monitoring for the terminal app, or the `input` group. A missing permission or touchpad must never stop termleaf from starting; pinch just stays off. Keep the decoding pure (`pinch/gesture.rs`, `pinch/evdev.rs`) so it stays tested; real gestures can't be exercised in CI. Pinches only count while terminal focus reporting says the pane has focus.
+- **SyncTeX.** `synctex.rs` parses the data. `inverse.rs` and `editor/` jump from the PDF to the editor, and `follow.rs` moves the view to the editor's line. None of it touches the Kitty path: `kitty.rs`, `encoder.rs` and `shelf.rs` stay unchanged, and CI checks that. Nothing is typed into a pane unless its foreground process passes the checks in `editor/safety.rs`. The README holds the editor and multiplexer support table, and it must match the code.
 - **Small and fast.** One binary, quick startup, few dependencies. Adding a dependency needs a reason.
 - **Platforms:** macOS and Linux.
 
@@ -46,7 +47,6 @@ The main use case is writing LaTeX. Helix runs in one herdr pane and termleaf ru
 
 These are wanted eventually. Keep the architecture open to them, but do not build them early:
 
-- SyncTeX forward and inverse search between Helix and termleaf
 - A dark mode that inverts or recolours pages
 - A config file for keybindings and defaults
 
