@@ -22,6 +22,7 @@ const PATIENCE: Duration = Duration::from_millis(500);
 pub struct Request {
     pub file: PathBuf,
     pub line: u32,
+    pub editor: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,7 +39,11 @@ pub fn parse(message: &str) -> Option<Request> {
     column.parse::<u32>().ok()?;
     let line = line.parse::<u32>().ok().filter(|line| *line > 0)?;
     let file = PathBuf::from(file);
-    file.is_absolute().then_some(Request { file, line })
+    file.is_absolute().then_some(Request {
+        file,
+        line,
+        editor: None,
+    })
 }
 
 pub fn place(text: &str) -> Option<Place> {
@@ -171,9 +176,10 @@ fn remove_on_signals(socket: PathBuf) {
     });
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Follow {
     off: bool,
+    start: Option<Box<dyn FnOnce()>>,
     parked: Option<Request>,
     focused: bool,
     reloading: bool,
@@ -190,6 +196,20 @@ impl Follow {
         }
     }
 
+    pub fn starting(mut self, start: impl FnOnce() + 'static) -> Self {
+        self.start = Some(Box::new(start));
+        self.started();
+        self
+    }
+
+    fn started(&mut self) {
+        if !self.off
+            && let Some(start) = self.start.take()
+        {
+            start();
+        }
+    }
+
     pub fn toggle(&mut self, viewer: &mut Viewer, inverse: &mut Inverse) {
         self.set(self.off, viewer, inverse);
     }
@@ -200,6 +220,7 @@ impl Follow {
         }
         self.off = !on;
         if on {
+            self.started();
             self.last_page = None;
             if let Some(request) = self.parked.take() {
                 if self.reloading {
@@ -276,7 +297,10 @@ impl Follow {
             file: input,
             line: request.line,
         });
-        let mut segment = format!("follow: {place}");
+        let mut segment = match request.editor {
+            Some(editor) => format!("follow: {editor} at {place}"),
+            None => format!("follow: {place}"),
+        };
         match target.filter(|target| target.page < viewer.page_count()) {
             Some(target) => {
                 viewer.show(target, self.last_page != Some(target.page));
@@ -383,8 +407,15 @@ mod tests {
             } else {
                 self.directory.join(file)
             };
-            self.follow
-                .request(Request { file, line }, &mut self.viewer, &mut self.inverse);
+            self.follow.request(
+                Request {
+                    file,
+                    line,
+                    editor: None,
+                },
+                &mut self.viewer,
+                &mut self.inverse,
+            );
         }
 
         fn reloaded(&mut self) {
@@ -409,6 +440,7 @@ mod tests {
             Some(Request {
                 file: PathBuf::from("/home/me/my thesis/intro.tex"),
                 line: 12,
+                editor: None,
             })
         );
         for message in [
@@ -507,6 +539,7 @@ mod tests {
             Ok(Request {
                 file: PathBuf::from("/thesis/intro.tex"),
                 line: 12,
+                editor: None,
             })
         );
         drop(listener);
@@ -596,6 +629,25 @@ mod tests {
         scene.follow.focus(false);
         scene.reloaded();
         assert_eq!(scene.viewer.page(), 1);
+    }
+
+    #[test]
+    fn editors_are_looked_for_once_follow_is_first_on() {
+        let starts = std::rc::Rc::new(std::cell::Cell::new(0));
+        let counter = |starts: &std::rc::Rc<std::cell::Cell<u32>>| {
+            let starts = std::rc::Rc::clone(starts);
+            move || starts.set(starts.get() + 1)
+        };
+        let mut scene = Scene::new("start", 5);
+        scene.follow = Follow::new(false).starting(counter(&starts));
+        assert_eq!(starts.get(), 0);
+        for _ in 0..2 {
+            scene.follow.toggle(&mut scene.viewer, &mut scene.inverse);
+            scene.follow.toggle(&mut scene.viewer, &mut scene.inverse);
+        }
+        assert_eq!(starts.get(), 1);
+        drop(Follow::new(true).starting(counter(&starts)));
+        assert_eq!(starts.get(), 2);
     }
 
     #[test]

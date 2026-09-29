@@ -101,7 +101,7 @@ pub struct App {
 }
 
 pub struct Parts {
-    pub follow: bool,
+    pub follow: Follow,
     pub file_name: String,
     pub path: PathBuf,
     pub editors: Box<dyn Editors>,
@@ -119,7 +119,7 @@ impl App {
         Self {
             file_name: parts.file_name,
             inverse: Inverse::new(&parts.path, parts.editors),
-            follow: Follow::new(parts.follow),
+            follow: parts.follow,
             viewer: Viewer::new(parts.pages, parts.cell, parts.pane),
             keys: KeyParser::default(),
             gestures: Gestures::default(),
@@ -634,7 +634,7 @@ mod tests {
             panic!("the fixture did not load");
         };
         let app = App::new(Parts {
-            follow: true,
+            follow: Follow::default(),
             file_name: "doc.pdf".to_owned(),
             path,
             editors: Box::new(StatusOnly),
@@ -899,6 +899,7 @@ mod tests {
             Event::Follow(Request {
                 file: PathBuf::from("/tmp/thesis/chapters/intro.tex"),
                 line,
+                editor: None,
             })
         };
         app.handle(Event::Focus(true));

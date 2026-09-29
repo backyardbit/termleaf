@@ -19,7 +19,7 @@ use ratatui::text::Line;
 use ratatui_image::FontSize;
 use ratatui_image::picker::{Capability, Picker};
 
-use crate::editor::Jumper;
+use crate::editor::{self, Jumper};
 use crate::encoder::{self, Encoded, Encoder, Job, Wanted};
 use crate::follow::{self, Follow, Listener, Request};
 use crate::graphics::{self, Choice, Protocol};
@@ -137,13 +137,21 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
             },
         )
     };
+    let neovims = events.clone();
     spawn_input(events);
 
     let pane = pane_of(page_area(terminal.get_frame().area()));
     let mut app = App {
         file_name: display_name(&path),
         inverse: Inverse::new(&path, Box::new(Jumper::default())),
-        follow: Follow::new(options.follow),
+        follow: Follow::new(options.follow).starting({
+            let path = path.clone();
+            move || {
+                editor::follow_neovims(path, move |request| {
+                    let _ = neovims.send(Event::Follow(request));
+                });
+            }
+        }),
         viewer: Viewer::new(pages, cell, pane),
         keys: KeyParser::default(),
         gestures: Gestures::default(),
@@ -1359,6 +1367,7 @@ mod tests {
             Event::Follow(Request {
                 file: PathBuf::from("/tmp/thesis/chapters/intro.tex"),
                 line,
+                editor: Some("nvim"),
             })
         };
         app.handle(Event::Focus(true));
@@ -1376,7 +1385,7 @@ mod tests {
         app.handle(intro(5));
         app.handle(Event::Renderer(Response::Unchanged { generation: 0 }));
         assert_eq!(app.viewer.page(), 1);
-        assert!(app.status().contains(" · follow: intro.tex:5"));
+        assert!(app.status().contains(" · follow: nvim at intro.tex:5"));
     }
 
     #[test]
