@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 pub const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const STEP_TIMEOUT: Duration = Duration::from_secs(15);
 const NOTICE_CLEARS: Duration = Duration::from_millis(4500);
+const KEY_TAKES: Duration = Duration::from_secs(3);
 const CLICKS: [(u16, u16); 4] = [(60, 34), (40, 42), (50, 26), (30, 10)];
 pub const PROMPT: &str = "shell$ ";
 
@@ -120,7 +121,10 @@ fn scenario(root: &Path, backend: Backend) -> Outcome<()> {
     poll("page two", || {
         if server.status() == "page 1/5 · doc.pdf" {
             server.keys(&server.viewer, &["j"]).ok()?;
-            thread::sleep(Duration::from_millis(700));
+            let pressed = Instant::now();
+            while server.status() == "page 1/5 · doc.pdf" && pressed.elapsed() < KEY_TAKES {
+                thread::sleep(POLL_INTERVAL);
+            }
         }
         (server.status() == "page 2/5 · doc.pdf").then_some(())
     })?;
