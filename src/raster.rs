@@ -7,7 +7,6 @@ mod sixel;
 mod tiles;
 
 use std::path::Path;
-use std::process::Command;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -20,7 +19,7 @@ use ratatui::DefaultTerminal;
 use ratatui_image::picker::Picker;
 
 use crate::app::Options;
-use crate::graphics::Raster;
+use crate::graphics::{Raster, tmux_server};
 use crate::layout::CellSize;
 use crate::pinch;
 use crate::raster::app::{
@@ -78,7 +77,7 @@ fn allowed_in_tmux(raster: Raster, sixel_support: Option<&str>) -> Result<()> {
 }
 
 fn tmux_sixel_support() -> String {
-    Command::new("tmux")
+    tmux_server()
         .args(["display", "-p", "#{sixel_support}"])
         .output()
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
