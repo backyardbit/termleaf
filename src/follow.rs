@@ -133,7 +133,7 @@ impl Drop for Listener {
 }
 
 fn receive(stream: UnixStream) -> Option<Request> {
-    stream.set_read_timeout(Some(PATIENCE)).ok()?;
+    let _ = stream.set_read_timeout(Some(PATIENCE));
     let mut message = String::new();
     BufReader::new(stream.take(MESSAGE_LIMIT))
         .read_line(&mut message)
