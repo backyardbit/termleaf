@@ -11,6 +11,7 @@ use crate::pane_shell::{Tags, idle};
 use crate::tmux::shell_rc;
 
 const ANSWER_WITHIN: Duration = Duration::from_secs(10);
+const OPENS_WITHIN: Duration = Duration::from_secs(60);
 
 struct Zellij {
     terminal: PathBuf,
@@ -114,7 +115,7 @@ pub fn start(work: &Path, termleaf: &Path) -> Outcome<Server> {
             .any(|name| name == zellij.session)
             .then_some(())
     })?;
-    let (viewer, shell, editor) = poll("zellij to open its panes", || zellij.panes())?;
+    let (viewer, shell, editor) = zellij.opened()?;
     poll("the shell prompt", || {
         zellij
             .screen(&shell)
@@ -129,6 +130,28 @@ pub fn start(work: &Path, termleaf: &Path) -> Outcome<Server> {
     })
 }
 
+fn three_panes(json: &str) -> Option<(String, String, String)> {
+    let listed: Value = serde_json::from_str(json).ok()?;
+    let mut terminals: Vec<(u64, u64, u64)> = listed
+        .as_array()?
+        .iter()
+        .filter(|pane| pane["is_plugin"] == Value::Bool(false))
+        .filter_map(|pane| {
+            Some((
+                pane["tab_position"].as_u64()?,
+                pane["pane_x"].as_u64()?,
+                pane["id"].as_u64()?,
+            ))
+        })
+        .collect();
+    terminals.sort_unstable();
+    let name = |index: usize| format!("terminal_{}", terminals[index].2);
+    match terminals.as_slice() {
+        [(0, _, _), (0, _, _), (1, _, _)] => Some((name(0), name(1), name(2))),
+        _ => None,
+    }
+}
+
 impl Zellij {
     fn action(&self, args: &[&str]) -> Outcome<String> {
         let mut all = vec!["--session", &self.session, "action"];
@@ -136,26 +159,29 @@ impl Zellij {
         run(&all)
     }
 
-    fn panes(&self) -> Option<(String, String, String)> {
-        let listed: Value =
-            serde_json::from_str(&self.action(&["list-panes", "-a", "-j"]).ok()?).ok()?;
-        let mut terminals: Vec<(u64, u64, u64)> = listed
-            .as_array()?
-            .iter()
-            .filter(|pane| pane["is_plugin"] == Value::Bool(false))
-            .filter_map(|pane| {
-                Some((
-                    pane["tab_position"].as_u64()?,
-                    pane["pane_x"].as_u64()?,
-                    pane["id"].as_u64()?,
-                ))
-            })
-            .collect();
-        terminals.sort_unstable();
-        let name = |index: usize| format!("terminal_{}", terminals[index].2);
-        match terminals.as_slice() {
-            [(0, _, _), (0, _, _), (1, _, _)] => Some((name(0), name(1), name(2))),
-            _ => None,
+    fn opened(&self) -> Outcome<(String, String, String)> {
+        let deadline = Instant::now() + OPENS_WITHIN;
+        loop {
+            let listed = self.action(&["list-panes", "-a", "-j"]);
+            if let Some(panes) = listed.as_deref().ok().and_then(three_panes) {
+                return Ok(panes);
+            }
+            if Instant::now() >= deadline {
+                let terminal = Command::new("tmux")
+                    .arg("-S")
+                    .arg(&self.terminal)
+                    .args(["capture-pane", "-p"])
+                    .output()
+                    .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+                    .unwrap_or_default();
+                return Err(format!(
+                    "zellij did not open its panes within {} s\nlist-panes: {}\nterminal:\n{}",
+                    OPENS_WITHIN.as_secs(),
+                    listed.unwrap_or_else(|error| error),
+                    terminal.trim_end()
+                ));
+            }
+            thread::sleep(POLL_INTERVAL);
         }
     }
 
