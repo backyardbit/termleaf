@@ -55,6 +55,8 @@ The file must exist when termleaf starts. If a later build leaves the PDF broken
 | `:$` | last page |
 | `+` / `-` | zoom in / out (`=` also zooms in; takes a count) |
 | `s` / `a` | fit width / fit page |
+| `e` | open the source line under the pointer in your editor ([SyncTeX](#synctex)) |
+| `F`, `:follow`, `:nofollow` | follow your editor on / off ([SyncTeX](#synctex)) |
 | `q`, `:q`, `Ctrl-C` | quit |
 
 Pages scroll continuously and open at fit width.
@@ -67,6 +69,7 @@ Pages scroll continuously and open at fit width.
 | drag | pan |
 | click | follow a link (`\ref`, citations, table of contents) |
 | double-click | switch between fit width and fit page |
+| `Alt` + click, `Ctrl` + click | open the source line under the click in your editor ([SyncTeX](#synctex)) |
 
 ### Pinch to zoom
 
@@ -76,6 +79,111 @@ Terminals never pass trackpad pinches to the programs running inside them, so te
 - **Linux:** your user must be in the `input` group (`sudo usermod -aG input $USER`, then log in again). termleaf only opens devices that report themselves as touchpads, but the group gives read access to every input device.
 
 Run `termleaf --no-pinch` to keep termleaf away from OS input entirely. Ctrl+wheel and `+`/`-` zoom without any permission.
+
+## SyncTeX
+
+termleaf jumps from the PDF to the source line in your editor (inverse search), and follows your editor's cursor through the PDF (forward search). Both need SyncTeX data. Build with `-synctex=1` (for example `latexmk -pdf -synctex=1 -pvc`), which writes `thesis.synctex.gz` next to `thesis.pdf`. An uncompressed `thesis.synctex` works too. Without it, the status bar says `no SyncTeX data: build with -synctex=1`. If the data is older than the PDF, termleaf still uses it and adds `SyncTeX data is older than the PDF`.
+
+### Inverse search
+
+| Input | Action |
+| --- | --- |
+| `e` | open the source line under the pointer, or under the middle of the pane, in your editor |
+| `Alt` + click | open the source line under the click |
+| `Ctrl` + click | the same, where the terminal passes it on |
+
+zellij (tested with 0.45.1) passes neither modifier-click on, so use `e` there.
+
+termleaf looks for Neovim, Vim or Helix in the multiplexer it runs in (see [Editors and multiplexers](#editors-and-multiplexers)). An editor that has the file open wins over one that doesn't. Right before sending, termleaf checks that the pane's foreground process is still that editor, owned by you, with no `Press ENTER`, swap-file or yes/no prompt waiting. It never types into a shell or any other program. The status bar shows the outcome for 4 s:
+
+- `→ nvim in tmux %3 · chapters/intro.tex:12`: sent;
+- `chapters/intro.tex:12 · no editor found`: nothing to send to;
+- `2 editors could take chapters/intro.tex:12`: a tie, so nothing is sent.
+
+Neovim is told over its RPC socket. Otherwise termleaf types the jump into the pane: `Ctrl-\ Ctrl-N :drop <file> | <line>` for Vim, and `Esc`, then `:open <file>:<line>:1` for Helix, which opens it in the focused view. A path that contains any of ``$ ` ; & < > ( ) ' " | %`` can't be typed, so the status bar says `path needs RPC` and only Neovim's RPC is used.
+
+### Follow
+
+Follow is on by default. As you move through a `.tex` file, termleaf shows the page with your cursor's line.
+
+| Key or flag | Action |
+| --- | --- |
+| `F` | follow on / off |
+| `:follow`, `:nofollow` | follow on, follow off |
+| `termleaf --no-follow thesis.pdf` | start with follow off |
+
+The status bar ends with `follow: nvim at chapters/intro.tex:12`, `follow: hx at …`, `follow: chapters/intro.tex:12` (from the Vim snippet or `termleaf --follow`), or `follow off`.
+
+- termleaf scrolls only when the line is on another page, or off screen because you zoomed in. Moving within a page leaves the view alone.
+- While termleaf has focus, editor moves are ignored, so they don't fight your own scrolling. Helix moves made meanwhile are caught up once termleaf loses focus.
+- Turning follow on shows where the editor is, even while termleaf has focus. That's the newest position it sent while follow was off. Helix is read again, and a Neovim that termleaf connects to for the first time reports its cursor at once.
+- A move that arrives during a reload is shown after the reload.
+- A position in a file that isn't part of this PDF is ignored, so several termleafs can run side by side.
+
+### Editors and multiplexers
+
+| Editor | Inverse search | Follow | Setup |
+| --- | --- | --- | --- |
+| Neovim | over its RPC socket, in any multiplexer below or none. In a multiplexer below, typed keys if the socket can't be reached | over its RPC socket, in any multiplexer or none | none |
+| Helix | typed keys, in a multiplexer below | reads its statusline through a multiplexer below | none |
+| Vim | typed keys, in a multiplexer below | the [Vim snippet](#vim-snippet) | the snippet, for follow only |
+
+| termleaf and the editor in | Inverse search and Helix follow | Needs |
+| --- | --- | --- |
+| tmux | ✓ | |
+| [herdr](https://github.com/herdrdev/herdr) | ✓ | |
+| zellij | ✓ | zellij 0.44 or later |
+| GNU screen | ✓ | |
+| kitty windows | ✓ | `allow_remote_control socket-only` and `listen_on unix:/tmp/kitty` in `kitty.conf`. Otherwise the status bar says `kitty remote control is off`. |
+| WezTerm panes | ✓ | `wezterm cli` (tested with `wezterm-mux-server`) |
+| anything else (a plain terminal, Konsole, Ghostty, …) | Neovim only | |
+
+The editor has to run in the same multiplexer as termleaf, as your user, on the same machine.
+
+**Neovim** needs no config. Every 2 s termleaf looks for your Neovims that have a swap file for one of the document's files. Over each one's RPC socket, it adds an autocommand that reports the cursor 150 ms after the last move. The autocommand removes itself once termleaf has quit. A Neovim without swap files (`noswapfile`, `nvim -n`) isn't found.
+
+**Helix** has no plugin API yet, so termleaf reads its statusline through the multiplexer. The limits:
+
+- It needs a multiplexer from the table: not a plain terminal, Konsole, Ghostty, or kitty without remote control.
+- It reads the default statusline: a `NOR`, `INS` or `SEL` label, then the file name, with `line:col` last on the right. Custom mode labels, or a statusline without the mode, file name or position, aren't read.
+- A file name cut short in a narrow pane, or a statusline covered by the `:` prompt, moves nothing.
+- Panes are read only while follow is on and termleaf doesn't have focus: every 500 ms, slowing to every 2 s while nothing changes. A Helix started later is found within about 2 s.
+- Only the innermost multiplexer that has a Helix is read. With several Helix panes, the latest change wins.
+
+Where the statusline can't be read, a Helix (25.07 or later) key can send the position with `termleaf --follow`:
+
+```toml
+# ~/.config/helix/config.toml
+[keys.normal.space]
+F = ":sh termleaf --follow %{buffer_name}:%{cursor_line}:%{cursor_column}"
+```
+
+`Space F` then shows Helix's cursor line in termleaf.
+
+### Vim snippet
+
+Vim has no socket termleaf can reach, so follow needs [`tests/fixtures/snippet.vim`](tests/fixtures/snippet.vim), which the end-to-end tests also use:
+
+```sh
+curl -fLo ~/.vim/plugin/termleaf.vim --create-dirs https://raw.githubusercontent.com/backyardbit/termleaf/master/tests/fixtures/snippet.vim
+```
+
+In `.tex` buffers, it sends the cursor position to every termleaf 150 ms after the last move, and only when the position changed. `:TermleafFollowToggle`, or `let g:termleaf_follow = 0`, stops it sending. It needs a Vim with `+channel` whose `ch_open()` takes `unix:` addresses (tested with Vim 9.1). Inverse search needs no snippet.
+
+### termleaf --follow
+
+```sh
+termleaf --follow chapters/intro.tex:12
+termleaf --follow chapters/intro.tex:12:5
+```
+
+This shows that line in every running termleaf whose PDF was built from the file, then exits. A relative path is taken from the current directory. It exits 0 even when no termleaf took the position, so an editor hook never shows an error. It is meant for scripts, editor hooks and the Helix key above.
+
+### Socket directory
+
+Each termleaf listens on `$XDG_RUNTIME_DIR/termleaf/<pid>.sock`, or on `${TMPDIR:-/tmp}/termleaf-$USER/<pid>.sock` when `XDG_RUNTIME_DIR` isn't set (as on macOS). termleaf creates the directory and sets it to mode 0700. At startup it removes sockets that nobody listens on, and it removes its own socket on exit, SIGTERM and SIGHUP. `termleaf --follow` sends nothing unless the directory is a real directory, not a symlink, with no group or other permissions. The protocol is one line per connection: `follow <line> <column> <absolute path>`.
+
+SyncTeX's editor features are tested end to end on Linux. On macOS only the unit tests run.
 
 ## License
 
