@@ -32,10 +32,28 @@ impl Editors for StatusOnly {
     }
 }
 
+#[derive(Debug, PartialEq)]
+struct Stamp {
+    synctex: Option<(PathBuf, Option<SystemTime>)>,
+    pdf: Option<SystemTime>,
+}
+
+impl Stamp {
+    fn of(pdf: &Path) -> Self {
+        Self {
+            synctex: Synctex::beside(pdf).map(|path| {
+                let modified = modified(&path);
+                (path, modified)
+            }),
+            pdf: modified(pdf),
+        }
+    }
+}
+
 pub struct Inverse {
     pdf: PathBuf,
     directories: Vec<PathBuf>,
-    data: Option<Data>,
+    data: Option<(Stamp, Data)>,
     notice: Option<(String, Instant)>,
     editors: Box<dyn Editors>,
 }
@@ -82,7 +100,7 @@ impl Inverse {
     }
 
     fn answer(&mut self, at: Option<Position>) -> String {
-        let data = self.data.get_or_insert_with(|| load(&self.pdf));
+        let data = current(&mut self.data, &self.pdf);
         let Data::Parsed { synctex, stale } = data else {
             return match data {
                 Data::Missing => MISSING.to_owned(),
@@ -124,6 +142,15 @@ impl Inverse {
     }
 }
 
+fn current<'a>(slot: &'a mut Option<(Stamp, Data)>, pdf: &Path) -> &'a Data {
+    let now = Stamp::of(pdf);
+    if slot.as_ref().is_some_and(|(seen, _)| *seen != now) {
+        *slot = None;
+    }
+    let (_, data) = slot.get_or_insert_with(|| (now, load(pdf)));
+    data
+}
+
 fn load(pdf: &Path) -> Data {
     let Some(path) = Synctex::beside(pdf) else {
         return Data::Missing;
@@ -137,8 +164,11 @@ fn load(pdf: &Path) -> Data {
     }
 }
 
+fn modified(path: &Path) -> Option<SystemTime> {
+    fs::metadata(path).ok()?.modified().ok()
+}
+
 fn older(synctex: &Path, pdf: &Path) -> bool {
-    let modified = |path: &Path| -> Option<SystemTime> { fs::metadata(path).ok()?.modified().ok() };
     matches!((modified(synctex), modified(pdf)), (Some(data), Some(document)) if data < document)
 }
 
@@ -215,6 +245,29 @@ mod tests {
             answer(&mut inverse, Some(INTRO)),
             "SyncTeX data is unreadable"
         );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn synctex_data_written_after_the_pdf_is_read_again() {
+        let directory = scratch("rewritten");
+        let pdf = directory.join("doc.pdf");
+        fs::copy(fixture("synctex/thesis.pdf"), &pdf).unwrap();
+        let synctex = directory.join("doc.synctex.gz");
+        fs::write(&synctex, b"not synctex").unwrap();
+        let mut inverse = Inverse::new(&pdf, Box::new(StatusOnly));
+        assert_eq!(
+            answer(&mut inverse, Some(INTRO)),
+            "SyncTeX data is unreadable"
+        );
+        fs::copy(fixture("synctex/thesis.synctex.gz"), &synctex).unwrap();
+        File::options()
+            .write(true)
+            .open(&synctex)
+            .unwrap()
+            .set_modified(SystemTime::now() + Duration::from_secs(60))
+            .unwrap();
+        assert_eq!(answer(&mut inverse, Some(INTRO)), "intro.tex:7");
         fs::remove_dir_all(directory).unwrap();
     }
 
