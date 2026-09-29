@@ -107,7 +107,7 @@ struct State {
     normal_mode: bool,
 }
 
-fn scenario(root: &Path, backend: Backend) -> Outcome<()> {
+pub fn build(root: &Path) -> Outcome<PathBuf> {
     let built = Command::new(env!("CARGO"))
         .args(["build", "--release", "--package", "termleaf"])
         .current_dir(root)
@@ -116,8 +116,12 @@ fn scenario(root: &Path, backend: Backend) -> Outcome<()> {
     if !built.success() {
         return Err("building termleaf failed".to_owned());
     }
-    let work = prepare(root, backend)?;
-    let termleaf = root.join("target/release/termleaf");
+    Ok(root.join("target/release/termleaf"))
+}
+
+fn scenario(root: &Path, backend: Backend) -> Outcome<()> {
+    let termleaf = build(root)?;
+    let work = prepare(root, backend.name())?;
     let server = match backend {
         Backend::Tmux => tmux::start(&work, &termleaf, false)?,
         Backend::Herdr => herdr::start(&work, &termleaf)?,
@@ -175,9 +179,9 @@ fn scenario(root: &Path, backend: Backend) -> Outcome<()> {
     Ok(())
 }
 
-fn prepare(root: &Path, backend: Backend) -> Outcome<PathBuf> {
+pub fn prepare(root: &Path, name: &str) -> Outcome<PathBuf> {
     let fixtures = root.join("tests/fixtures/synctex");
-    let work = root.join(format!("target/e2e-{}", backend.name()));
+    let work = root.join(format!("target/e2e-{name}"));
     let _ = fs::remove_dir_all(&work);
     fs::create_dir_all(work.join("chapters")).map_err(|error| error.to_string())?;
     fs::create_dir_all(work.join("hx-config/helix")).map_err(|error| error.to_string())?;
@@ -223,7 +227,7 @@ impl Server {
         self.host.screen(pane)
     }
 
-    fn keys(&self, pane: &str, keys: &[&str]) -> Outcome<()> {
+    pub fn keys(&self, pane: &str, keys: &[&str]) -> Outcome<()> {
         let bytes: Vec<u8> = keys
             .iter()
             .flat_map(|key| match *key {
@@ -235,7 +239,7 @@ impl Server {
         self.bytes(pane, &bytes)
     }
 
-    fn text(&self, pane: &str, text: &str) -> Outcome<()> {
+    pub fn text(&self, pane: &str, text: &str) -> Outcome<()> {
         self.bytes(pane, text.as_bytes())
     }
 
@@ -243,13 +247,13 @@ impl Server {
         self.host.bytes(pane, bytes)
     }
 
-    fn status(&self) -> String {
+    pub fn status(&self) -> String {
         status_line(&self.screen(&self.viewer))
             .unwrap_or_default()
             .to_owned()
     }
 
-    fn wait_for_status(&self, wanted: &str, matches: impl Fn(&str) -> bool) -> Outcome<String> {
+    pub fn wait_for_status(&self, wanted: &str, matches: impl Fn(&str) -> bool) -> Outcome<String> {
         poll(wanted, || {
             let status = self.status();
             matches(&status).then_some(status)
@@ -257,7 +261,7 @@ impl Server {
         .map_err(|error| format!("{error}; last status: {:?}", self.status()))
     }
 
-    fn respawn(&self, pane: &str, command: &str, work: &Path) -> Outcome<()> {
+    pub fn respawn(&self, pane: &str, command: &str, work: &Path) -> Outcome<()> {
         self.host.respawn(pane, command, work)
     }
 
