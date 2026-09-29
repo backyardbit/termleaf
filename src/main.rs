@@ -1,6 +1,7 @@
 mod app;
 mod editor;
 mod encoder;
+mod follow;
 mod graphics;
 mod inverse;
 mod keys;
@@ -12,13 +13,6 @@ mod pinch;
 mod raster;
 mod renderer;
 mod shelf;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "forward search calls the parser in a later PR of the stack"
-    )
-)]
 mod synctex;
 mod viewer;
 mod watch;

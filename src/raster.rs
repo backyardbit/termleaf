@@ -19,6 +19,7 @@ use ratatui::DefaultTerminal;
 use ratatui_image::picker::Picker;
 
 use crate::app::Options;
+use crate::follow::{self, Listener};
 use crate::graphics::{Raster, tmux_server};
 use crate::layout::CellSize;
 use crate::pinch;
@@ -119,9 +120,19 @@ fn show(
             let _ = events.send(Event::FileChanged);
         })?
     };
-    let _ = execute!(std::io::stdout(), EnableMouseCapture);
+    let _ = execute!(std::io::stdout(), EnableMouseCapture, EnableFocusChange);
+    let _listener = {
+        let events = events.clone();
+        Listener::spawn(
+            &follow::directory(|name| std::env::var(name).ok()),
+            &std::process::id().to_string(),
+            move |request| {
+                let _ = events.send(Event::Follow(request));
+            },
+        )
+        .ok()
+    };
     if options.pinch {
-        let _ = execute!(std::io::stdout(), EnableFocusChange);
         let pinches = events.clone();
         let _ = pinch::listen(move |input| {
             let _ = pinches.send(Event::Pinch(input));

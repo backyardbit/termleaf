@@ -21,6 +21,7 @@ use ratatui_image::picker::{Capability, Picker};
 
 use crate::editor::Jumper;
 use crate::encoder::{self, Encoded, Encoder, Job, Wanted};
+use crate::follow::{self, Follow, Listener, Request};
 use crate::graphics::{self, Choice, Protocol};
 use crate::inverse::Inverse;
 use crate::keys::{Command, Key, KeyParser, ScreenCell};
@@ -57,6 +58,7 @@ enum Event {
     FileChanged,
     Renderer(Response),
     Encoded(Encoded),
+    Follow(Request),
 }
 
 pub fn run(path: PathBuf, options: Options) -> Result<()> {
@@ -103,9 +105,19 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
             return Err(error);
         }
     };
-    let _ = execute!(std::io::stdout(), EnableMouseCapture);
+    let _ = execute!(std::io::stdout(), EnableMouseCapture, EnableFocusChange);
+    let _listener = {
+        let events = events.clone();
+        Listener::spawn(
+            &follow::directory(|name| std::env::var(name).ok()),
+            &std::process::id().to_string(),
+            move |request| {
+                let _ = events.send(Event::Follow(request));
+            },
+        )
+        .ok()
+    };
     if options.pinch {
-        let _ = execute!(std::io::stdout(), EnableFocusChange);
         let pinches = events.clone();
         let _ = pinch::listen(move |input| {
             let _ = pinches.send(Event::Pinch(input));
@@ -130,6 +142,7 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
     let mut app = App {
         file_name: display_name(&path),
         inverse: Inverse::new(&path, Box::new(Jumper::default())),
+        follow: Follow::default(),
         viewer: Viewer::new(pages, cell, pane),
         keys: KeyParser::default(),
         gestures: Gestures::default(),
@@ -289,6 +302,7 @@ struct App {
     gestures: Gestures,
     pinch: PinchGate,
     inverse: Inverse,
+    follow: Follow,
     renderer: Renderer,
     encoder: Encoder,
     wanted: Wanted,
@@ -382,14 +396,22 @@ impl App {
                     return self.apply(command);
                 }
             }
-            Event::Focus(focused) => self.pinch.focus(focused),
+            Event::Focus(focused) => {
+                self.pinch.focus(focused);
+                self.follow.focus(focused);
+            }
             Event::Resized => {}
             Event::FileChanged => {
+                self.follow.reloading();
                 self.reload_retries = 0;
                 self.reload_at = Some(Instant::now() + RELOAD_SETTLE);
             }
             Event::Renderer(response) => self.receive(response),
             Event::Encoded(encoded) => self.receive_encoded(encoded),
+            Event::Follow(request) => {
+                self.follow
+                    .request(request, &mut self.viewer, &mut self.inverse);
+            }
         }
         Flow::Continue
     }
@@ -498,17 +520,22 @@ impl App {
                 });
                 self.shelf.forget(|key| key.generation != generation);
                 self.in_flight.clear();
+                self.follow.reloaded(&mut self.viewer, &mut self.inverse);
             }
             Response::Unchanged { generation } if generation == self.requested_generation => {
                 self.reload_retries = 0;
                 self.viewer.unchanged();
                 self.inverse.reloaded();
+                self.follow.reloaded(&mut self.viewer, &mut self.inverse);
             }
             Response::Unreadable { generation } if generation == self.requested_generation => {
                 self.viewer.unreadable();
                 if self.reload_at.is_none() && self.reload_retries < MAX_RELOAD_RETRIES {
                     self.reload_retries += 1;
                     self.reload_at = Some(Instant::now() + RELOAD_RETRY);
+                }
+                if self.reload_at.is_none() {
+                    self.follow.reloaded(&mut self.viewer, &mut self.inverse);
                 }
             }
             Response::Loaded { .. } | Response::Unreadable { .. } | Response::Unchanged { .. } => {}
@@ -752,11 +779,9 @@ impl App {
     }
 
     fn status(&self) -> String {
-        self.viewer.status_line(
-            &self.file_name,
-            self.keys.command_line(),
-            self.inverse.notice(),
-        )
+        let notice = self.follow.beside(self.inverse.notice());
+        self.viewer
+            .status_line(&self.file_name, self.keys.command_line(), notice.as_deref())
     }
 }
 
@@ -829,6 +854,7 @@ mod tests {
             gestures: Gestures::default(),
             pinch: PinchGate::default(),
             inverse: Inverse::new(path, Box::new(StatusOnly)),
+            follow: Follow::default(),
             renderer,
             encoder,
             wanted,
@@ -1301,6 +1327,33 @@ mod tests {
         column: 30,
         row: 20,
     };
+
+    #[test]
+    fn a_follow_request_waits_for_a_reload_and_is_dropped_while_focused() {
+        let (mut app, _inbox) = headless_app_for(&thesis(), THESIS_PANE);
+        let intro = |line| {
+            Event::Follow(Request {
+                file: PathBuf::from("/tmp/thesis/chapters/intro.tex"),
+                line,
+            })
+        };
+        app.handle(Event::Focus(true));
+        app.handle(intro(35));
+        assert_eq!(app.viewer.page(), 0);
+        app.handle(Event::Focus(false));
+        app.handle(Event::FileChanged);
+        app.handle(intro(35));
+        assert_eq!(app.viewer.page(), 0);
+        app.reload_at = None;
+        app.reload_retries = MAX_RELOAD_RETRIES;
+        app.handle(Event::Renderer(Response::Unreadable { generation: 0 }));
+        assert_eq!(app.viewer.page(), 2);
+        app.handle(Event::FileChanged);
+        app.handle(intro(5));
+        app.handle(Event::Renderer(Response::Unchanged { generation: 0 }));
+        assert_eq!(app.viewer.page(), 1);
+        assert!(app.status().contains(" · follow: intro.tex:5"));
+    }
 
     #[test]
     fn alt_click_names_the_source_under_the_pointer() {

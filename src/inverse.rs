@@ -8,7 +8,7 @@ use crate::synctex::{SourceLocation, Synctex};
 const NOTICE_FOR: Duration = Duration::from_secs(4);
 const MISSING: &str = "no SyncTeX data: build with -synctex=1";
 const UNREADABLE: &str = "SyncTeX data is unreadable";
-const STALE: &str = "SyncTeX data is older than the PDF";
+pub const STALE: &str = "SyncTeX data is older than the PDF";
 const NOTHING_HERE: &str = "no source here";
 
 #[derive(Debug)]
@@ -99,15 +99,21 @@ impl Inverse {
         }
     }
 
+    pub fn synctex(&mut self) -> Result<(&Synctex, bool), &'static str> {
+        parsed(current(&mut self.data, &self.pdf))
+    }
+
+    pub fn near(&self, file: &Path) -> bool {
+        self.directories
+            .iter()
+            .any(|directory| file.starts_with(directory))
+    }
+
     fn answer(&mut self, at: Option<Position>) -> String {
-        let data = current(&mut self.data, &self.pdf);
-        let Data::Parsed { synctex, stale } = data else {
-            return match data {
-                Data::Missing => MISSING.to_owned(),
-                _ => UNREADABLE.to_owned(),
-            };
+        let (synctex, stale) = match parsed(current(&mut self.data, &self.pdf)) {
+            Ok(found) => found,
+            Err(problem) => return problem.to_owned(),
         };
-        let stale = *stale;
         let found = at.and_then(|position| synctex.source_at(position));
         let inputs: Vec<PathBuf> = synctex
             .inputs()
@@ -131,7 +137,7 @@ impl Inverse {
         parts.join(" · ")
     }
 
-    fn describe(&self, location: &SourceLocation) -> String {
+    pub fn describe(&self, location: &SourceLocation) -> String {
         let shown = self
             .directories
             .iter()
@@ -139,6 +145,14 @@ impl Inverse {
             .or_else(|| location.file.file_name().map(Path::new))
             .unwrap_or(&location.file);
         format!("{}:{}", shown.display(), location.line)
+    }
+}
+
+fn parsed(data: &Data) -> Result<(&Synctex, bool), &'static str> {
+    match data {
+        Data::Parsed { synctex, stale } => Ok((synctex, *stale)),
+        Data::Missing => Err(MISSING),
+        Data::Unreadable => Err(UNREADABLE),
     }
 }
 

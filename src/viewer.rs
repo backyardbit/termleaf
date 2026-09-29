@@ -167,6 +167,33 @@ impl Viewer {
         parts.join(" · ")
     }
 
+    pub fn show(&mut self, target: Position, new_page: bool) {
+        if self.zoom == Zoom::FitPage {
+            if target.page != self.page() {
+                self.go_to_page(target.page);
+            }
+            return;
+        }
+        let point = self.view.layout.point_of(target);
+        let rows = f64::from(self.view.pane.rows);
+        let columns = f64::from(self.view.pane.columns);
+        let top = f64::from(self.view.top);
+        let left = f64::from(self.view.left);
+        let row_seen = (top..top + rows).contains(&point.row);
+        let column_seen = (left..left + columns).contains(&point.column);
+        if !new_page && row_seen && column_seen {
+            return;
+        }
+        if new_page || !row_seen {
+            self.view.top = nearest_whole((point.row - rows / 3.0).floor());
+        }
+        if !column_seen {
+            self.view.left = nearest_whole((point.column - columns / 3.0).floor());
+        }
+        self.view = self.view.clone().clamped();
+        self.origin = self.view.origin();
+    }
+
     fn go_to_page(&mut self, page: usize) {
         self.view.top = self.view.layout.page_top(page);
         self.view = self.view.clone().clamped();
@@ -639,6 +666,34 @@ mod tests {
         viewer.unreadable();
         viewer.reloaded(document(2));
         assert_eq!(viewer.status_line("a.pdf", None, None), "page 1/2 · a.pdf");
+    }
+
+    #[test]
+    fn a_followed_line_is_shown_a_third_down_unless_it_is_on_screen_already() {
+        let mut viewer = viewer(3);
+        let target = |page, x, y| Position { page, x, y };
+        viewer.show(target(1, 72.0, 400.0), true);
+        assert_eq!(viewer.page(), 1);
+        let row = viewer.view().layout.point_of(target(1, 72.0, 400.0)).row;
+        assert_eq!(viewer.view().top, nearest_whole((row - 8.0).floor()));
+        let top = viewer.view().top;
+        viewer.show(target(1, 72.0, 420.0), false);
+        assert_eq!(viewer.view().top, top);
+        viewer.show(target(1, 72.0, 700.0), false);
+        assert!(viewer.view().top > top);
+        viewer.apply(Command::Zoom {
+            steps: 20,
+            anchor: None,
+        });
+        viewer.show(target(2, 580.0, 100.0), false);
+        let point = viewer.view().layout.point_of(target(2, 580.0, 100.0));
+        assert!(f64::from(viewer.view().left) < point.column);
+        assert!(point.column < f64::from(viewer.view().left + PANE.columns));
+        viewer.apply(Command::FitPage);
+        viewer.show(target(0, 72.0, 700.0), true);
+        assert_eq!(viewer.page(), 0);
+        viewer.show(target(0, 72.0, 100.0), true);
+        assert_eq!(viewer.page(), 0);
     }
 
     #[test]
