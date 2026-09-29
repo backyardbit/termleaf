@@ -56,7 +56,7 @@ pub fn start(work: &Path, termleaf: &Path) -> Outcome<Server> {
         .arg("-c")
         .arg(work)
         .arg(format!(
-            "env -u TMUX -u TMUX_PANE screen -c '{}' -S '{name}' tmux -S '{}' -f /dev/null new-session \"'{}' --graphics kitty doc.pdf\" \\; set status off",
+            "env -u TMUX -u TMUX_PANE screen -c '{}' -S '{name}' tmux -S '{}' -f /dev/null new-session \"'{}' --graphics kitty --no-follow doc.pdf\" \\; set status off",
             rc.display(),
             work.join("viewer.sock").display(),
             termleaf.display()

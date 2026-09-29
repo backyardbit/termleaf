@@ -28,7 +28,7 @@ fn lua(text: &Path) -> String {
 
 fn config(work: &Path, termleaf: &Path) -> String {
     format!(
-        "return {{\n  default_prog = {{ {}, \"--graphics\", \"iterm2\", \"doc.pdf\" }},\n  default_cwd = {},\n  initial_cols = 226,\n  initial_rows = 51,\n}}\n",
+        "return {{\n  default_prog = {{ {}, \"--graphics\", \"iterm2\", \"--no-follow\", \"doc.pdf\" }},\n  default_cwd = {},\n  initial_cols = 226,\n  initial_rows = 51,\n}}\n",
         lua(termleaf),
         lua(work),
     )

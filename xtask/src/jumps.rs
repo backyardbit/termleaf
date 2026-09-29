@@ -248,6 +248,13 @@ impl Server {
     }
 
     pub fn status(&self) -> String {
+        let status = self.whole_status();
+        status
+            .strip_suffix(" · follow off")
+            .map_or_else(|| status.clone(), str::to_owned)
+    }
+
+    pub fn whole_status(&self) -> String {
         status_line(&self.screen(&self.viewer))
             .unwrap_or_default()
             .to_owned()
@@ -562,9 +569,7 @@ impl Run<'_> {
         );
         let status = self
             .server
-            .wait_for_status("the Press ENTER refusal", |status| {
-                status.ends_with(&wanted)
-            })?;
+            .wait_for_status("the Press ENTER refusal", |status| status.contains(&wanted))?;
         self.last_status.clone_from(&status);
         thread::sleep(Duration::from_millis(500));
         if self.server.screen(&pane) != before {

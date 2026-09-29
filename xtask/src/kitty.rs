@@ -17,7 +17,7 @@ struct Kitty {
 
 fn session(work: &Path, termleaf: &Path, rc: &Path) -> String {
     format!(
-        "new_tab thesis\ncd {work}\nlaunch '{termleaf}' --graphics kitty doc.pdf\nlaunch bash --noprofile --rcfile '{rc}'\nnew_tab editor\ncd {work}\nlaunch bash --norc --noprofile\n",
+        "new_tab thesis\ncd {work}\nlaunch '{termleaf}' --graphics kitty --no-follow doc.pdf\nlaunch bash --noprofile --rcfile '{rc}'\nnew_tab editor\ncd {work}\nlaunch bash --norc --noprofile\n",
         work = work.display(),
         termleaf = termleaf.display(),
         rc = rc.display(),

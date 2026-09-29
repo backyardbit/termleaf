@@ -24,7 +24,7 @@ fn quoted(text: &str) -> String {
 
 fn layout(work: &Path, termleaf: &Path, rc: &Path) -> String {
     format!(
-        "layout {{\n    cwd {cwd}\n    tab name=\"thesis\" focus=true {{\n        pane split_direction=\"vertical\" {{\n            pane command={termleaf} {{\n                args \"--graphics\" \"kitty\" \"doc.pdf\"\n            }}\n            pane command=\"bash\" {{\n                args \"--noprofile\" \"--rcfile\" {rc}\n            }}\n        }}\n    }}\n    tab name=\"editor\" {{\n        pane command=\"bash\" {{\n            args \"--norc\" \"--noprofile\"\n        }}\n    }}\n}}\n",
+        "layout {{\n    cwd {cwd}\n    tab name=\"thesis\" focus=true {{\n        pane split_direction=\"vertical\" {{\n            pane command={termleaf} {{\n                args \"--graphics\" \"kitty\" \"--no-follow\" \"doc.pdf\"\n            }}\n            pane command=\"bash\" {{\n                args \"--noprofile\" \"--rcfile\" {rc}\n            }}\n        }}\n    }}\n    tab name=\"editor\" {{\n        pane command=\"bash\" {{\n            args \"--norc\" \"--noprofile\"\n        }}\n    }}\n}}\n",
         cwd = quoted(&work.display().to_string()),
         termleaf = quoted(&termleaf.display().to_string()),
         rc = quoted(&rc.display().to_string()),

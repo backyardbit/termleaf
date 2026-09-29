@@ -37,7 +37,10 @@ pub fn start(work: &Path, termleaf: &Path, plain: bool) -> Outcome<Server> {
             "e2e",
             "-c",
             &work_text,
-            &format!("{unset}'{}' --graphics kitty doc.pdf", termleaf.display()),
+            &format!(
+                "{unset}'{}' --graphics kitty --no-follow doc.pdf",
+                termleaf.display()
+            ),
         ])?
         .trim()
         .to_owned();

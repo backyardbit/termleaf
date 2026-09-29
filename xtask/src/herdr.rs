@@ -56,7 +56,11 @@ pub fn start(work: &Path, termleaf: &Path) -> Outcome<Server> {
     let shell = herdr.split(&editor, "down", work)?;
     herdr.bytes(
         &viewer,
-        format!("exec '{}' --graphics kitty doc.pdf\r", termleaf.display()).as_bytes(),
+        format!(
+            "exec '{}' --graphics kitty --no-follow doc.pdf\r",
+            termleaf.display()
+        )
+        .as_bytes(),
     )?;
     let rc = shell_rc(work)?;
     herdr.bytes(

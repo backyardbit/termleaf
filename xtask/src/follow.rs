@@ -81,9 +81,7 @@ fn scenario(root: &Path) -> Outcome<()> {
     )?;
 
     server.keys(&server.viewer, &["F"])?;
-    server.wait_for_status("F to turn follow off", |status| {
-        status == "page 3/5 · doc.pdf · follow off"
-    })?;
+    turned_off(&server, "F to turn follow off", "page 3/5")?;
     stays(&server, "vim moving while follow is off", || {
         server.text(&server.editor, ":e chapters/method.tex\r60G")
     })?;
@@ -95,9 +93,7 @@ fn scenario(root: &Path) -> Outcome<()> {
         "page 5/5",
     )?;
     server.text(&server.viewer, ":nofollow\r")?;
-    server.wait_for_status(":nofollow", |status| {
-        status == "page 5/5 · doc.pdf · follow off"
-    })?;
+    turned_off(&server, ":nofollow", "page 5/5")?;
     stays(&server, "vim moving after :nofollow", || {
         server.text(&server.editor, ":e chapters/intro.tex\r")
     })?;
@@ -162,9 +158,11 @@ fn scenario(root: &Path) -> Outcome<()> {
         ),
         &work,
     )?;
-    server.wait_for_status("termleaf --no-follow to open the thesis", |status| {
-        status == "page 1/5 · doc.pdf · follow off"
-    })?;
+    turned_off(
+        &server,
+        "termleaf --no-follow to open the thesis",
+        "page 1/5",
+    )?;
     server.keys(&server.viewer, &["Escape"])?;
     stays(&server, "a follow line under --no-follow", || {
         client("chapters/method.tex:10")
@@ -205,9 +203,7 @@ fn scenario(root: &Path) -> Outcome<()> {
     )?;
     held_j_stays(&server, "nvim at chapters/method.tex:71")?;
     server.keys(&server.viewer, &["F"])?;
-    server.wait_for_status("F to turn follow off with nvim", |status| {
-        status == "page 5/5 · doc.pdf · follow off"
-    })?;
+    turned_off(&server, "F to turn follow off with nvim", "page 5/5")?;
     stays(&server, "nvim moving while follow is off", || {
         server.text(&server.editor, ":e chapters/intro.tex\r")
     })?;
@@ -227,9 +223,10 @@ fn scenario(root: &Path) -> Outcome<()> {
         ),
         &work,
     )?;
-    server.wait_for_status(
+    turned_off(
+        &server,
         "termleaf --no-follow to open the thesis for nvim",
-        |status| status == "page 1/5 · doc.pdf · follow off",
+        "page 1/5",
     )?;
     server.keys(&server.viewer, &["Escape"])?;
     stays(&server, "nvim moving under --no-follow", || {
@@ -345,6 +342,12 @@ fn stays(server: &Server, label: &str, act: impl FnOnce() -> Outcome<()>) -> Out
     }
     println!("ok   {label} leaves termleaf alone: {before}");
     Ok(())
+}
+
+fn turned_off(server: &Server, label: &str, page: &str) -> Outcome<()> {
+    let wanted = format!("{page} · doc.pdf · follow off");
+    poll(label, || (server.whole_status() == wanted).then_some(()))
+        .map_err(|error| format!("{error}; last status: {:?}", server.whole_status()))
 }
 
 fn neovim_socket(sockets: &Path) -> Outcome<PathBuf> {
