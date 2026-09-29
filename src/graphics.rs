@@ -1,4 +1,6 @@
 use std::fmt;
+use std::path::PathBuf;
+use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use ratatui_image::picker::cap_parser::QueryStdioOptions;
@@ -54,6 +56,21 @@ pub fn detect(choice: Choice) -> Result<(Protocol, Picker)> {
     let picker = Picker::from_query_stdio_with_options(options).context("querying the terminal")?;
     let protocol = decide(picker.protocol_type(), choice, Hints::from_env())?;
     Ok((protocol, picker))
+}
+
+pub fn tmux_server() -> Command {
+    Command::new(tmux_program(std::env::var("TMUX").ok().as_deref()))
+}
+
+fn tmux_program(tmux: Option<&str>) -> PathBuf {
+    tmux.and_then(server_pid)
+        .map(|pid| PathBuf::from(format!("/proc/{pid}/exe")))
+        .filter(|program| program.exists())
+        .unwrap_or_else(|| PathBuf::from("tmux"))
+}
+
+fn server_pid(tmux: &str) -> Option<u32> {
+    tmux.rsplit(',').nth(1)?.parse().ok()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,6 +185,25 @@ mod tests {
             decide(ProtocolType::Sixel, Choice::Auto, KONSOLE).unwrap(),
             SIXEL
         );
+    }
+
+    #[test]
+    fn the_tmux_that_runs_the_server_in_tmux_env_is_the_one_asked() {
+        let pid = std::process::id();
+        let running = if cfg!(target_os = "linux") {
+            PathBuf::from(format!("/proc/{pid}/exe"))
+        } else {
+            PathBuf::from("tmux")
+        };
+        assert_eq!(
+            tmux_program(Some(&format!("/tmp/tmux-1000/a,b,{pid},0"))),
+            running
+        );
+        assert_eq!(
+            tmux_program(Some("/tmp/tmux-1000/default")),
+            PathBuf::from("tmux")
+        );
+        assert_eq!(tmux_program(None), PathBuf::from("tmux"));
     }
 
     #[test]
