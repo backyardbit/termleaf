@@ -146,8 +146,8 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
         inverse: Inverse::new(&path, Box::new(Jumper::default())),
         follow: Follow::new(options.follow).starting({
             let path = path.clone();
-            move || {
-                editor::follow_editors(path, move |request| {
+            move |gate| {
+                editor::follow_editors(path, gate, move |request| {
                     let _ = neovims.send(Event::Follow(request));
                 });
             }
