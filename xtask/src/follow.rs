@@ -178,7 +178,7 @@ fn scenario(root: &Path) -> Outcome<()> {
 
     server.respawn(&server.viewer, "sleep 86400", &work)?;
     poll("termleaf to remove its socket on SIGHUP", || {
-        let left = fs::read_dir(&sockets)
+        let left = fs::read_dir(sockets.join("termleaf"))
             .map(|entries| {
                 entries
                     .flatten()
