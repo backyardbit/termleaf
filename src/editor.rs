@@ -825,6 +825,37 @@ mod tests {
     }
 
     #[test]
+    fn a_multiplexer_that_cannot_be_reached_follows_nothing() {
+        let missing = Some(PathBuf::from("/nonexistent/termleaf-follow"));
+        let layer = |kind, control: Option<PathBuf>, session: Option<&str>| Layer {
+            kind,
+            own_pane: None,
+            session: session.map(str::to_owned),
+            control,
+        };
+        let requests = RefCell::new(Vec::new());
+        let mut seen = HashMap::new();
+        for unreachable in [
+            layer(MultiplexerKind::Tmux, missing.clone(), None),
+            layer(MultiplexerKind::Herdr, missing.clone(), None),
+            layer(MultiplexerKind::Zellij, None, Some("termleaf-none")),
+            layer(MultiplexerKind::Screen, None, Some("termleaf-none")),
+            layer(MultiplexerKind::Kitty, missing.clone(), None),
+            layer(MultiplexerKind::Konsole, None, None),
+        ] {
+            assert!(!follow_layer(
+                &unreachable,
+                &FakeTable::default(),
+                &mut seen,
+                &|request| {
+                    requests.borrow_mut().push(request);
+                }
+            ));
+        }
+        assert!(requests.borrow().is_empty());
+    }
+
+    #[test]
     fn a_plain_neovim_that_refuses_or_cannot_be_reached_is_reported() {
         let holds = Holds(vec![(301, "/tmp/thesis/main.tex")]);
         let blocked = Nvim::blocked();
