@@ -258,6 +258,72 @@ fn scenario(root: &Path) -> Outcome<()> {
     }
     println!("ok   F registered one group of 4 autocmds in nvim");
 
+    server.respawn(&server.editor, "sleep 86400", &work)?;
+    server.respawn(&server.viewer, &viewer, &work)?;
+    server.wait_for_status("termleaf to open the thesis for hx", |status| {
+        status == "page 1/5 · doc.pdf"
+    })?;
+    server.keys(&server.viewer, &["Escape"])?;
+    let hx = format!(
+        "{env} XDG_CONFIG_HOME='{}' hx chapters/method.tex",
+        work.join("hx-config").display()
+    );
+    flips_once(
+        &server,
+        "hx opening method.tex",
+        || server.respawn(&server.editor, &hx, &work),
+        "hx at chapters/method.tex:1",
+        "page 3/5",
+    )?;
+    flips_once(
+        &server,
+        "hx 60G then j j j",
+        || server.text(&server.editor, "60Gjjj"),
+        "hx at chapters/method.tex:63",
+        "page 5/5",
+    )?;
+    held_j_stays(&server, "hx at chapters/method.tex:71")?;
+    stays(&server, "the hx : prompt covering its statusline", || {
+        server.text(&server.editor, ":o")
+    })?;
+    server.keys(&server.editor, &["Escape"])?;
+    server.keys(&server.viewer, &["F"])?;
+    turned_off(&server, "F to turn follow off with hx", "page 5/5")?;
+    stays(&server, "hx moving while follow is off", || {
+        server.text(&server.editor, ":o chapters/intro.tex\r")
+    })?;
+    flips_once(
+        &server,
+        "F again with hx",
+        || server.keys(&server.viewer, &["F"]),
+        "hx at chapters/intro.tex:1",
+        "page 2/5",
+    )?;
+    server.respawn(
+        &server.viewer,
+        &format!(
+            "{env} '{}' --graphics kitty --no-follow doc.pdf",
+            termleaf.display()
+        ),
+        &work,
+    )?;
+    turned_off(
+        &server,
+        "termleaf --no-follow to open the thesis for hx",
+        "page 1/5",
+    )?;
+    server.keys(&server.viewer, &["Escape"])?;
+    stays(&server, "hx moving under --no-follow", || {
+        server.text(&server.editor, "ge")
+    })?;
+    flips_once(
+        &server,
+        "F under --no-follow with hx",
+        || server.keys(&server.viewer, &["F"]),
+        "hx at chapters/intro.tex:55",
+        "page 3/5",
+    )?;
+
     server.respawn(&server.viewer, "sleep 86400", &work)?;
     poll("termleaf to remove its socket on SIGHUP", || {
         let left = fs::read_dir(sockets.join("termleaf"))
