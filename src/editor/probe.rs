@@ -99,6 +99,7 @@ pub enum Refusal {
     OtherUser,
     Replaced,
     Prompt(Prompt),
+    Blocked,
     PathNeedsRpc,
 }
 
@@ -113,6 +114,7 @@ impl fmt::Display for Refusal {
             Self::OtherUser => f.write_str("refused: another user's process"),
             Self::Replaced => f.write_str("refused: not the same process"),
             Self::Prompt(prompt) => write!(f, "refused: {prompt} prompt"),
+            Self::Blocked => f.write_str("refused: waiting at a prompt"),
             Self::PathNeedsRpc => f.write_str("path needs RPC"),
         }
     }

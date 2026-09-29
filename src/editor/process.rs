@@ -36,6 +36,7 @@ pub trait ProcessTable {
     fn cwd(&self, pid: Pid) -> Option<PathBuf>;
     fn listening_sockets(&self, pid: Pid) -> Vec<PathBuf>;
     fn own_uid(&self) -> Option<u32>;
+    fn foreground_leaders(&self) -> Vec<Process>;
 }
 
 const SHELLS: &[&str] = &[
@@ -192,6 +193,14 @@ pub mod fake {
 
         fn own_uid(&self) -> Option<u32> {
             Some(OUR_UID)
+        }
+
+        fn foreground_leaders(&self) -> Vec<Process> {
+            self.processes
+                .iter()
+                .filter(|process| process.foreground_group == Some(process.pid()))
+                .cloned()
+                .collect()
         }
     }
 }

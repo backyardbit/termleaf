@@ -222,6 +222,13 @@ impl ProcessTable for Procfs {
     fn own_uid(&self) -> Option<u32> {
         parse_uid(&fs::read_to_string(self.root.join("self/status")).ok()?)
     }
+
+    fn foreground_leaders(&self) -> Vec<Process> {
+        self.stats()
+            .filter(|stat| stat.foreground_group == Some(stat.pid))
+            .filter_map(|stat| self.complete(stat))
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -290,5 +297,11 @@ mod tests {
                 .any(|child| child.pid() == pid)
         );
         assert!(procfs.listening_sockets(pid).is_empty());
+        assert!(
+            procfs
+                .foreground_leaders()
+                .iter()
+                .all(|leader| leader.foreground_group == Some(leader.pid()))
+        );
     }
 }
