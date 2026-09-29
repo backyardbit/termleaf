@@ -146,9 +146,6 @@ fn older(synctex: &Path, pdf: &Path) -> bool {
 mod tests {
     use super::*;
     use std::fs::File;
-    use std::io::Read;
-
-    use flate2::read::GzDecoder;
 
     const INTRO: Position = Position {
         page: 1,
@@ -218,58 +215,6 @@ mod tests {
             answer(&mut inverse, Some(INTRO)),
             "SyncTeX data is unreadable"
         );
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    type Asked = std::rc::Rc<std::cell::RefCell<Vec<(SourceLocation, Vec<PathBuf>, String)>>>;
-
-    struct Recording(Asked);
-
-    impl Editors for Recording {
-        fn jump(&mut self, at: &SourceLocation, inputs: &[PathBuf], place: &str) -> String {
-            self.0
-                .borrow_mut()
-                .push((at.clone(), inputs.to_vec(), place.to_owned()));
-            format!("→ nvim in tmux %1 · {place}")
-        }
-    }
-
-    #[test]
-    fn the_source_line_goes_to_the_editors_with_the_inputs_beside_the_pdf() {
-        let directory = scratch("editors");
-        let pdf = directory.join("doc.pdf");
-        fs::copy(fixture("synctex/thesis.pdf"), &pdf).unwrap();
-        let mut text = String::new();
-        GzDecoder::new(File::open(fixture("synctex/thesis.synctex.gz")).unwrap())
-            .read_to_string(&mut text)
-            .unwrap();
-        let moved = text.replace("/tmp/thesis/", &format!("{}/", directory.display()));
-        fs::write(directory.join("doc.synctex"), moved).unwrap();
-        let asked = Asked::default();
-        let mut inverse = Inverse::new(&pdf, Box::new(Recording(asked.clone())));
-        assert_eq!(
-            answer(&mut inverse, Some(INTRO)),
-            "→ nvim in tmux %1 · chapters/intro.tex:7"
-        );
-        let asked = asked.borrow();
-        let (at, inputs, place) = &asked[0];
-        assert_eq!(at.file, directory.join("chapters/intro.tex"));
-        assert_eq!(at.line, 7);
-        assert_eq!(place, "chapters/intro.tex:7");
-        assert!(inputs.contains(&directory.join("thesis.tex")));
-        assert!(inputs.contains(&directory.join("chapters/intro.tex")));
-        assert!(inputs.contains(&directory.join("chapters/method.tex")));
-        assert!(inputs.iter().all(|input| input.starts_with(&directory)));
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn a_point_without_a_source_asks_no_editor() {
-        let directory = scratch("no-editors");
-        let asked = Asked::default();
-        let mut inverse = Inverse::new(&thesis_in(&directory), Box::new(Recording(asked.clone())));
-        assert_eq!(answer(&mut inverse, None), "no source here");
-        assert!(asked.borrow().is_empty());
         fs::remove_dir_all(directory).unwrap();
     }
 

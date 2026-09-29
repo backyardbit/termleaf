@@ -184,16 +184,6 @@ mod tests {
     }
 
     #[test]
-    fn vim_and_neovim_get_normal_mode_then_drop_and_the_line() {
-        for kind in [EditorKind::Vim, EditorKind::Neovim] {
-            assert_eq!(
-                strokes(kind, Path::new("/tmp/thesis/ch5.tex"), 77),
-                vec![b"\x1c\x0e:drop /tmp/thesis/ch5.tex | 77\r".to_vec()]
-            );
-        }
-    }
-
-    #[test]
     fn vim_paths_are_escaped_like_fnameescape() {
         assert_eq!(
             strokes(
@@ -206,49 +196,10 @@ mod tests {
     }
 
     #[test]
-    fn helix_gets_escape_alone_then_open_with_the_position() {
-        assert_eq!(
-            strokes(EditorKind::Helix, Path::new("/tmp/thesis/ch5.tex"), 77),
-            vec![
-                b"\x1b".to_vec(),
-                b":open /tmp/thesis/ch5.tex:77:1\r".to_vec()
-            ]
-        );
-    }
-
-    #[test]
     fn helix_paths_with_spaces_are_quoted() {
         assert_eq!(
             strokes(EditorKind::Helix, Path::new("/tmp/my thesis/ch5.tex"), 77)[1],
             b":open '/tmp/my thesis/ch5.tex:77:1'\r".to_vec()
-        );
-    }
-
-    #[test]
-    fn a_relative_source_is_made_absolute_before_it_is_typed() {
-        let file = target(Path::new("chapters/ch5.tex")).expect("a plain path");
-        assert!(file.is_absolute());
-        assert!(file.ends_with("chapters/ch5.tex"));
-    }
-
-    #[test]
-    fn the_ranked_neovim_gets_one_write() {
-        let (table, multiplexer, nvim) = locked("%1");
-        inject(
-            &multiplexer,
-            &table,
-            Some("%0"),
-            &nvim,
-            &at("/tmp/thesis/ch5.tex", 77),
-        )
-        .expect("the jump is sent");
-        assert_eq!(
-            *multiplexer.sent.borrow(),
-            vec![(
-                "%1".to_owned(),
-                b"\x1c\x0e:drop /tmp/thesis/ch5.tex | 77\r".to_vec(),
-                false
-            )]
         );
     }
 

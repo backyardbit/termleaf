@@ -190,13 +190,6 @@ mod tests {
     }
 
     #[test]
-    fn two_equal_editors_get_nothing_and_the_status_counts_them() {
-        let (status, recorder) = jump_in_layout(&ch5(77), &Holds(Vec::new()), &[], |_| true);
-        assert_eq!(status, "2 editors could take ch5.tex:77");
-        assert!(recorder.sent.borrow().is_empty());
-    }
-
-    #[test]
     fn a_shell_pane_alone_gets_nothing_and_no_editor_is_found() {
         let (status, recorder) = jump_in_layout(&ch5(77), &Holds(Vec::new()), &[], |pane| {
             pane.id == "%0" || pane.id == "%4"

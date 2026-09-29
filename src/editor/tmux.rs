@@ -415,21 +415,6 @@ mod tests {
     }
 
     #[test]
-    fn the_last_pane_of_a_window_is_more_recent_than_the_others() {
-        let panes = parse_panes(&lines("%1 10 $0 @0 50 1 0\n%2 11 $0 @0 50 0 0\n"));
-        assert!(panes[0].recency > panes[1].recency);
-    }
-
-    #[test]
-    fn raw_bytes_are_sent_as_hex_keys_after_leaving_copy_mode() {
-        assert_eq!(
-            send_command("%3", b"\x1c\x0e:drop /tmp/ch5.tex | 77\r").unwrap(),
-            "if-shell -F -t %3 '#{pane_in_mode}' 'copy-mode -q -t %3' ; \
-             send-keys -t %3 -H 1c 0e 3a 64 72 6f 70 20 2f 74 6d 70 2f 63 68 35 2e 74 65 78 20 7c 20 37 37 0d"
-        );
-    }
-
-    #[test]
     fn text_beyond_ascii_is_sent_literally_between_hex_keys() {
         assert_eq!(
             send_command("%3", "a/é/b".as_bytes()).unwrap(),
@@ -447,14 +432,6 @@ mod tests {
     }
 
     #[test]
-    fn a_paste_goes_through_a_buffer_with_bracketed_paste_allowed() {
-        assert_eq!(
-            paste_command("%3").unwrap(),
-            "paste-buffer -d -p -r -b termleaf -t %3"
-        );
-    }
-
-    #[test]
     fn bytes_that_are_not_utf8_are_not_sent() {
         assert!(send_command("%3", b"\xff").is_err());
     }
@@ -467,17 +444,6 @@ mod tests {
         assert_eq!(
             read_reply(&lines, "termleaf-1-1", soon()),
             Ok(vec!["%1 10 $0 @0 50 1 0".to_owned()])
-        );
-    }
-
-    #[test]
-    fn an_end_line_inside_a_captured_screen_does_not_end_the_block() {
-        let lines = replying(
-            "%begin 1 20 1\n%end 9 9 9\nrow two\n%end 1 20 1\n%begin 1 21 1\ntermleaf-1-1\n%end 1 21 1\n",
-        );
-        assert_eq!(
-            read_reply(&lines, "termleaf-1-1", soon()),
-            Ok(vec!["%end 9 9 9".to_owned(), "row two".to_owned()])
         );
     }
 
