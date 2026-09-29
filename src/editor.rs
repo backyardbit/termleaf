@@ -79,7 +79,10 @@ fn deliver(
     if let (EditorKind::Neovim, Some(socket)) = (candidate.editor.kind, &candidate.editor.socket) {
         recheck(multiplexer, table, own, candidate)?;
         match rpc.jump(socket, &rpc_target(&at.file), at.line) {
-            Ok(()) => return Ok(()),
+            Ok(()) => {
+                let _ = multiplexer.reveal(&candidate.pane.id);
+                return Ok(());
+            }
             Err(RpcError::Failed(failure)) => return Err(failure),
             Err(RpcError::Unreachable(_)) => {}
         }

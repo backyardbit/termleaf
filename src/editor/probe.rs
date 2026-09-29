@@ -40,6 +40,10 @@ pub trait Multiplexer {
     fn panes(&self) -> Result<Vec<Pane>>;
     fn screen(&self, pane: &str) -> Option<String>;
     fn send(&self, pane: &str, input: &[u8], paste: bool) -> Result<()>;
+
+    fn reveal(&self, _pane: &str) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
