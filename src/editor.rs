@@ -16,6 +16,7 @@ mod ps;
 mod safety;
 mod screen;
 mod tmux;
+mod wezterm;
 mod zellij;
 
 use std::path::{Path, PathBuf};
@@ -35,6 +36,7 @@ use process::{Pid, ProcessTable, ancestors};
 use safety::recheck;
 use screen::Screen;
 use tmux::Tmux;
+use wezterm::Wezterm;
 use zellij::Zellij;
 
 use crate::inverse::Editors;
@@ -249,6 +251,10 @@ impl Jumper {
                 Some((MultiplexerKind::Kitty, Some(control), _)) => {
                     let kitty = Kitty::new(&SystemCli, control);
                     jump_with(&kitty, &table, own, wanted, &loaded, &rpc)
+                }
+                Some((MultiplexerKind::Wezterm, _, _)) => {
+                    let wezterm = Wezterm::new(&SystemCli, env.var("WEZTERM_EXECUTABLE_DIR"));
+                    jump_with(&wezterm, &table, own, wanted, &loaded, &rpc)
                 }
                 Some(_) => {
                     if let Some(hint) = layer.and_then(|layer| layer.hint()) {
