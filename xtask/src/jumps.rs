@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-use crate::{herdr, tmux};
+use crate::{herdr, tmux, zellij};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -20,6 +20,7 @@ pub enum Backend {
     Tmux,
     Herdr,
     Plain,
+    Zellij,
 }
 
 impl Backend {
@@ -28,6 +29,7 @@ impl Backend {
             Self::Tmux => "tmux",
             Self::Herdr => "herdr",
             Self::Plain => "plain",
+            Self::Zellij => "zellij",
         }
     }
 }
@@ -114,6 +116,7 @@ fn scenario(root: &Path, backend: Backend) -> Outcome<()> {
         Backend::Tmux => tmux::start(&work, &termleaf, false)?,
         Backend::Herdr => herdr::start(&work, &termleaf)?,
         Backend::Plain => tmux::start(&work, &termleaf, true)?,
+        Backend::Zellij => zellij::start(&work, &termleaf)?,
     };
     server.wait_for_status("termleaf to open the thesis", |status| {
         status == "page 1/5 · doc.pdf"
@@ -159,6 +162,7 @@ fn scenario(root: &Path, backend: Backend) -> Outcome<()> {
         return Err("the shell ran a command".to_owned());
     }
     println!("ok   the shell pane received nothing");
+    server.host.focus_kept()?;
     Ok(())
 }
 
@@ -192,6 +196,10 @@ pub trait Host {
     fn respawn(&self, pane: &str, command: &str, work: &Path) -> Outcome<()>;
     fn exited(&self, pane: &str) -> bool;
     fn copy_mode(&self, pane: &str) -> Outcome<bool>;
+
+    fn focus_kept(&self) -> Outcome<()> {
+        Ok(())
+    }
 }
 
 pub struct Server {
