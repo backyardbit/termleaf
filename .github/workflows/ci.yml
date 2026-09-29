@@ -69,6 +69,20 @@ jobs:
           sudo tar -C /usr/local/bin -xzf "$RUNNER_TEMP/zellij/zellij-x86_64-unknown-linux-musl.tar.gz" zellij
           zellij --version
           screen --version
+      - name: Install kitty 0.41.1 and WezTerm 20240203-110809-5046fc22
+        run: |
+          sudo apt-get install -y libxkbcommon-x11-0 libxcb-xkb1 libegl1 libegl-mesa0
+          gh release download v0.41.1 --repo kovidgoyal/kitty --pattern kitty-0.41.1-x86_64.txz --dir "$RUNNER_TEMP/kitty"
+          sudo mkdir -p /opt/kitty
+          sudo tar -C /opt/kitty -xJf "$RUNNER_TEMP/kitty/kitty-0.41.1-x86_64.txz"
+          sudo ln -sf /opt/kitty/bin/kitty /usr/local/bin/kitty
+          gh release download 20240203-110809-5046fc22 --repo wezterm/wezterm --pattern wezterm-20240203-110809-5046fc22.Ubuntu22.04.tar.xz --dir "$RUNNER_TEMP/wezterm"
+          sudo mkdir -p /opt/wezterm
+          sudo tar -C /opt/wezterm -xJf "$RUNNER_TEMP/wezterm/wezterm-20240203-110809-5046fc22.Ubuntu22.04.tar.xz"
+          sudo ln -sf /opt/wezterm/wezterm/usr/bin/wezterm /usr/local/bin/wezterm
+          sudo ln -sf /opt/wezterm/wezterm/usr/bin/wezterm-mux-server /usr/local/bin/wezterm-mux-server
+          kitty --version
+          wezterm --version
       - uses: Swatinem/rust-cache@v2
       - run: xvfb-run --auto-servernum --server-args="-screen 0 1400x900x24" cargo xtask e2e
       - name: Sixel in xterm -ti vt340
@@ -83,6 +97,12 @@ jobs:
         run: cargo xtask zellij
       - name: Alt+click, Ctrl+click and e jump nvim, vim and hx in GNU screen
         run: cargo xtask screen
+      - name: Alt+click, Ctrl+click and e jump nvim, vim and hx between kitty windows
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1400x900x24" cargo xtask kitty
+      - name: Alt+click, Ctrl+click and e jump nvim, vim and hx between WezTerm panes
+        run: cargo xtask wezterm
       - if: always()
         uses: actions/upload-artifact@v4
         with:
