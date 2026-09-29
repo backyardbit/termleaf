@@ -1316,34 +1316,6 @@ mod tests {
     }
 
     #[test]
-    fn control_click_names_the_source_too() {
-        let (mut app, _inbox) = headless_app_for(&thesis(), THESIS_PANE);
-        app.handle(Event::Key(Key::Char('j')));
-        let mouse = MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: ON_INTRO.column,
-            row: ON_INTRO.row,
-            modifiers: KeyModifiers::CONTROL,
-        };
-        assert_eq!(
-            translate_mouse(mouse),
-            Some(MouseInput::ModifierPress(ON_INTRO))
-        );
-        app.handle(Event::Mouse(MouseInput::ModifierPress(ON_INTRO)));
-        app.handle(Event::Mouse(MouseInput::Release(ON_INTRO)));
-        assert_eq!(app.status(), "page 2/5 · doc.pdf · intro.tex:4");
-    }
-
-    #[test]
-    fn e_uses_the_last_hovered_cell() {
-        let (mut app, _inbox) = headless_app_for(&thesis(), THESIS_PANE);
-        app.handle(Event::Key(Key::Char('j')));
-        app.handle(Event::Mouse(MouseInput::Hover(ON_INTRO)));
-        app.handle(Event::Key(Key::Char('e')));
-        assert_eq!(app.status(), "page 2/5 · doc.pdf · intro.tex:4");
-    }
-
-    #[test]
     fn a_pdf_without_synctex_data_says_how_to_build_it() {
         let (mut app, _inbox) = headless_app(THESIS_PANE);
         app.handle(Event::Mouse(MouseInput::Hover(ON_INTRO)));

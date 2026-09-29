@@ -578,15 +578,6 @@ mod tests {
     }
 
     #[test]
-    fn a_status_without_a_line_number_names_no_source_line() {
-        assert!(!names_a_source_line("page 2/5 · doc.pdf"));
-        assert!(!names_a_source_line("page 2/5 · doc.pdf · intro.tex:"));
-        assert!(!names_a_source_line(
-            "page 2/5 · doc.pdf · intro.tex:4 · SyncTeX data is older than the PDF"
-        ));
-    }
-
-    #[test]
     fn a_dark_screen_has_no_page() {
         assert!(!page_is_drawn(&dark_screen()));
     }

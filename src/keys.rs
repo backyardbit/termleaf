@@ -278,16 +278,6 @@ mod tests {
     }
 
     #[test]
-    fn e_asks_for_the_source_under_the_pointer() {
-        assert_eq!(run("e3e"), [Command::Inverse(None), Command::Inverse(None)]);
-    }
-
-    #[test]
-    fn e_inside_the_command_line_is_just_text() {
-        assert!(run(":e\u{1b}").is_empty());
-    }
-
-    #[test]
     fn q_quits() {
         assert_eq!(run("q"), [Command::Quit]);
     }

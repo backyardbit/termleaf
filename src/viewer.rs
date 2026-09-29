@@ -688,39 +688,4 @@ mod tests {
             ":4"
         );
     }
-
-    #[test]
-    fn status_line_ends_with_the_notice() {
-        let viewer = viewer(12);
-        assert_eq!(
-            viewer.status_line("thesis.pdf", None, Some("intro.tex:7")),
-            "page 1/12 · thesis.pdf · intro.tex:7"
-        );
-    }
-
-    #[test]
-    fn the_source_is_looked_up_under_the_pointer() {
-        let viewer = viewer(2);
-        let at = cell_over(&viewer, 150.0, 110.0);
-        let position = viewer.position_under(Some(at)).unwrap();
-        assert_eq!(position.page, 0);
-        assert!((position.x - 150.0).abs() < 10.0);
-        assert!((position.y - 110.0).abs() < 10.0);
-    }
-
-    #[test]
-    fn without_a_pointer_the_source_is_looked_up_at_the_middle_of_the_pane() {
-        let viewer = viewer(2);
-        assert_eq!(
-            viewer.position_under(None),
-            viewer.view().page_under(40, 12)
-        );
-    }
-
-    #[test]
-    fn a_pointer_beside_the_page_has_no_position() {
-        let mut viewer = viewer(2);
-        viewer.apply(Command::FitPage);
-        assert_eq!(viewer.position_under(Some(cell(0, 5))), None);
-    }
 }

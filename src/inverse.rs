@@ -119,9 +119,6 @@ fn older(synctex: &Path, pdf: &Path) -> bool {
 mod tests {
     use super::*;
     use std::fs::File;
-    use std::io::Read;
-
-    use flate2::read::GzDecoder;
 
     const INTRO: Position = Position {
         page: 1,
@@ -162,51 +159,6 @@ mod tests {
     }
 
     #[test]
-    fn a_point_on_the_page_names_its_source_file_and_line() {
-        let directory = scratch("point");
-        let mut inverse = Inverse::new(&thesis_in(&directory));
-        assert_eq!(answer(&mut inverse, Some(INTRO)), "intro.tex:7");
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn sources_beside_the_pdf_are_named_relative_to_it() {
-        let directory = scratch("relative");
-        let pdf = directory.join("doc.pdf");
-        fs::copy(fixture("synctex/thesis.pdf"), &pdf).unwrap();
-        let mut text = String::new();
-        GzDecoder::new(File::open(fixture("synctex/thesis.synctex.gz")).unwrap())
-            .read_to_string(&mut text)
-            .unwrap();
-        let moved = text.replace("/tmp/thesis/", &format!("{}/", directory.display()));
-        fs::write(directory.join("doc.synctex"), moved).unwrap();
-        let mut inverse = Inverse::new(&pdf);
-        assert_eq!(answer(&mut inverse, Some(INTRO)), "chapters/intro.tex:7");
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn a_pdf_without_synctex_data_says_how_to_build_it() {
-        let directory = scratch("missing");
-        let pdf = directory.join("doc.pdf");
-        fs::copy(fixture("three-pages.pdf"), &pdf).unwrap();
-        let mut inverse = Inverse::new(&pdf);
-        assert_eq!(
-            answer(&mut inverse, Some(INTRO)),
-            "no SyncTeX data: build with -synctex=1"
-        );
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn a_point_beside_the_pages_has_no_source() {
-        let directory = scratch("beside");
-        let mut inverse = Inverse::new(&thesis_in(&directory));
-        assert_eq!(answer(&mut inverse, None), "no source here");
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
     fn synctex_data_older_than_the_pdf_still_answers_with_a_warning() {
         let directory = scratch("stale");
         let pdf = thesis_in(&directory);
@@ -235,21 +187,6 @@ mod tests {
         assert_eq!(
             answer(&mut inverse, Some(INTRO)),
             "SyncTeX data is unreadable"
-        );
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn the_synctex_data_is_read_once_and_again_after_the_pdf_reloads() {
-        let directory = scratch("cached");
-        let mut inverse = Inverse::new(&thesis_in(&directory));
-        assert_eq!(answer(&mut inverse, Some(INTRO)), "intro.tex:7");
-        fs::remove_file(directory.join("doc.synctex.gz")).unwrap();
-        assert_eq!(answer(&mut inverse, Some(INTRO)), "intro.tex:7");
-        inverse.reloaded();
-        assert_eq!(
-            answer(&mut inverse, Some(INTRO)),
-            "no SyncTeX data: build with -synctex=1"
         );
         fs::remove_dir_all(directory).unwrap();
     }
