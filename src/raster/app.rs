@@ -275,9 +275,8 @@ impl App {
         } else {
             Vec::new()
         };
-        for key in prefetch.iter().chain(&visible) {
-            self.request(*key);
-        }
+        let window: Vec<RenderKey> = prefetch.into_iter().chain(visible).collect();
+        self.request(&window);
     }
 
     fn paint_at(&mut self, now: Instant) {
@@ -387,13 +386,17 @@ impl App {
         keys
     }
 
-    fn request(&mut self, key: RenderKey) {
-        if self.tiles.contains(key) || self.in_flight.contains(&key) {
-            return;
+    fn request(&mut self, keys: &[RenderKey]) {
+        let mut batch = Vec::new();
+        for key in keys {
+            if self.tiles.contains(*key) || self.in_flight.contains(key) {
+                continue;
+            }
+            self.in_flight.retain(|pending| pending.scale == key.scale);
+            self.in_flight.push(*key);
+            batch.push(*key);
         }
-        self.in_flight.retain(|pending| pending.scale == key.scale);
-        self.in_flight.push(key);
-        self.renderer.render(key);
+        self.renderer.render_all(&batch);
     }
 
     fn start_reload(&mut self) {

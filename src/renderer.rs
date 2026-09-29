@@ -37,7 +37,7 @@ pub enum Response {
 }
 
 pub struct Renderer {
-    requests: Sender<Request>,
+    requests: Sender<Vec<Request>>,
 }
 
 impl Renderer {
@@ -59,8 +59,17 @@ impl Renderer {
         self.send(Request::Render(key));
     }
 
+    pub fn render_all(&self, keys: &[RenderKey]) {
+        if keys.is_empty() {
+            return;
+        }
+        let _ = self
+            .requests
+            .send(keys.iter().copied().map(Request::Render).collect());
+    }
+
     fn send(&self, request: Request) {
-        let _ = self.requests.send(request);
+        let _ = self.requests.send(vec![request]);
     }
 }
 
@@ -96,17 +105,17 @@ fn load(path: &Path, generation: Generation, loaded: &mut Option<LoadedPdf>) -> 
 
 fn serve(
     path: &Path,
-    inbox: &Receiver<Request>,
+    inbox: &Receiver<Vec<Request>>,
     respond: &impl Fn(Response),
     deliver: &impl Fn(RenderKey, RgbImage),
 ) {
     let mut loaded: Option<LoadedPdf> = None;
     let mut pending: Vec<Request> = Vec::new();
     loop {
-        pending.extend(inbox.try_iter());
+        pending.extend(inbox.try_iter().flatten());
         if pending.is_empty() {
             match inbox.recv() {
-                Ok(request) => pending.push(request),
+                Ok(batch) => pending.extend(batch),
                 Err(_) => return,
             }
             continue;
