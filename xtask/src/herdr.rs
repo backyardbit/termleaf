@@ -119,8 +119,8 @@ impl Herdr {
 }
 
 impl Host for Herdr {
-    fn name(&self) -> &'static str {
-        "herdr"
+    fn label(&self, editor: &str, pane: &str) -> String {
+        format!("{editor} in herdr {pane}")
     }
 
     fn screen(&self, pane: &str) -> String {

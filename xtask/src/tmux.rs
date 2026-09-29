@@ -6,11 +6,18 @@ use crate::jumps::{Host, Outcome, PROMPT, Server, poll};
 
 struct Tmux {
     socket: PathBuf,
+    plain: bool,
 }
 
-pub fn start(work: &Path, termleaf: &Path) -> Outcome<Server> {
+pub fn start(work: &Path, termleaf: &Path, plain: bool) -> Outcome<Server> {
     let tmux = Tmux {
         socket: work.join("tmux.sock"),
+        plain,
+    };
+    let unset = if plain {
+        "env -u TMUX -u TMUX_PANE "
+    } else {
+        ""
     };
     let work_text = work.display().to_string();
     let viewer = tmux
@@ -30,7 +37,7 @@ pub fn start(work: &Path, termleaf: &Path) -> Outcome<Server> {
             "e2e",
             "-c",
             &work_text,
-            &format!("'{}' --graphics kitty doc.pdf", termleaf.display()),
+            &format!("{unset}'{}' --graphics kitty doc.pdf", termleaf.display()),
         ])?
         .trim()
         .to_owned();
@@ -116,8 +123,12 @@ impl Tmux {
 }
 
 impl Host for Tmux {
-    fn name(&self) -> &'static str {
-        "tmux"
+    fn label(&self, editor: &str, pane: &str) -> String {
+        if self.plain {
+            format!("{editor} (rpc)")
+        } else {
+            format!("{editor} in tmux {pane}")
+        }
     }
 
     fn screen(&self, pane: &str) -> String {
@@ -151,6 +162,9 @@ impl Host for Tmux {
     }
 
     fn copy_mode(&self, pane: &str) -> Outcome<bool> {
+        if self.plain {
+            return Ok(false);
+        }
         self.run(&["copy-mode", "-t", pane]).map(|_| true)
     }
 }

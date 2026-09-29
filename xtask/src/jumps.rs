@@ -18,6 +18,7 @@ pub type Outcome<T> = Result<T, String>;
 pub enum Backend {
     Tmux,
     Herdr,
+    Plain,
 }
 
 impl Backend {
@@ -25,6 +26,7 @@ impl Backend {
         match self {
             Self::Tmux => "tmux",
             Self::Herdr => "herdr",
+            Self::Plain => "plain",
         }
     }
 }
@@ -108,8 +110,9 @@ fn scenario(root: &Path, backend: Backend) -> Outcome<()> {
     let work = prepare(root, backend)?;
     let termleaf = root.join("target/release/termleaf");
     let server = match backend {
-        Backend::Tmux => tmux::start(&work, &termleaf)?,
+        Backend::Tmux => tmux::start(&work, &termleaf, false)?,
         Backend::Herdr => herdr::start(&work, &termleaf)?,
+        Backend::Plain => tmux::start(&work, &termleaf, true)?,
     };
     server.wait_for_status("termleaf to open the thesis", |status| {
         status == "page 1/5 · doc.pdf"
@@ -131,10 +134,15 @@ fn scenario(root: &Path, backend: Backend) -> Outcome<()> {
         clicks: 0,
         last_status: String::new(),
     };
-    for editor in [Editor::Neovim, Editor::Vim, Editor::Helix] {
-        run.editor(editor)?;
+    if backend == Backend::Plain {
+        run.editor(Editor::Neovim)?;
+        run.prompt_blocks(Editor::Neovim, "refused: waiting at a prompt")?;
+    } else {
+        for editor in [Editor::Neovim, Editor::Vim, Editor::Helix] {
+            run.editor(editor)?;
+        }
+        run.prompt_blocks(Editor::Vim, "refused: Press ENTER prompt")?;
     }
-    run.prompt_blocks_vim()?;
     run.shells_only()?;
 
     if server.screen(&server.shell) != shell_screen {
@@ -174,7 +182,7 @@ fn prepare(root: &Path, backend: Backend) -> Outcome<PathBuf> {
 }
 
 pub trait Host {
-    fn name(&self) -> &'static str;
+    fn label(&self, editor: &str, pane: &str) -> String;
     fn screen(&self, pane: &str) -> String;
     fn bytes(&self, pane: &str, bytes: &[u8]) -> Outcome<()>;
     fn respawn(&self, pane: &str, command: &str, work: &Path) -> Outcome<()>;
@@ -283,10 +291,8 @@ impl Run<'_> {
 
     fn jumped(&mut self, editor: Editor, trigger: &str) -> Outcome<u32> {
         let wanted = format!(
-            "→ {} in {} {} · chapters/intro.tex:",
-            editor.name(),
-            self.server.host.name(),
-            self.server.editor
+            "→ {} · chapters/intro.tex:",
+            self.server.host.label(editor.name(), &self.server.editor)
         );
         let previous = self.last_status.clone();
         let status = self
@@ -470,6 +476,15 @@ impl Run<'_> {
         match editor {
             Editor::Neovim => {
                 self.server.keys(&pane, editor.to_last_line())?;
+                self.server.keys(&pane, &["d"])?;
+                self.settle(editor);
+                self.alt_click()?;
+                let line = self.jumped(editor, "Alt+click")?;
+                self.check(editor, "from a pending d", line, |state| {
+                    state.typed_kept && state.normal_mode
+                })?;
+
+                self.server.keys(&pane, editor.to_last_line())?;
                 self.settle(editor);
                 if self.server.host.copy_mode(&pane)? {
                     self.alt_click()?;
@@ -497,11 +512,11 @@ impl Run<'_> {
         self.server.quit(editor, &self.work)
     }
 
-    fn prompt_blocks_vim(&mut self) -> Outcome<()> {
+    fn prompt_blocks(&mut self, editor: Editor, refusal: &str) -> Outcome<()> {
         let pane = self.server.editor.clone();
         self.server
-            .respawn(&pane, &Editor::Vim.command(&self.work), &self.work)?;
-        poll("vim to start", || {
+            .respawn(&pane, &editor.command(&self.work), &self.work)?;
+        poll(&format!("{} to start", editor.name()), || {
             self.server
                 .screen(&pane)
                 .contains("\\chapter")
@@ -517,8 +532,8 @@ impl Run<'_> {
         let before = self.server.screen(&pane);
         self.alt_click()?;
         let wanted = format!(
-            "· vim in {} {pane} refused: Press ENTER prompt",
-            self.server.host.name()
+            "· {} {refusal}",
+            self.server.host.label(editor.name(), &pane)
         );
         let status = self
             .server
@@ -528,12 +543,18 @@ impl Run<'_> {
         self.last_status.clone_from(&status);
         thread::sleep(Duration::from_millis(500));
         if self.server.screen(&pane) != before {
-            return Err("vim at a Press ENTER prompt received keys".to_owned());
+            return Err(format!(
+                "{} at a Press ENTER prompt received keys",
+                editor.name()
+            ));
         }
-        println!("ok   vim at a Press ENTER prompt gets nothing: {status}");
+        println!(
+            "ok   {} at a Press ENTER prompt gets nothing: {status}",
+            editor.name()
+        );
         self.server.keys(&pane, &["Enter"])?;
         thread::sleep(Duration::from_millis(200));
-        self.server.quit(Editor::Vim, &self.work)
+        self.server.quit(editor, &self.work)
     }
 
     fn shells_only(&mut self) -> Outcome<()> {
