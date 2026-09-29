@@ -33,8 +33,9 @@ pub fn parse_swap_header(block: &[u8], home: Option<&Path>) -> Option<SwapOwner>
     let name = std::str::from_utf8(name)
         .ok()
         .filter(|name| !name.is_empty())?;
-    let file = match (name.strip_prefix("~/"), home) {
-        (Some(rest), Some(home)) => home.join(rest),
+    let under_home = name.strip_prefix('~').and_then(|rest| rest.split_once('/'));
+    let file = match (under_home, home) {
+        (Some((_, rest)), Some(home)) => home.join(rest),
         _ => PathBuf::from(name),
     };
     Some(SwapOwner {
@@ -229,12 +230,14 @@ mod tests {
     }
 
     #[test]
-    fn a_swap_header_under_home_is_expanded() {
-        assert_eq!(
-            parse_swap_header(&header(7, "~/thesis/ch5.tex"), Some(Path::new("/home/ada")))
-                .map(|owner| owner.file),
-            Some(PathBuf::from("/home/ada/thesis/ch5.tex"))
-        );
+    fn a_swap_header_under_home_is_expanded_with_or_without_the_user_name() {
+        for name in ["~/thesis/ch5.tex", "~ada/thesis/ch5.tex"] {
+            assert_eq!(
+                parse_swap_header(&header(7, name), Some(Path::new("/home/ada")))
+                    .map(|owner| owner.file),
+                Some(PathBuf::from("/home/ada/thesis/ch5.tex"))
+            );
+        }
     }
 
     #[test]
