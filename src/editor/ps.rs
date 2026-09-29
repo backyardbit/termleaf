@@ -177,12 +177,15 @@ impl ProcessTable for Ps {
             .map(|process| process.uid)
     }
 
-    fn foreground_leaders(&self) -> Vec<Process> {
+    fn processes(&self) -> Vec<Process> {
         self.entries
             .iter()
-            .filter(|entry| entry.process.foreground_group == Some(entry.process.pid()))
             .map(|entry| entry.process.clone())
             .collect()
+    }
+
+    fn environment(&self, _pid: Pid) -> Vec<(String, String)> {
+        Vec::new()
     }
 }
 
@@ -273,5 +276,6 @@ mod tests {
         assert!(!ps.arguments(pid).is_empty());
         assert_eq!(ps.cwd(pid), None);
         assert!(ps.listening_sockets(pid).is_empty());
+        assert!(ps.environment(pid).is_empty());
     }
 }

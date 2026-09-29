@@ -109,6 +109,17 @@ fn socket_inode(link: &Path) -> Option<u64> {
         .ok()
 }
 
+fn parse_environment(environ: &[u8]) -> Vec<(String, String)> {
+    environ
+        .split(|byte| *byte == 0)
+        .filter_map(|entry| {
+            let entry = String::from_utf8_lossy(entry);
+            let (name, value) = entry.split_once('=')?;
+            Some((name.to_owned(), value.to_owned()))
+        })
+        .collect()
+}
+
 fn parse_arguments(cmdline: &[u8]) -> Vec<String> {
     cmdline
         .split(|byte| *byte == 0)
@@ -223,11 +234,16 @@ impl ProcessTable for Procfs {
         parse_uid(&fs::read_to_string(self.root.join("self/status")).ok()?)
     }
 
-    fn foreground_leaders(&self) -> Vec<Process> {
+    fn processes(&self) -> Vec<Process> {
         self.stats()
-            .filter(|stat| stat.foreground_group == Some(stat.pid))
             .filter_map(|stat| self.complete(stat))
             .collect()
+    }
+
+    fn environment(&self, pid: Pid) -> Vec<(String, String)> {
+        fs::read(self.entry(pid).join("environ"))
+            .map(|environ| parse_environment(&environ))
+            .unwrap_or_default()
     }
 }
 
@@ -309,6 +325,26 @@ mod tests {
                 .foreground_leaders()
                 .iter()
                 .all(|leader| leader.foreground_group == Some(leader.pid()))
+        );
+        assert!(
+            procfs
+                .processes()
+                .iter()
+                .any(|process| process.pid() == pid)
+        );
+        let path = std::env::var("PATH").unwrap_or_default();
+        assert!(procfs.environment(pid).contains(&("PATH".to_owned(), path)));
+    }
+
+    #[test]
+    fn an_environment_is_split_into_names_and_values() {
+        assert_eq!(
+            parse_environment(b"ZELLIJ_PANE_ID=2\0EMPTY=\0junk\0EQ=a=b\0"),
+            [
+                ("ZELLIJ_PANE_ID".to_owned(), "2".to_owned()),
+                ("EMPTY".to_owned(), String::new()),
+                ("EQ".to_owned(), "a=b".to_owned()),
+            ]
         );
     }
 }

@@ -1,3 +1,4 @@
+mod cli;
 mod detect;
 mod evidence;
 mod herdr;
@@ -13,9 +14,11 @@ mod procfs;
 mod ps;
 mod safety;
 mod tmux;
+mod zellij;
 
 use std::path::{Path, PathBuf};
 
+use cli::SystemCli;
 use detect::{Environment, MultiplexerKind, ProcessEnvironment, detect};
 use evidence::{OnDisk, neovim_socket};
 use herdr::Herdr;
@@ -28,6 +31,7 @@ use probe::{
 use process::{Pid, ProcessTable, ancestors};
 use safety::recheck;
 use tmux::Tmux;
+use zellij::Zellij;
 
 use crate::inverse::Editors;
 use crate::synctex::SourceLocation;
@@ -47,6 +51,7 @@ pub enum Jumped {
     Sent(String),
     NotChosen(Choice),
     Failed(String, Failure),
+    Unavailable(String),
 }
 
 impl Jumped {
@@ -58,6 +63,7 @@ impl Jumped {
                 format!("{place} · path needs RPC")
             }
             Self::Failed(label, failure) => format!("{place} · {label} {failure}"),
+            Self::Unavailable(reason) => format!("{place} · {reason}"),
         }
     }
 }
@@ -202,18 +208,35 @@ impl Jumper {
         let loaded = OnDisk::new(&table, &env);
         let wanted = Wanted { at, inputs };
         let rpc = Socket;
+        let mut unavailable = None;
         for layer in layers.iter().map(Some).chain([None]) {
             let own = layer.and_then(|layer| layer.own_pane.as_deref());
-            let jumped = match layer.map(|layer| (layer.kind, layer.control.as_deref())) {
-                Some((MultiplexerKind::Tmux, Some(socket))) => {
+            let placed = layer.map(|layer| {
+                (
+                    layer.kind,
+                    layer.control.as_deref(),
+                    layer.session.as_deref(),
+                )
+            });
+            let jumped = match placed {
+                Some((MultiplexerKind::Tmux, Some(socket), _)) => {
                     jump_with(self.tmux(socket, own), &table, own, wanted, &loaded, &rpc)
                 }
-                Some((MultiplexerKind::Herdr, Some(socket))) => {
+                Some((MultiplexerKind::Herdr, Some(socket), _)) => {
                     let program = env
                         .var("HERDR_BIN_PATH")
                         .unwrap_or_else(|| "herdr".to_owned());
                     let herdr = Herdr::new(PathBuf::from(program), socket.to_path_buf());
                     jump_with(&herdr, &table, own, wanted, &loaded, &rpc)
+                }
+                Some((MultiplexerKind::Zellij, _, Some(session))) => {
+                    match Zellij::connect(&SystemCli, &table, session) {
+                        Ok(zellij) => jump_with(&zellij, &table, own, wanted, &loaded, &rpc),
+                        Err(missing) => {
+                            unavailable.get_or_insert(Jumped::Unavailable(missing.to_string()));
+                            continue;
+                        }
+                    }
                 }
                 Some(_) => continue,
                 None => jump_plain(&table, wanted, &loaded, &rpc),
@@ -222,7 +245,7 @@ impl Jumper {
                 return jumped;
             }
         }
-        Jumped::NotChosen(Choice::NoEditor)
+        unavailable.unwrap_or(Jumped::NotChosen(Choice::NoEditor))
     }
 }
 
@@ -490,6 +513,15 @@ mod tests {
         );
         assert_eq!(status, "ch5.tex:77 · no editor found");
         assert!(recorder.sent.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_multiplexer_that_cannot_be_used_is_named_when_nothing_jumps() {
+        let jumped = Jumped::Unavailable("zellij 0.44+ needed (found 0.43.1)".to_owned());
+        assert_eq!(
+            jumped.status("ch5.tex:77"),
+            "ch5.tex:77 · zellij 0.44+ needed (found 0.43.1)"
+        );
     }
 
     #[test]
