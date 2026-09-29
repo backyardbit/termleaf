@@ -23,6 +23,7 @@ use std::process::ExitCode;
 use crate::graphics::Choice;
 
 const USAGE: &str = "usage: termleaf [--no-pinch] [--graphics <protocol>] <file.pdf>
+       termleaf --follow <file.tex>:<line>[:<column>]
 
 Shows a PDF in the terminal and reloads it whenever the file changes.
 
@@ -49,7 +50,9 @@ membership of the `input` group on Linux; without it, pinch stays off.
 options:
   --no-pinch              never read the trackpad from the OS
   --graphics <protocol>   auto (the default), or kitty, sixel or iterm2 to use
-                          that protocol whatever the terminal reports";
+                          that protocol whatever the terminal reports
+  --follow <place>        show that source line in every termleaf whose PDF
+                          was built from it, then exit";
 
 #[derive(Debug, PartialEq, Eq)]
 enum Invocation {
@@ -60,6 +63,7 @@ enum Invocation {
         pinch: bool,
         graphics: Choice,
     },
+    Follow(follow::Place),
     Misused,
 }
 
@@ -79,6 +83,7 @@ fn parse(arguments: &[String]) -> Invocation {
         }
     }
     match rest.as_slice() {
+        ["--follow", place] => follow::place(place).map_or(Invocation::Misused, Invocation::Follow),
         ["-h" | "--help"] => Invocation::Help,
         ["-V" | "--version"] => Invocation::Version,
         [path] if !path.starts_with('-') => Invocation::View {
@@ -106,6 +111,12 @@ fn main() -> ExitCode {
             pinch,
             graphics,
         } => (path, app::Options { pinch, graphics }),
+        Invocation::Follow(place) => {
+            let file = std::path::absolute(&place.file).unwrap_or(place.file);
+            let directory = follow::directory(|name| std::env::var(name).ok());
+            follow::broadcast(&directory, &follow::Place { file, ..place });
+            return ExitCode::SUCCESS;
+        }
         Invocation::Misused => {
             eprintln!("{USAGE}");
             return ExitCode::FAILURE;
@@ -187,6 +198,20 @@ mod tests {
     fn help_and_version_still_work() {
         assert_eq!(run(&["--help"]), Invocation::Help);
         assert_eq!(run(&["-V"]), Invocation::Version);
+    }
+
+    #[test]
+    fn follow_takes_a_file_a_line_and_maybe_a_column() {
+        assert_eq!(
+            run(&["--follow", "chapters/intro.tex:12"]),
+            Invocation::Follow(follow::Place {
+                file: PathBuf::from("chapters/intro.tex"),
+                line: 12,
+                column: 1,
+            })
+        );
+        assert_eq!(run(&["--follow", "intro.tex"]), Invocation::Misused);
+        assert_eq!(run(&["--follow"]), Invocation::Misused);
     }
 
     #[test]

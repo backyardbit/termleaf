@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -24,6 +24,13 @@ pub struct Request {
     pub line: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Place {
+    pub file: PathBuf,
+    pub line: u32,
+    pub column: u32,
+}
+
 pub fn parse(message: &str) -> Option<Request> {
     let message = message.strip_suffix('\n').unwrap_or(message);
     let (line, rest) = message.strip_prefix("follow ")?.split_once(' ')?;
@@ -34,6 +41,23 @@ pub fn parse(message: &str) -> Option<Request> {
     file.is_absolute().then_some(Request { file, line })
 }
 
+pub fn place(text: &str) -> Option<Place> {
+    let (rest, last) = text.rsplit_once(':')?;
+    let last = last.parse::<u32>().ok()?;
+    let (file, line, column) = match rest
+        .rsplit_once(':')
+        .and_then(|(file, line)| Some((file, line.parse::<u32>().ok()?)))
+    {
+        Some((file, line)) => (file, line, last),
+        None => (rest, last, 1),
+    };
+    (!file.is_empty() && line > 0).then(|| Place {
+        file: PathBuf::from(file),
+        line,
+        column,
+    })
+}
+
 pub fn directory(variable: impl Fn(&str) -> Option<String>) -> PathBuf {
     let set = |name: &str| variable(name).filter(|value| !value.is_empty());
     match set("XDG_RUNTIME_DIR") {
@@ -41,6 +65,37 @@ pub fn directory(variable: impl Fn(&str) -> Option<String>) -> PathBuf {
         None => PathBuf::from(set("TMPDIR").unwrap_or_else(|| "/tmp".to_owned()))
             .join(format!("termleaf-{}", set("USER").unwrap_or_default())),
     }
+}
+
+pub fn broadcast(directory: &Path, place: &Place) -> usize {
+    let Some(file) = place.file.to_str().filter(|file| !file.contains('\n')) else {
+        return 0;
+    };
+    let message = format!("follow {} {} {file}\n", place.line, place.column);
+    let private = fs::symlink_metadata(directory)
+        .is_ok_and(|metadata| metadata.is_dir() && metadata.permissions().mode() & 0o077 == 0);
+    if !private {
+        return 0;
+    }
+    fs::read_dir(directory)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "sock")
+        })
+        .filter(|path| deliver(path, &message))
+        .count()
+}
+
+fn deliver(socket: &Path, message: &str) -> bool {
+    let Ok(mut stream) = UnixStream::connect(socket) else {
+        return false;
+    };
+    let _ = stream.set_write_timeout(Some(PATIENCE));
+    stream.write_all(message.as_bytes()).is_ok()
 }
 
 pub struct Listener {
@@ -206,7 +261,6 @@ mod tests {
     use crate::layout::{CellSize, Pane};
     use crate::pdf::{PageInfo, PageSize};
     use std::fs::File;
-    use std::io::Write;
     use std::sync::mpsc;
     use std::time::SystemTime;
 
@@ -327,6 +381,25 @@ mod tests {
     }
 
     #[test]
+    fn a_place_is_a_file_a_line_and_maybe_a_column() {
+        let at = |file: &str, line, column| {
+            Some(Place {
+                file: PathBuf::from(file),
+                line,
+                column,
+            })
+        };
+        assert_eq!(place("intro.tex:12:3"), at("intro.tex", 12, 3));
+        assert_eq!(
+            place("notes:v2/intro.tex:12"),
+            at("notes:v2/intro.tex", 12, 1)
+        );
+        for text in ["intro.tex", ":12", "intro.tex:0", "intro.tex:x"] {
+            assert_eq!(place(text), None, "{text}");
+        }
+    }
+
+    #[test]
     fn sockets_live_in_a_directory_of_their_own_per_user() {
         let from = |pairs: &'static [(&'static str, &'static str)]| {
             move |name: &str| {
@@ -351,7 +424,7 @@ mod tests {
     }
 
     #[test]
-    fn a_listening_viewer_takes_follow_lines_and_stale_sockets_are_cleared() {
+    fn a_broadcast_reaches_listening_viewers_and_stale_sockets_are_cleared() {
         let root = scratch("sockets");
         let sockets = root.join("run");
         fs::create_dir_all(&sockets).unwrap();
@@ -368,16 +441,24 @@ mod tests {
             fs::metadata(&sockets).unwrap().permissions().mode() & 0o777,
             0o700
         );
-        for message in [
-            &b"\xff\n"[..],
-            b"hello\n",
-            b"follow 12 3 /thesis/intro.tex\n",
-        ] {
-            UnixStream::connect(sockets.join("2.sock"))
-                .unwrap()
-                .write_all(message)
-                .unwrap();
-        }
+        UnixStream::connect(sockets.join("2.sock"))
+            .unwrap()
+            .write_all(b"\xff\n")
+            .unwrap();
+        UnixStream::connect(sockets.join("2.sock"))
+            .unwrap()
+            .write_all(b"hello\n")
+            .unwrap();
+        let place = |file: &str| Place {
+            file: PathBuf::from(file),
+            line: 12,
+            column: 3,
+        };
+        assert_eq!(broadcast(&sockets, &place("/a\nb.tex")), 0);
+        fs::set_permissions(&sockets, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(broadcast(&sockets, &place("/thesis/intro.tex")), 0);
+        fs::set_permissions(&sockets, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(broadcast(&sockets, &place("/thesis/intro.tex")), 1);
         assert_eq!(
             received.recv_timeout(Duration::from_secs(5)),
             Ok(Request {
@@ -387,6 +468,12 @@ mod tests {
         );
         drop(listener);
         assert!(!sockets.join("2.sock").exists());
+        drop(UnixListener::bind(sockets.join("3.sock")).unwrap());
+        assert_eq!(broadcast(&sockets, &place("/thesis/intro.tex")), 0);
+        assert_eq!(
+            broadcast(&root.join("gone"), &place("/thesis/intro.tex")),
+            0
+        );
         assert!(Listener::spawn(&sockets.join("notes/run"), "4", |_| {}).is_err());
         fs::remove_dir_all(root).unwrap();
     }
