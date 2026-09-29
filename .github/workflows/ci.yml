@@ -62,6 +62,13 @@ jobs:
           vim --version | head -n 1
           nvim --version | head -n 1
           hx --version
+      - name: Install zellij 0.45.1 and GNU screen
+        run: |
+          sudo apt-get install -y screen
+          gh release download v0.45.1 --repo zellij-org/zellij --pattern zellij-x86_64-unknown-linux-musl.tar.gz --dir "$RUNNER_TEMP/zellij"
+          sudo tar -C /usr/local/bin -xzf "$RUNNER_TEMP/zellij/zellij-x86_64-unknown-linux-musl.tar.gz" zellij
+          zellij --version
+          screen --version
       - uses: Swatinem/rust-cache@v2
       - run: xvfb-run --auto-servernum --server-args="-screen 0 1400x900x24" cargo xtask e2e
       - name: Sixel in xterm -ti vt340
@@ -72,6 +79,10 @@ jobs:
         run: cargo xtask herdr
       - name: Alt+click jumps nvim over its socket with no multiplexer
         run: cargo xtask plain
+      - name: Alt+click, Ctrl+click and e jump nvim, vim and hx in zellij
+        run: cargo xtask zellij
+      - name: Alt+click, Ctrl+click and e jump nvim, vim and hx in GNU screen
+        run: cargo xtask screen
       - if: always()
         uses: actions/upload-artifact@v4
         with:
