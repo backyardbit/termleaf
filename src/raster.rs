@@ -151,7 +151,7 @@ fn show(
         follow: Follow::new(options.follow).starting({
             let path = path.to_path_buf();
             move || {
-                crate::editor::follow_neovims(path, move |request| {
+                crate::editor::follow_editors(path, move |request| {
                     let _ = neovims.send(Event::Follow(request));
                 });
             }

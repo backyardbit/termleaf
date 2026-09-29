@@ -147,7 +147,7 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
         follow: Follow::new(options.follow).starting({
             let path = path.clone();
             move || {
-                editor::follow_neovims(path, move |request| {
+                editor::follow_editors(path, move |request| {
                     let _ = neovims.send(Event::Follow(request));
                 });
             }

@@ -1,3 +1,4 @@
+mod capture;
 mod cli;
 mod detect;
 mod evidence;
@@ -19,14 +20,14 @@ mod tmux;
 mod wezterm;
 mod zellij;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use cli::SystemCli;
-use detect::{Environment, MultiplexerKind, ProcessEnvironment, detect};
+use detect::{Environment, Layer, MultiplexerKind, ProcessEnvironment, detect};
 use evidence::{OnDisk, neovim_socket};
 use herdr::Herdr;
 use inject::{Failure, inject};
@@ -81,6 +82,8 @@ impl Jumped {
 
 const PLAIN_LABEL: &str = "nvim (rpc)";
 const SCAN_EVERY: Duration = Duration::from_secs(2);
+const CAPTURE_EVERY: Duration = Duration::from_millis(500);
+const CAPTURES_PER_SCAN: u32 = 4;
 
 type Watched = Arc<Mutex<HashSet<PathBuf>>>;
 
@@ -230,7 +233,7 @@ fn watch(
     });
 }
 
-pub fn follow_neovims(pdf: PathBuf, on_request: impl Fn(Request) + Send + Sync + 'static) {
+fn follow_neovims(pdf: PathBuf, on_request: impl Fn(Request) + Send + Sync + 'static) {
     let on_request = Arc::new(on_request);
     let watched = Watched::default();
     thread::spawn(move || {
@@ -249,6 +252,141 @@ pub fn follow_neovims(pdf: PathBuf, on_request: impl Fn(Request) + Send + Sync +
             thread::sleep(SCAN_EVERY);
         }
     });
+}
+
+fn helix_panes(
+    multiplexer: &impl Multiplexer,
+    table: &impl ProcessTable,
+    own: Option<&str>,
+) -> Vec<(String, PathBuf)> {
+    let Ok(verdicts) = survey(multiplexer, table, own) else {
+        return Vec::new();
+    };
+    candidates(multiplexer.kind(), &verdicts)
+        .into_iter()
+        .filter(|candidate| candidate.editor.kind == EditorKind::Helix)
+        .filter_map(|candidate| {
+            Some((candidate.pane.id, table.cwd(candidate.editor.identity.pid)?))
+        })
+        .collect()
+}
+
+fn capture_helix(
+    multiplexer: &impl Multiplexer,
+    panes: &[(String, PathBuf)],
+    seen: &mut HashMap<String, Request>,
+    on_request: &impl Fn(Request),
+) {
+    for (pane, cwd) in panes {
+        let Some((name, line)) = multiplexer
+            .screen(pane)
+            .as_deref()
+            .and_then(capture::statusline)
+            .map(|(name, line)| (name.to_owned(), line))
+        else {
+            continue;
+        };
+        let request = Request {
+            file: cwd.join(name),
+            line,
+            editor: Some("hx"),
+        };
+        if seen.get(pane) != Some(&request) {
+            seen.insert(pane.clone(), request.clone());
+            on_request(request);
+        }
+    }
+}
+
+fn follow_in(
+    multiplexer: &impl Multiplexer,
+    table: &impl ProcessTable,
+    own: Option<&str>,
+    seen: &mut HashMap<String, Request>,
+    on_request: &impl Fn(Request),
+    every: Duration,
+) -> bool {
+    let panes = helix_panes(multiplexer, table, own);
+    seen.retain(|pane, _| panes.iter().any(|(id, _)| id == pane));
+    if panes.is_empty() {
+        return false;
+    }
+    for round in 0..CAPTURES_PER_SCAN {
+        if round > 0 {
+            thread::sleep(every);
+        }
+        capture_helix(multiplexer, &panes, seen, on_request);
+    }
+    true
+}
+
+fn follow_layer(
+    layer: &Layer,
+    table: &impl ProcessTable,
+    seen: &mut HashMap<String, Request>,
+    on_request: &impl Fn(Request),
+) -> bool {
+    let env = ProcessEnvironment;
+    let own = layer.own_pane.as_deref();
+    let every = CAPTURE_EVERY;
+    match (
+        layer.kind,
+        layer.control.as_deref(),
+        layer.session.as_deref(),
+    ) {
+        (MultiplexerKind::Tmux, Some(socket), _) => {
+            let tmux = Tmux::new(socket.to_path_buf(), own.map(str::to_owned));
+            follow_in(&tmux, table, own, seen, on_request, every)
+        }
+        (MultiplexerKind::Herdr, Some(socket), _) => {
+            let program = env
+                .var("HERDR_BIN_PATH")
+                .unwrap_or_else(|| "herdr".to_owned());
+            let herdr = Herdr::new(PathBuf::from(program), socket.to_path_buf());
+            follow_in(&herdr, table, own, seen, on_request, every)
+        }
+        (MultiplexerKind::Zellij, _, Some(session)) => Zellij::connect(&SystemCli, table, session)
+            .is_ok_and(|zellij| follow_in(&zellij, table, own, seen, on_request, every)),
+        (MultiplexerKind::Screen, _, Some(session)) => {
+            let screen = Screen::new(&SystemCli, table, session);
+            follow_in(&screen, table, own, seen, on_request, every)
+        }
+        (MultiplexerKind::Kitty, Some(control), _) => {
+            let kitty = Kitty::new(&SystemCli, control);
+            follow_in(&kitty, table, own, seen, on_request, every)
+        }
+        (MultiplexerKind::Wezterm, _, _) => {
+            let wezterm = Wezterm::new(&SystemCli, env.var("WEZTERM_EXECUTABLE_DIR"));
+            follow_in(&wezterm, table, own, seen, on_request, every)
+        }
+        _ => false,
+    }
+}
+
+fn follow_helix(on_request: impl Fn(Request) + Send + 'static) {
+    thread::spawn(move || {
+        let mut seen = HashMap::new();
+        loop {
+            let followed = system_processes().is_ok_and(|table| {
+                detect(
+                    &ProcessEnvironment,
+                    &ancestors(&table, Pid(std::process::id())),
+                )
+                .iter()
+                .any(|layer| follow_layer(layer, &table, &mut seen, &on_request))
+            });
+            if !followed {
+                thread::sleep(SCAN_EVERY);
+            }
+        }
+    });
+}
+
+pub fn follow_editors(pdf: PathBuf, on_request: impl Fn(Request) + Send + Sync + 'static) {
+    let on_request = Arc::new(on_request);
+    let helix = Arc::clone(&on_request);
+    follow_neovims(pdf, move |request| on_request(request));
+    follow_helix(move |request| helix(request));
 }
 
 #[derive(Default)]
@@ -354,7 +492,7 @@ mod tests {
     use std::cell::RefCell;
 
     use super::inject::fake::Recorder;
-    use super::probe::fake::layout;
+    use super::probe::fake::{FakeMultiplexer, layout};
     use super::probe::{Editor, Pane};
     use super::process::fake::{FakeTable, OUR_UID};
 
@@ -638,6 +776,52 @@ mod tests {
         listener.set_nonblocking(true).unwrap();
         assert!(listener.accept().is_err());
         std::fs::remove_file(&socket).unwrap();
+    }
+
+    #[test]
+    fn a_helix_pane_is_followed_by_its_statusline_once_per_change() {
+        let (mut table, mut multiplexer) = layout();
+        let requests = RefCell::new(Vec::new());
+        let push = |request: Request| requests.borrow_mut().push(request);
+        let mut seen = HashMap::new();
+        let mut follow = |table: &FakeTable, multiplexer: &_| {
+            follow_in(
+                multiplexer,
+                table,
+                Some("%0"),
+                &mut seen,
+                &push,
+                Duration::ZERO,
+            )
+        };
+        let at = |line| Request {
+            file: PathBuf::from("/tmp/thesis/chapters/ch5.tex"),
+            line,
+            editor: Some("hx"),
+        };
+        let show = |multiplexer: &mut FakeMultiplexer, screen: &str| {
+            multiplexer
+                .screens
+                .insert("%3".to_owned(), screen.to_owned());
+        };
+        show(&mut multiplexer, " NOR   chapters/ch5.tex   1 sel  40:1\n");
+        assert!(!follow(&table, &multiplexer));
+        table.argv(401, &["hx"], "/tmp/thesis");
+        assert!(follow(&table, &multiplexer));
+        assert!(follow(&table, &multiplexer));
+        show(&mut multiplexer, "typable-command\n:o\n");
+        assert!(follow(&table, &multiplexer));
+        show(
+            &mut multiplexer,
+            " INS   chapters/ch5.tex [+]   1 sel  41:3\n",
+        );
+        assert!(follow(&table, &multiplexer));
+        assert_eq!(*requests.borrow(), [at(40), at(41)]);
+        let panes = multiplexer.panes.replace(Vec::new());
+        assert!(!follow(&table, &multiplexer));
+        multiplexer.panes.replace(panes);
+        assert!(follow(&table, &multiplexer));
+        assert_eq!(*requests.borrow(), [at(40), at(41), at(41)]);
     }
 
     #[test]
