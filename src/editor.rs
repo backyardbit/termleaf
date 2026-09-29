@@ -13,6 +13,7 @@ mod procfs;
 #[cfg(any(test, not(target_os = "linux")))]
 mod ps;
 mod safety;
+mod screen;
 mod tmux;
 mod zellij;
 
@@ -30,6 +31,7 @@ use probe::{
 };
 use process::{Pid, ProcessTable, ancestors};
 use safety::recheck;
+use screen::Screen;
 use tmux::Tmux;
 use zellij::Zellij;
 
@@ -237,6 +239,10 @@ impl Jumper {
                             continue;
                         }
                     }
+                }
+                Some((MultiplexerKind::Screen, _, Some(session))) => {
+                    let screen = Screen::new(&SystemCli, &table, session);
+                    jump_with(&screen, &table, own, wanted, &loaded, &rpc)
                 }
                 Some(_) => continue,
                 None => jump_plain(&table, wanted, &loaded, &rpc),

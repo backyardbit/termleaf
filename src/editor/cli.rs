@@ -81,6 +81,7 @@ pub mod fake {
     enum Reply {
         Print(String),
         Fail,
+        WriteLastArgument(String),
     }
 
     #[derive(Default)]
@@ -98,6 +99,14 @@ pub mod fake {
 
         pub fn fails(mut self, when: &[&str]) -> Self {
             self.replies.push((super::owned(when), Reply::Fail));
+            self
+        }
+
+        pub fn writes_last_argument(mut self, when: &[&str], content: &str) -> Self {
+            self.replies.push((
+                super::owned(when),
+                Reply::WriteLastArgument(content.to_owned()),
+            ));
             self
         }
 
@@ -119,6 +128,10 @@ pub mod fake {
                 None => Ok(String::new()),
                 Some((_, Reply::Print(output))) => Ok(output.clone()),
                 Some((_, Reply::Fail)) => bail!("{program} failed"),
+                Some((_, Reply::WriteLastArgument(content))) => {
+                    std::fs::write(arguments.last().map_or("", String::as_str), content)?;
+                    Ok(String::new())
+                }
             }
         }
     }
