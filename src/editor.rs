@@ -595,16 +595,41 @@ mod tests {
     }
 
     #[test]
-    fn a_neovim_is_watched_once_until_its_socket_hangs_up() {
+    fn a_neovim_is_watched_once_and_its_cursor_is_named_until_it_hangs_up() {
+        use std::io::Write;
         let socket =
             std::env::temp_dir().join(format!("termleaf-watch-{}.sock", std::process::id()));
         let _ = std::fs::remove_file(&socket);
         let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
         let watched = Watched::default();
-        let on_request = Arc::new(|_: Request| {});
+        let (sent, received) = std::sync::mpsc::channel();
+        let on_request = Arc::new(move |request: Request| {
+            let _ = sent.send(request);
+        });
         watch(socket.clone(), &watched, &on_request);
         watch(socket.clone(), &watched, &on_request);
-        drop(listener.accept().unwrap());
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+        for (id, result) in [(1, &[0x92, 0x07, 0x80][..]), (2, &[0xc0])] {
+            nvim::decode(&mut reader, 0).unwrap();
+            stream.write_all(&[0x94, 0x01, id, 0xc0]).unwrap();
+            stream.write_all(result).unwrap();
+        }
+        let mut notice = vec![0x93, 0x02];
+        nvim::encode(&nvim::Arg::Text("termleaf_cursor"), &mut notice);
+        notice.push(0x92);
+        nvim::encode(&nvim::Arg::Text("/tmp/thesis/ch5.tex"), &mut notice);
+        notice.push(0x0c);
+        stream.write_all(&notice).unwrap();
+        assert_eq!(
+            received.recv_timeout(Duration::from_secs(5)),
+            Ok(Request {
+                file: PathBuf::from("/tmp/thesis/ch5.tex"),
+                line: 12,
+                editor: Some("nvim"),
+            })
+        );
+        drop((stream, reader));
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while watched.lock().unwrap().contains(&socket) {
             assert!(std::time::Instant::now() < deadline, "still watched");

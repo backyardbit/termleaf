@@ -717,14 +717,14 @@ mod tests {
             let mut reader = BufReader::new(stream.try_clone().unwrap());
             let mut writer = stream;
             let mut calls = Vec::new();
-            let info = Value::Array(vec![Value::Integer(7), Value::Map(Vec::new())]);
-            for result in [info, Value::Nil] {
-                let Ok(Value::Array(request)) = decode(&mut reader, 0) else {
-                    panic!("no request");
-                };
-                let [_, id, Value::Text(method), params] = request.as_slice() else {
-                    panic!("an odd request");
-                };
+            let mut results = vec![
+                Value::Nil,
+                Value::Array(vec![Value::Integer(7), Value::Map(Vec::new())]),
+            ];
+            while let Some(result) = results.pop()
+                && let Ok(Value::Array(request)) = decode(&mut reader, 0)
+                && let [_, id, Value::Text(method), params] = request.as_slice()
+            {
                 calls.push((method.clone(), params.clone()));
                 let mut out = Vec::new();
                 write(
@@ -770,16 +770,32 @@ mod tests {
     }
 
     #[test]
-    fn follow_needs_a_channel_from_neovim() {
-        for info in [Value::Nil, Value::Array(Vec::new())] {
-            let (socket, server) = serve(move |_| Some(Ok(info.clone())));
+    fn follow_needs_a_channel_and_a_neovim_that_runs_the_autocmds() {
+        let answers: [fn(&str) -> Answer; 3] = [
+            |_| Some(Ok(Value::Nil)),
+            |_| Some(Ok(Value::Array(Vec::new()))),
+            |method| match method {
+                "nvim_get_api_info" => Some(Ok(Value::Array(vec![Value::Integer(7)]))),
+                _ => Some(Err(text("E5108: vim.uv is nil"))),
+            },
+        ];
+        let failures = answers.map(|answer| {
+            let (socket, server) = serve(answer);
             let failed = follow(&socket, |_, _| panic!("no cursor was sent"))
                 .unwrap_err()
                 .to_string();
             server.join().unwrap();
             std::fs::remove_file(socket).unwrap();
-            assert!(failed.starts_with("nvim_get_api_info gave no "), "{failed}");
-        }
+            failed
+        });
+        assert_eq!(
+            failures,
+            [
+                "nvim_get_api_info gave no list",
+                "nvim_get_api_info gave no channel",
+                "nvim: E5108: vim.uv is nil",
+            ]
+        );
     }
 
     #[test]
