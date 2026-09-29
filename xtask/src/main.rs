@@ -1,6 +1,7 @@
 mod e2e;
 mod herdr;
 mod jumps;
+mod kitty;
 mod pane_shell;
 mod screen;
 mod tmux;
@@ -56,8 +57,11 @@ fn main() -> ExitCode {
         Some("plain") => jumps::run(&workspace_root(), jumps::Backend::Plain),
         Some("zellij") => jumps::run(&workspace_root(), jumps::Backend::Zellij),
         Some("screen") => jumps::run(&workspace_root(), jumps::Backend::Screen),
+        Some("kitty") => jumps::run(&workspace_root(), jumps::Backend::Kitty),
         _ => {
-            eprintln!("usage: cargo xtask <lint|check|e2e|xterm|tmux|herdr|plain|zellij|screen>");
+            eprintln!(
+                "usage: cargo xtask <lint|check|e2e|xterm|tmux|herdr|plain|zellij|screen|kitty>"
+            );
             eprintln!("  lint   run the anti-slop source checks");
             eprintln!("  check  run fmt, clippy, tests and lint");
             eprintln!(
@@ -80,6 +84,9 @@ fn main() -> ExitCode {
             );
             eprintln!(
                 "  screen jump nvim, vim and hx from termleaf in a headless GNU screen (needs screen, tmux and the editors)"
+            );
+            eprintln!(
+                "  kitty  jump nvim, vim and hx from termleaf between kitty windows over remote control (needs kitty, a display and the editors)"
             );
             ExitCode::FAILURE
         }
