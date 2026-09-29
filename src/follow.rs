@@ -180,6 +180,7 @@ fn remove_on_signals(socket: PathBuf) {
 pub struct Follow {
     off: bool,
     start: Option<Box<dyn FnOnce()>>,
+    syncing: bool,
     parked: Option<Request>,
     focused: bool,
     reloading: bool,
@@ -206,6 +207,7 @@ impl Follow {
         if !self.off
             && let Some(start) = self.start.take()
         {
+            self.syncing = true;
             start();
         }
     }
@@ -266,9 +268,10 @@ impl Follow {
             self.parked = Some(request);
             return;
         }
-        if self.focused {
+        if self.focused && !self.syncing {
             return;
         }
+        self.syncing = false;
         self.show(request, viewer, inverse);
     }
 
@@ -632,7 +635,7 @@ mod tests {
     }
 
     #[test]
-    fn editors_are_looked_for_once_follow_is_first_on() {
+    fn editors_are_looked_for_once_follow_is_first_on_and_their_first_line_beats_focus() {
         let starts = std::rc::Rc::new(std::cell::Cell::new(0));
         let counter = |starts: &std::rc::Rc<std::cell::Cell<u32>>| {
             let starts = std::rc::Rc::clone(starts);
@@ -641,6 +644,13 @@ mod tests {
         let mut scene = Scene::new("start", 5);
         scene.follow = Follow::new(false).starting(counter(&starts));
         assert_eq!(starts.get(), 0);
+        scene.follow.focus(true);
+        scene.follow.toggle(&mut scene.viewer, &mut scene.inverse);
+        assert_eq!(starts.get(), 1);
+        scene.request("chapters/intro.tex", 35);
+        assert_eq!(scene.viewer.page(), 2);
+        scene.request("chapters/method.tex", 10);
+        assert_eq!(scene.viewer.page(), 2);
         for _ in 0..2 {
             scene.follow.toggle(&mut scene.viewer, &mut scene.inverse);
             scene.follow.toggle(&mut scene.viewer, &mut scene.inverse);
