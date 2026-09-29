@@ -163,6 +163,11 @@ pub struct Placeholders {
 
 impl Widget for Placeholders {
     fn render(self, area: Rect, buffer: &mut Buffer) {
+        let [_, red, green, blue] = self.id.0.to_be_bytes();
+        let colours = format!(
+            "\x1b[38;2;{red};{green};{blue}m\x1b[58;2;0;0;{}m",
+            self.placement.id()
+        );
         let mut symbol = String::new();
         for y in 0..area.height {
             let Some(row) = diacritic(self.first_row.saturating_add(y)) else {
@@ -176,9 +181,11 @@ impl Widget for Placeholders {
                     continue;
                 };
                 symbol.clear();
+                symbol.push_str(&colours);
                 symbol.push(PLACEHOLDER);
                 symbol.push(row);
                 symbol.push(column);
+                symbol.push_str("\x1b[39;59m");
                 cell.set_symbol(&symbol)
                     .set_fg(self.id.colour())
                     .set_style(
@@ -649,6 +656,27 @@ mod tests {
     }
 
     #[test]
+    fn placeholders_keep_their_ids_when_no_color_strips_colours() {
+        use ratatui::backend::{Backend, CrosstermBackend};
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 1, 1));
+        Placeholders {
+            id: ImageId(0x0001_0203),
+            placement: Placement::Stretched,
+            first_column: 0,
+            first_row: 0,
+        }
+        .render(Rect::new(0, 0, 1, 1), &mut buffer);
+        crossterm::style::force_color_output(false);
+        let mut written = Vec::new();
+        CrosstermBackend::new(&mut written)
+            .draw(buffer.content().iter().map(|cell| (0, 0, cell)))
+            .unwrap();
+        let written = String::from_utf8(written).unwrap();
+        let placeholder = written.find(PLACEHOLDER).unwrap();
+        assert!(written[..placeholder].ends_with("\x1b[38;2;1;2;3m\x1b[58;2;0;0;2m"));
+    }
+
+    #[test]
     fn delete_frees_the_image_data() {
         assert_eq!(delete(ImageId::first()), "\x1b_Gq=2,a=d,d=I,i=1\x1b\\");
     }
@@ -660,7 +688,11 @@ mod tests {
     }
 
     fn marks(buffer: &Buffer, x: u16, y: u16) -> Vec<char> {
-        buffer[(x, y)].symbol().chars().collect()
+        buffer[(x, y)]
+            .symbol()
+            .chars()
+            .filter(|mark| !mark.is_ascii())
+            .collect()
     }
 
     #[test]
