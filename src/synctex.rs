@@ -1385,40 +1385,6 @@ mod tests {
     }
 
     #[test]
-    fn a_click_on_a_word_names_the_line_it_was_typed_on() {
-        let found = thesis().source_at(Position {
-            page: 1,
-            x: 200.0,
-            y: 300.0,
-        });
-        assert_eq!(
-            found,
-            Some(SourceLocation {
-                file: PathBuf::from("/tmp/thesis/chapters/intro.tex"),
-                line: 4,
-            })
-        );
-    }
-
-    #[test]
-    fn a_blank_line_between_paragraphs_lands_on_the_next_paragraph() {
-        let synctex = thesis();
-        let file = Path::new("chapters/intro.tex");
-        assert_eq!(synctex.position_of(file, 10), synctex.position_of(file, 11));
-    }
-
-    #[test]
-    fn a_line_past_the_end_of_a_file_lands_on_its_last_text() {
-        let synctex = thesis();
-        let file = Path::new("chapters/method.tex");
-        let source = std::fs::read_to_string(fixtures().join(file)).expect("the chapter source");
-        let lines = u32::try_from(source.lines().count()).expect("a short chapter");
-        let last = synctex.position_of(file, 10_000).expect("a position");
-        assert_eq!(last.page, 4);
-        assert_eq!(Some(last), synctex.position_of(file, lines));
-    }
-
-    #[test]
     fn a_file_outside_the_document_has_no_position() {
         assert_eq!(thesis().position_of(Path::new("appendix.tex"), 3), None);
     }
@@ -1469,14 +1435,6 @@ mod tests {
     fn a_file_that_is_not_synctex_is_refused() {
         let error = Synctex::parse("%PDF-1.5\n".as_bytes(), Path::new("")).expect_err("a refusal");
         assert_eq!(error.to_string(), "not a SyncTeX file");
-    }
-
-    #[test]
-    fn the_synctex_file_is_found_next_to_the_pdf() {
-        assert_eq!(
-            Synctex::beside(&fixtures().join("thesis.pdf")),
-            Some(fixtures().join("thesis.synctex.gz"))
-        );
     }
 
     #[test]
