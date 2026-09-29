@@ -656,6 +656,27 @@ mod tests {
     }
 
     #[test]
+    fn placeholders_keep_their_ids_when_no_color_strips_colours() {
+        use ratatui::backend::{Backend, CrosstermBackend};
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 1, 1));
+        Placeholders {
+            id: ImageId(0x0001_0203),
+            placement: Placement::Stretched,
+            first_column: 0,
+            first_row: 0,
+        }
+        .render(Rect::new(0, 0, 1, 1), &mut buffer);
+        crossterm::style::force_color_output(false);
+        let mut written = Vec::new();
+        CrosstermBackend::new(&mut written)
+            .draw(buffer.content().iter().map(|cell| (0, 0, cell)))
+            .unwrap();
+        let written = String::from_utf8(written).unwrap();
+        let placeholder = written.find(PLACEHOLDER).unwrap();
+        assert!(written[..placeholder].ends_with("\x1b[38;2;1;2;3m\x1b[58;2;0;0;2m"));
+    }
+
+    #[test]
     fn delete_frees_the_image_data() {
         assert_eq!(delete(ImageId::first()), "\x1b_Gq=2,a=d,d=I,i=1\x1b\\");
     }
