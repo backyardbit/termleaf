@@ -46,6 +46,7 @@ const ZOOM_SETTLE: Duration = Duration::from_millis(150);
 
 pub struct Options {
     pub pinch: bool,
+    pub follow: bool,
     pub graphics: Choice,
 }
 
@@ -142,7 +143,7 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
     let mut app = App {
         file_name: display_name(&path),
         inverse: Inverse::new(&path, Box::new(Jumper::default())),
-        follow: Follow::default(),
+        follow: Follow::new(options.follow),
         viewer: Viewer::new(pages, cell, pane),
         keys: KeyParser::default(),
         gestures: Gestures::default(),
@@ -443,6 +444,17 @@ impl App {
                 .position_under(at.or_else(|| self.gestures.pointer()));
             self.inverse.search(position, now);
             return Flow::Continue;
+        }
+        match command {
+            Command::ToggleFollow => {
+                self.follow.toggle(&mut self.viewer, &mut self.inverse);
+                return Flow::Continue;
+            }
+            Command::SetFollow(on) => {
+                self.follow.set(on, &mut self.viewer, &mut self.inverse);
+                return Flow::Continue;
+            }
+            _ => {}
         }
         let scale = self.viewer.view().layout.scale();
         self.viewer.apply(command);
@@ -1327,6 +1339,18 @@ mod tests {
         column: 30,
         row: 20,
     };
+
+    #[test]
+    fn capital_f_and_the_follow_commands_switch_follow_off_and_on() {
+        let (mut app, _inbox) = headless_app_for(&thesis(), THESIS_PANE);
+        app.handle(Event::Key(Key::Char('F')));
+        assert_eq!(app.status(), "page 1/5 · doc.pdf · follow off");
+        for key in ":follow".chars() {
+            app.handle(Event::Key(Key::Char(key)));
+        }
+        app.handle(Event::Key(Key::Enter));
+        assert_eq!(app.status(), "page 1/5 · doc.pdf");
+    }
 
     #[test]
     fn a_follow_request_waits_for_a_reload_and_is_dropped_while_focused() {

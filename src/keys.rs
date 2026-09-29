@@ -37,6 +37,8 @@ pub enum Command {
     ToggleFit(ScreenCell),
     Click(ScreenCell),
     Inverse(Option<ScreenCell>),
+    ToggleFollow,
+    SetFollow(bool),
     Quit,
 }
 
@@ -93,6 +95,7 @@ impl KeyParser {
                     's' => Some(Command::FitWidth),
                     'a' => Some(Command::FitPage),
                     'e' => Some(Command::Inverse(None)),
+                    'F' => Some(Command::ToggleFollow),
                     'q' => Some(Command::Quit),
                     _ => None,
                 }
@@ -148,6 +151,8 @@ fn parse_command_line(line: &str) -> Option<Command> {
     match line.trim() {
         "q" | "quit" => Some(Command::Quit),
         "$" => Some(Command::Last),
+        "follow" => Some(Command::SetFollow(true)),
+        "nofollow" => Some(Command::SetFollow(false)),
         number => number.parse().ok().map(Command::GoTo),
     }
 }
@@ -168,6 +173,18 @@ mod tests {
             })
             .filter_map(|key| parser.feed(key))
             .collect()
+    }
+
+    #[test]
+    fn capital_f_and_the_follow_commands_switch_follow() {
+        assert_eq!(
+            run("F:nofollow\n:follow\n"),
+            [
+                Command::ToggleFollow,
+                Command::SetFollow(false),
+                Command::SetFollow(true)
+            ]
+        );
     }
 
     #[test]

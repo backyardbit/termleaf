@@ -147,6 +147,7 @@ fn show(
     input::spawn_input(events);
     let font = picker.font_size();
     let mut app = App::new(Parts {
+        follow: options.follow,
         file_name: path.file_name().map_or_else(
             || path.display().to_string(),
             |name| name.to_string_lossy().into_owned(),

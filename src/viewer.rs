@@ -88,7 +88,8 @@ impl Viewer {
                 self.fit(zoom, Some(at));
             }
             Command::Click(at) => self.follow_link(at),
-            Command::Inverse(_) | Command::Quit => {}
+            Command::Inverse(_) | Command::ToggleFollow | Command::SetFollow(_) | Command::Quit => {
+            }
         }
     }
 

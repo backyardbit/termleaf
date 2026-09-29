@@ -22,7 +22,7 @@ use std::process::ExitCode;
 
 use crate::graphics::Choice;
 
-const USAGE: &str = "usage: termleaf [--no-pinch] [--graphics <protocol>] <file.pdf>
+const USAGE: &str = "usage: termleaf [--no-pinch] [--no-follow] [--graphics <protocol>] <file.pdf>
        termleaf --follow <file.tex>:<line>[:<column>]
 
 Shows a PDF in the terminal and reloads it whenever the file changes.
@@ -33,6 +33,7 @@ keys:
   :<n>         go to page n
   + / -        zoom in / out (= also zooms in)
   s / a        fit width / fit page
+  F            follow the editor on / off (also :follow and :nofollow)
   q, Ctrl-C    quit
 
 mouse:
@@ -49,6 +50,7 @@ membership of the `input` group on Linux; without it, pinch stays off.
 
 options:
   --no-pinch              never read the trackpad from the OS
+  --no-follow             start with follow off (F turns it on)
   --graphics <protocol>   auto (the default), or kitty, sixel or iterm2 to use
                           that protocol whatever the terminal reports
   --follow <place>        show that source line in every termleaf whose PDF
@@ -61,6 +63,7 @@ enum Invocation {
     View {
         path: PathBuf,
         pinch: bool,
+        follow: bool,
         graphics: Choice,
     },
     Follow(follow::Place),
@@ -69,12 +72,14 @@ enum Invocation {
 
 fn parse(arguments: &[String]) -> Invocation {
     let mut pinch = true;
+    let mut follow = true;
     let mut graphics = Choice::Auto;
     let mut rest = Vec::new();
     let mut arguments = arguments.iter().map(String::as_str);
     while let Some(argument) = arguments.next() {
         match argument {
             "--no-pinch" => pinch = false,
+            "--no-follow" => follow = false,
             "--graphics" => match arguments.next().and_then(Choice::parse) {
                 Some(choice) => graphics = choice,
                 None => return Invocation::Misused,
@@ -89,6 +94,7 @@ fn parse(arguments: &[String]) -> Invocation {
         [path] if !path.starts_with('-') => Invocation::View {
             path: PathBuf::from(path),
             pinch,
+            follow,
             graphics,
         },
         _ => Invocation::Misused,
@@ -109,8 +115,16 @@ fn main() -> ExitCode {
         Invocation::View {
             path,
             pinch,
+            follow,
             graphics,
-        } => (path, app::Options { pinch, graphics }),
+        } => (
+            path,
+            app::Options {
+                pinch,
+                follow,
+                graphics,
+            },
+        ),
         Invocation::Follow(place) => {
             let file = std::path::absolute(&place.file).unwrap_or(place.file);
             let directory = follow::directory(|name| std::env::var(name).ok());
@@ -151,6 +165,7 @@ mod tests {
             Invocation::View {
                 path: PathBuf::from("thesis.pdf"),
                 pinch: true,
+                follow: true,
                 graphics: Choice::Auto,
             }
         );
@@ -161,6 +176,7 @@ mod tests {
         let expected = Invocation::View {
             path: PathBuf::from("thesis.pdf"),
             pinch: false,
+            follow: true,
             graphics: Choice::Auto,
         };
         assert_eq!(run(&["--no-pinch", "thesis.pdf"]), expected);
@@ -168,10 +184,23 @@ mod tests {
     }
 
     #[test]
+    fn no_follow_starts_with_follow_off_on_either_side_of_the_file() {
+        let expected = Invocation::View {
+            path: PathBuf::from("thesis.pdf"),
+            pinch: true,
+            follow: false,
+            graphics: Choice::Auto,
+        };
+        assert_eq!(run(&["--no-follow", "thesis.pdf"]), expected);
+        assert_eq!(run(&["thesis.pdf", "--no-follow"]), expected);
+    }
+
+    #[test]
     fn graphics_forces_a_protocol_on_either_side_of_the_file() {
         let expected = Invocation::View {
             path: PathBuf::from("thesis.pdf"),
             pinch: false,
+            follow: true,
             graphics: Choice::Force(Protocol::Kitty),
         };
         assert_eq!(
