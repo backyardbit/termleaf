@@ -262,6 +262,16 @@ mod tests {
         fs::remove_dir_all(&root).expect("cleanup");
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ps_knows_our_own_working_directory() {
+        let ps = Ps::read().expect("ps runs");
+        assert_eq!(
+            ps.cwd(Pid(std::process::id())),
+            std::env::current_dir().ok()
+        );
+    }
+
     #[test]
     fn ps_agrees_with_the_system_about_our_own_process() {
         let ps = Ps::read().expect("ps runs");
@@ -274,7 +284,6 @@ mod tests {
                 .any(|child| child.pid() == pid)
         );
         assert!(!ps.arguments(pid).is_empty());
-        assert_eq!(ps.cwd(pid), None);
         assert!(ps.listening_sockets(pid).is_empty());
         assert!(ps.environment(pid).is_empty());
     }
