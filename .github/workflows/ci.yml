@@ -22,6 +22,27 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo xtask check
 
+  follow-macos:
+    name: follow (macos-latest)
+    runs-on: macos-latest
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install tmux, Neovim and Helix
+        run: |
+          brew install tmux neovim helix
+          tmux -V
+          vim --version | head -n 1
+          nvim --version | head -n 1
+          hx --version
+      - uses: Swatinem/rust-cache@v2
+      - name: vim with the follow snippet, nvim and hx with no config and termleaf --follow move termleaf once per page, even after a lone focus-in
+        run: cargo xtask follow
+
   kitty-untouched:
     runs-on: ubuntu-latest
     steps:
@@ -103,7 +124,7 @@ jobs:
         run: xvfb-run --auto-servernum --server-args="-screen 0 1400x900x24" cargo xtask kitty
       - name: Alt+click, Ctrl+click and e jump nvim, vim and hx between WezTerm panes
         run: cargo xtask wezterm
-      - name: vim with the follow snippet, nvim and hx with no config and termleaf --follow move termleaf once per page
+      - name: vim with the follow snippet, nvim and hx with no config and termleaf --follow move termleaf once per page, even after a lone focus-in
         run: cargo xtask follow
       - if: always()
         uses: actions/upload-artifact@v4

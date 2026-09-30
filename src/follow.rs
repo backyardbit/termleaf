@@ -180,9 +180,16 @@ fn remove_on_signals(socket: PathBuf) {
 #[derive(Default)]
 struct Reading {
     focused: bool,
+    focus_out_seen: bool,
     off: bool,
     sync: bool,
     generation: u64,
+}
+
+impl Reading {
+    fn has_focus(&self) -> bool {
+        self.focused && self.focus_out_seen
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -213,7 +220,10 @@ impl Gate {
     }
 
     fn focus(&self, focused: bool) {
-        self.change(|reading| reading.focused = focused);
+        self.change(|reading| {
+            reading.focused = focused;
+            reading.focus_out_seen |= !focused;
+        });
     }
 
     pub fn synced(&self) {
@@ -229,11 +239,16 @@ impl Gate {
                 generation: 0,
             },
             |reading| Glance {
-                open: !reading.focused && !reading.off,
+                open: !reading.has_focus() && !reading.off,
                 sync: reading.sync,
                 generation: reading.generation,
             },
         )
+    }
+
+    fn has_focus(&self) -> bool {
+        let (reading, _) = &*self.0;
+        reading.lock().is_ok_and(|reading| reading.has_focus())
     }
 
     pub fn wait(&self, glance: Glance, until: Option<Instant>) {
@@ -269,7 +284,6 @@ pub struct Follow {
     start: Option<Box<dyn FnOnce(Gate)>>,
     syncing: bool,
     parked: Option<Request>,
-    focused: bool,
     reloading: bool,
     held: Option<Request>,
     last_page: Option<usize>,
@@ -323,7 +337,6 @@ impl Follow {
     }
 
     pub fn focus(&mut self, focused: bool) {
-        self.focused = focused;
         self.gate.focus(focused);
     }
 
@@ -357,7 +370,7 @@ impl Follow {
             self.parked = Some(request);
             return;
         }
-        if self.focused && !self.syncing {
+        if self.gate.has_focus() && !self.syncing {
             return;
         }
         self.syncing = false;
@@ -677,12 +690,29 @@ mod tests {
         assert_eq!(scene.viewer.page(), 0);
         scene.reloaded();
         assert_eq!(scene.viewer.page(), 3);
+        scene.follow.focus(false);
         scene.follow.focus(true);
         scene.request("chapters/intro.tex", 5);
         assert_eq!(scene.viewer.page(), 3);
         scene.follow.focus(false);
         scene.request("chapters/intro.tex", 5);
         assert_eq!(scene.viewer.page(), 1);
+    }
+
+    #[test]
+    fn a_lone_focus_in_keeps_follow_reading_until_a_focus_out_is_seen() {
+        let mut scene = Scene::new("lone", 5);
+        let gate = scene.follow.gate.clone();
+        scene.follow.focus(true);
+        assert!(gate.glance().open);
+        scene.request("chapters/intro.tex", 35);
+        scene.request("chapters/method.tex", 10);
+        assert_eq!(scene.viewer.page(), 3);
+        scene.follow.focus(false);
+        scene.follow.focus(true);
+        assert!(!gate.glance().open);
+        scene.request("chapters/intro.tex", 35);
+        assert_eq!(scene.viewer.page(), 3);
     }
 
     #[test]
@@ -733,6 +763,7 @@ mod tests {
         let mut scene = Scene::new("start", 5);
         scene.follow = Follow::new(false).starting(counter(&starts));
         assert_eq!(starts.get(), 0);
+        scene.follow.focus(false);
         scene.follow.focus(true);
         scene.follow.toggle(&mut scene.viewer, &mut scene.inverse);
         assert_eq!(starts.get(), 1);
@@ -761,6 +792,7 @@ mod tests {
             let slot = std::rc::Rc::clone(&slot);
             move |gate| *slot.borrow_mut() = Some(gate)
         });
+        scene.follow.focus(false);
         scene.follow.focus(true);
         scene.follow.toggle(&mut scene.viewer, &mut scene.inverse);
         let gate: Gate = slot.borrow().clone().unwrap();

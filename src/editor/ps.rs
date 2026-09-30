@@ -100,6 +100,42 @@ fn nvim_sockets(runtime: Option<&Path>, temporary: &Path, user: &str, pid: Pid) 
         .collect()
 }
 
+#[cfg(target_os = "macos")]
+fn working_directory(pid: Pid) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let pid = libc::c_int::try_from(pid.0).ok()?;
+    let size = libc::c_int::try_from(std::mem::size_of::<libc::proc_vnodepathinfo>()).ok()?;
+    // SAFETY: proc_vnodepathinfo is plain C data made of integers and character arrays, for which all zero bytes are a valid value.
+    let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
+    // SAFETY: the buffer is a live proc_vnodepathinfo and size is its exact size, which is what PROC_PIDVNODEPATHINFO fills in.
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDVNODEPATHINFO,
+            0,
+            std::ptr::from_mut(&mut info).cast(),
+            size,
+        )
+    };
+    if written != size {
+        return None;
+    }
+    let path: Vec<u8> = info
+        .pvi_cdir
+        .vip_path
+        .iter()
+        .flatten()
+        .map(|character| character.to_ne_bytes()[0])
+        .take_while(|byte| *byte != 0)
+        .collect();
+    (!path.is_empty()).then(|| PathBuf::from(std::ffi::OsStr::from_bytes(&path)))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn working_directory(_pid: Pid) -> Option<PathBuf> {
+    None
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Ps {
     entries: Vec<Entry>,
@@ -162,8 +198,8 @@ impl ProcessTable for Ps {
             .unwrap_or_default()
     }
 
-    fn cwd(&self, _pid: Pid) -> Option<PathBuf> {
-        None
+    fn cwd(&self, pid: Pid) -> Option<PathBuf> {
+        working_directory(pid)
     }
 
     fn listening_sockets(&self, pid: Pid) -> Vec<PathBuf> {
@@ -262,6 +298,16 @@ mod tests {
         fs::remove_dir_all(&root).expect("cleanup");
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ps_knows_our_own_working_directory() {
+        let ps = Ps::read().expect("ps runs");
+        assert_eq!(
+            ps.cwd(Pid(std::process::id())),
+            std::env::current_dir().ok()
+        );
+    }
+
     #[test]
     fn ps_agrees_with_the_system_about_our_own_process() {
         let ps = Ps::read().expect("ps runs");
@@ -274,7 +320,6 @@ mod tests {
                 .any(|child| child.pid() == pid)
         );
         assert!(!ps.arguments(pid).is_empty());
-        assert_eq!(ps.cwd(pid), None);
         assert!(ps.listening_sockets(pid).is_empty());
         assert!(ps.environment(pid).is_empty());
     }
