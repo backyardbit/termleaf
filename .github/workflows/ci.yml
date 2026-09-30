@@ -70,6 +70,8 @@ jobs:
         run: cargo xtask tmux
       - name: Alt+click, Ctrl+click and e jump nvim, vim and hx in herdr
         run: cargo xtask herdr
+      - name: Alt+click jumps nvim over its socket with no multiplexer
+        run: cargo xtask plain
       - if: always()
         uses: actions/upload-artifact@v4
         with:

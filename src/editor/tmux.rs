@@ -94,6 +94,10 @@ impl Multiplexer for Tmux {
             self.run(&[send_command(pane, input)?]).map(drop)
         }
     }
+
+    fn reveal(&self, pane: &str) -> Result<()> {
+        self.run(&[leave_mode(target(pane)?)]).map(drop)
+    }
 }
 
 pub fn parse_panes(listing: &[String]) -> Vec<Pane> {
@@ -134,12 +138,14 @@ fn quote(argument: &str) -> Result<String> {
     Ok(format!("'{argument}'"))
 }
 
+fn leave_mode(pane: &str) -> String {
+    format!("if-shell -F -t {pane} '#{{pane_in_mode}}' 'copy-mode -q -t {pane}'")
+}
+
 pub fn send_command(pane: &str, input: &[u8]) -> Result<String> {
     let pane = target(pane)?;
     let text = std::str::from_utf8(input).context("tmux sends UTF-8 text")?;
-    let mut commands = vec![format!(
-        "if-shell -F -t {pane} '#{{pane_in_mode}}' 'copy-mode -q -t {pane}'"
-    )];
+    let mut commands = vec![leave_mode(pane)];
     let mut rest = text;
     while !rest.is_empty() {
         let ascii = rest.find(|c: char| !c.is_ascii()).unwrap_or(rest.len());
@@ -380,6 +386,14 @@ mod tests {
         tmux.send(&pane, b"pasted\r", true)
             .expect("tmux pastes a buffer");
         assert!(wait_for(&tmux, &pane, "pasted"));
+        tmux.run(&[format!("copy-mode -t {pane}")])
+            .expect("tmux enters copy mode");
+        tmux.reveal(&pane).expect("tmux leaves copy mode");
+        assert_eq!(
+            tmux.run(&[format!("display-message -p -t {pane} '#{{pane_in_mode}}'")])
+                .expect("tmux reports the mode"),
+            ["0"]
+        );
         assert!(tmux.send("%99", b"x", false).is_err());
         tmux.send(&pane, b"", false)
             .expect("empty input sends nothing");

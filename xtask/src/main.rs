@@ -50,8 +50,9 @@ fn main() -> ExitCode {
         Some("xterm") => xterm::run(&workspace_root()),
         Some("tmux") => jumps::run(&workspace_root(), jumps::Backend::Tmux),
         Some("herdr") => jumps::run(&workspace_root(), jumps::Backend::Herdr),
+        Some("plain") => jumps::run(&workspace_root(), jumps::Backend::Plain),
         _ => {
-            eprintln!("usage: cargo xtask <lint|check|e2e|xterm|tmux|herdr>");
+            eprintln!("usage: cargo xtask <lint|check|e2e|xterm|tmux|herdr|plain>");
             eprintln!("  lint   run the anti-slop source checks");
             eprintln!("  check  run fmt, clippy, tests and lint");
             eprintln!(
@@ -65,6 +66,9 @@ fn main() -> ExitCode {
             );
             eprintln!(
                 "  herdr  jump nvim, vim and hx from termleaf in a headless herdr (needs herdr, tmux and the editors)"
+            );
+            eprintln!(
+                "  plain  jump nvim over its socket with no multiplexer around termleaf (needs tmux as a pty host and nvim)"
             );
             ExitCode::FAILURE
         }

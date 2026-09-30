@@ -222,10 +222,19 @@ impl ProcessTable for Procfs {
     fn own_uid(&self) -> Option<u32> {
         parse_uid(&fs::read_to_string(self.root.join("self/status")).ok()?)
     }
+
+    fn foreground_leaders(&self) -> Vec<Process> {
+        self.stats()
+            .filter(|stat| stat.foreground_group == Some(stat.pid))
+            .filter_map(|stat| self.complete(stat))
+            .collect()
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::net::UnixListener;
+
     use super::*;
 
     #[test]
@@ -289,6 +298,17 @@ mod tests {
                 .iter()
                 .any(|child| child.pid() == pid)
         );
-        assert!(procfs.listening_sockets(pid).is_empty());
+        let socket = std::env::temp_dir().join(format!("termleaf-procfs-{}.sock", pid.0));
+        let _ = fs::remove_file(&socket);
+        let listener = UnixListener::bind(&socket).expect("a listening socket");
+        assert!(procfs.listening_sockets(pid).contains(&socket));
+        drop(listener);
+        fs::remove_file(&socket).expect("cleanup");
+        assert!(
+            procfs
+                .foreground_leaders()
+                .iter()
+                .all(|leader| leader.foreground_group == Some(leader.pid()))
+        );
     }
 }

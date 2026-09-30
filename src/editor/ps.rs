@@ -176,6 +176,14 @@ impl ProcessTable for Ps {
         self.process(Pid(std::process::id()))
             .map(|process| process.uid)
     }
+
+    fn foreground_leaders(&self) -> Vec<Process> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.process.foreground_group == Some(entry.process.pid()))
+            .map(|entry| entry.process.clone())
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -200,6 +208,13 @@ mod tests {
             Some(None)
         );
         assert_eq!(ps.children(Pid(378_223)).len(), 1);
+        assert_eq!(
+            ps.foreground_leaders()
+                .iter()
+                .map(Process::pid)
+                .collect::<Vec<_>>(),
+            [Pid(378_223)]
+        );
     }
 
     #[test]
