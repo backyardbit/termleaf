@@ -12,6 +12,7 @@ use ratatui::text::Line;
 use ratatui::widgets::Widget;
 use ratatui::{DefaultTerminal, Frame};
 
+use crate::follow::{Follow, Request};
 use crate::inverse::{Editors, Inverse};
 use crate::keys::{Command, Key, KeyParser};
 use crate::layout::{CellSize, Pane, View};
@@ -46,6 +47,7 @@ pub enum Event {
     Renderer(Response),
     Tile(RenderKey, RgbImage),
     Painted(Painting),
+    Follow(Request),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +71,7 @@ struct OnScreen {
 pub struct App {
     file_name: String,
     inverse: Inverse,
+    follow: Follow,
     viewer: Viewer,
     keys: KeyParser,
     gestures: Gestures,
@@ -115,6 +118,7 @@ impl App {
         Self {
             file_name: parts.file_name,
             inverse: Inverse::new(&parts.path, parts.editors),
+            follow: Follow::default(),
             viewer: Viewer::new(parts.pages, parts.cell, parts.pane),
             keys: KeyParser::default(),
             gestures: Gestures::default(),
@@ -210,15 +214,23 @@ impl App {
                     return self.apply_at(command, Instant::now());
                 }
             }
-            Event::Focus(focused) => self.pinch.focus(focused),
+            Event::Focus(focused) => {
+                self.pinch.focus(focused);
+                self.follow.focus(focused);
+            }
             Event::Resized => {}
             Event::FileChanged => {
+                self.follow.reloading();
                 self.reload_retries = 0;
                 self.reload_at = Some(Instant::now() + RELOAD_SETTLE);
             }
             Event::Renderer(response) => self.receive(response),
             Event::Tile(key, image) => self.receive_tile(key, image),
             Event::Painted(painting) => self.receive_painting(painting),
+            Event::Follow(request) => {
+                self.follow
+                    .request(request, &mut self.viewer, &mut self.inverse);
+            }
         }
         Flow::Continue
     }
@@ -429,17 +441,22 @@ impl App {
                 self.inverse.reloaded();
                 self.tiles.forget(|key| key.generation != generation);
                 self.in_flight.clear();
+                self.follow.reloaded(&mut self.viewer, &mut self.inverse);
             }
             Response::Unchanged { generation } if generation == self.requested_generation => {
                 self.reload_retries = 0;
                 self.viewer.unchanged();
                 self.inverse.reloaded();
+                self.follow.reloaded(&mut self.viewer, &mut self.inverse);
             }
             Response::Unreadable { generation } if generation == self.requested_generation => {
                 self.viewer.unreadable();
                 if self.reload_at.is_none() && self.reload_retries < MAX_RELOAD_RETRIES {
                     self.reload_retries += 1;
                     self.reload_at = Some(Instant::now() + RELOAD_RETRY);
+                }
+                if self.reload_at.is_none() {
+                    self.follow.reloaded(&mut self.viewer, &mut self.inverse);
                 }
             }
             Response::Loaded { .. } | Response::Unreadable { .. } | Response::Unchanged { .. } => {}
@@ -502,11 +519,9 @@ impl App {
     }
 
     fn status(&self) -> String {
-        self.viewer.status_line(
-            &self.file_name,
-            self.keys.command_line(),
-            self.inverse.notice(),
-        )
+        let notice = self.follow.beside(self.inverse.notice());
+        self.viewer
+            .status_line(&self.file_name, self.keys.command_line(), notice.as_deref())
     }
 }
 
@@ -850,6 +865,33 @@ mod tests {
         );
         app.handle(Event::Painted(painting));
         assert!(app.outgoing.is_empty());
+    }
+
+    #[test]
+    fn a_follow_request_waits_for_a_reload_and_is_dropped_while_focused() {
+        let (mut app, _inbox) = headless_app(fixture("synctex/thesis.pdf"), PANE);
+        let intro = |line| {
+            Event::Follow(Request {
+                file: PathBuf::from("/tmp/thesis/chapters/intro.tex"),
+                line,
+            })
+        };
+        app.handle(Event::Focus(true));
+        app.handle(intro(35));
+        assert_eq!(app.viewer.page(), 0);
+        app.handle(Event::Focus(false));
+        app.handle(Event::FileChanged);
+        app.handle(intro(35));
+        assert_eq!(app.viewer.page(), 0);
+        app.reload_at = None;
+        app.reload_retries = MAX_RELOAD_RETRIES;
+        app.handle(Event::Renderer(Response::Unreadable { generation: 0 }));
+        assert_eq!(app.viewer.page(), 2);
+        app.handle(Event::FileChanged);
+        app.handle(intro(5));
+        app.handle(Event::Renderer(Response::Unchanged { generation: 0 }));
+        assert_eq!(app.viewer.page(), 1);
+        assert!(app.status().contains(" · follow: intro.tex:5"));
     }
 
     #[test]

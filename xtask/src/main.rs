@@ -1,4 +1,5 @@
 mod e2e;
+mod follow;
 mod herdr;
 mod jumps;
 mod kitty;
@@ -60,9 +61,10 @@ fn main() -> ExitCode {
         Some("screen") => jumps::run(&workspace_root(), jumps::Backend::Screen),
         Some("kitty") => jumps::run(&workspace_root(), jumps::Backend::Kitty),
         Some("wezterm") => jumps::run(&workspace_root(), jumps::Backend::Wezterm),
+        Some("follow") => follow::run(&workspace_root()),
         _ => {
             eprintln!(
-                "usage: cargo xtask <lint|check|e2e|xterm|tmux|herdr|plain|zellij|screen|kitty|wezterm>"
+                "usage: cargo xtask <lint|check|e2e|xterm|tmux|herdr|plain|zellij|screen|kitty|wezterm|follow>"
             );
             eprintln!("  lint   run the anti-slop source checks");
             eprintln!("  check  run fmt, clippy, tests and lint");
@@ -92,6 +94,9 @@ fn main() -> ExitCode {
             );
             eprintln!(
                 "  wezterm jump nvim, vim and hx from termleaf between panes of a headless WezTerm mux server (needs wezterm, wezterm-mux-server and the editors)"
+            );
+            eprintln!(
+                "  follow move termleaf with vim and the follow snippet, and with termleaf --follow, in a headless tmux (needs tmux and vim)"
             );
             ExitCode::FAILURE
         }
