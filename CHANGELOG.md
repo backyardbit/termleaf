@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.1
+
+- Follow no longer stops after a focus-in that no focus-out follows. termleaf used to treat itself as focused from then on and ignore every editor position after the first, for Neovim, Helix, the Vim snippet and `termleaf --follow`, on every OS. termleaf now trusts focus reports only after it has seen a focus-out (#39).
+- Helix follow works on macOS. termleaf couldn't read Helix's working directory there, so it never watched a Helix pane (#39).
+- CI runs the follow end-to-end tests on macOS too (#39).
+
 ## v0.2.0
 
 ### Sixel and iTerm2 images
