@@ -30,11 +30,8 @@ pub fn run(root: &Path) -> ExitCode {
 fn scenario(root: &Path) -> Outcome<()> {
     let termleaf = jumps::build(root)?;
     let work = jumps::prepare(root, "follow")?;
-    fs::copy(
-        root.join("tests/fixtures/snippet.vim"),
-        work.join("snippet.vim"),
-    )
-    .map_err(|error| format!("copying the snippet: {error}"))?;
+    fs::copy(root.join("contrib/termleaf.vim"), work.join("termleaf.vim"))
+        .map_err(|error| format!("copying the snippet: {error}"))?;
     let sockets = work.join("run");
     let server = tmux::start(&work, &termleaf, false)?;
     let env = format!("env XDG_RUNTIME_DIR='{}'", sockets.display());
@@ -49,7 +46,7 @@ fn scenario(root: &Path) -> Outcome<()> {
     server.keys(&server.viewer, &["Escape"])?;
     server.respawn(
         &server.editor,
-        &format!("{env} vim -u DEFAULTS -i NONE -S snippet.vim chapters/method.tex"),
+        &format!("{env} vim -u DEFAULTS -i NONE -S termleaf.vim chapters/method.tex"),
         &work,
     )?;
     let status = server.wait_for_status("vim to open method.tex", |status| {
