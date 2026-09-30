@@ -9,6 +9,7 @@ homepage = "https://github.com/backyardbit/termleaf"
 readme = "README.md"
 keywords = ["pdf", "viewer", "terminal", "latex", "tui"]
 categories = ["command-line-utilities", "visualization"]
+exclude = ["docs/", ".github/", "AGENTS.md"]
 
 [dependencies]
 anyhow = "1"
