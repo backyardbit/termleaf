@@ -21,6 +21,7 @@ use ratatui_image::picker::{Capability, Picker};
 
 use crate::encoder::{self, Encoded, Encoder, Job, Wanted};
 use crate::graphics::{self, Choice, Protocol};
+use crate::inverse::Inverse;
 use crate::keys::{Command, Key, KeyParser, ScreenCell};
 use crate::kitty::{self, CellGrid, ImageId, Payload, Placeholders, Placement};
 use crate::layout::{CellSize, Pane, RenderedTile, Stretched, StretchedGrid, View};
@@ -127,6 +128,7 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
     let pane = pane_of(page_area(terminal.get_frame().area()));
     let mut app = App {
         file_name: display_name(&path),
+        inverse: Inverse::new(&path),
         viewer: Viewer::new(pages, cell, pane),
         keys: KeyParser::default(),
         gestures: Gestures::default(),
@@ -222,6 +224,13 @@ fn translate_mouse(mouse: MouseEvent) -> Option<MouseInput> {
         })
     };
     match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left)
+            if mouse
+                .modifiers
+                .intersects(KeyModifiers::ALT | KeyModifiers::CONTROL) =>
+        {
+            Some(MouseInput::ModifierPress(at))
+        }
         MouseEventKind::Down(MouseButton::Left) => Some(MouseInput::Press(at)),
         MouseEventKind::Drag(MouseButton::Left) => Some(MouseInput::Drag(at)),
         MouseEventKind::Up(MouseButton::Left) => Some(MouseInput::Release(at)),
@@ -278,6 +287,7 @@ struct App {
     keys: KeyParser,
     gestures: Gestures,
     pinch: PinchGate,
+    inverse: Inverse,
     renderer: Renderer,
     encoder: Encoder,
     wanted: Wanted,
@@ -313,6 +323,7 @@ impl App {
                 now,
             );
             self.prepare_frame(now);
+            self.inverse.expire(now);
             if self.may_transmit(now) {
                 self.resize_settles_at = None;
                 self.flush(terminal)?;
@@ -340,11 +351,16 @@ impl App {
         if self.shelf_waits {
             return Duration::ZERO;
         }
-        [self.reload_at, self.resize_settles_at, self.zooming_until]
-            .into_iter()
-            .flatten()
-            .min()
-            .map_or(IDLE_WAIT, |at| at.saturating_duration_since(now))
+        [
+            self.reload_at,
+            self.resize_settles_at,
+            self.zooming_until,
+            self.inverse.notice_ends(),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .map_or(IDLE_WAIT, |at| at.saturating_duration_since(now))
     }
 
     fn handle(&mut self, event: Event) -> Flow {
@@ -397,6 +413,13 @@ impl App {
     fn apply_at(&mut self, command: Command, now: Instant) -> Flow {
         if command == Command::Quit {
             return Flow::Quit;
+        }
+        if let Command::Inverse(at) = command {
+            let position = self
+                .viewer
+                .position_under(at.or_else(|| self.gestures.pointer()));
+            self.inverse.search(position, now);
+            return Flow::Continue;
         }
         let scale = self.viewer.view().layout.scale();
         self.viewer.apply(command);
@@ -467,6 +490,7 @@ impl App {
                 self.generation = generation;
                 self.reload_retries = 0;
                 self.viewer.reloaded(pages);
+                self.inverse.reloaded();
                 let shown = self.shown.as_ref().map(|shown| shown.generation);
                 self.forget_tiles(|key| {
                     key.generation != generation && Some(key.generation) != shown
@@ -477,6 +501,7 @@ impl App {
             Response::Unchanged { generation } if generation == self.requested_generation => {
                 self.reload_retries = 0;
                 self.viewer.unchanged();
+                self.inverse.reloaded();
             }
             Response::Unreadable { generation } if generation == self.requested_generation => {
                 self.viewer.unreadable();
@@ -716,13 +741,21 @@ impl App {
             }
         }
 
-        let status = self
-            .viewer
-            .status_line(&self.file_name, self.keys.command_line());
         frame.render_widget(
-            Line::styled(status, Style::default().add_modifier(Modifier::REVERSED)),
+            Line::styled(
+                self.status(),
+                Style::default().add_modifier(Modifier::REVERSED),
+            ),
             status_area,
         );
+    }
+
+    fn status(&self) -> String {
+        self.viewer.status_line(
+            &self.file_name,
+            self.keys.command_line(),
+            self.inverse.notice(),
+        )
     }
 }
 
@@ -758,14 +791,20 @@ mod tests {
     };
 
     fn headless_app(pane: Pane) -> (App, Receiver<Event>) {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/three-pages.pdf");
+        headless_app_for(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/three-pages.pdf"),
+            pane,
+        )
+    }
+
+    fn headless_app_for(path: &Path, pane: Pane) -> (App, Receiver<Event>) {
         let (events, inbox) = mpsc::channel();
         let (jobs, queued) = encoder::queue();
         let wanted = Wanted::default();
         let renderer = {
             let events = events.clone();
             Renderer::spawn(
-                path,
+                path.to_path_buf(),
                 move |response| {
                     let _ = events.send(Event::Renderer(response));
                 },
@@ -787,6 +826,7 @@ mod tests {
             keys: KeyParser::default(),
             gestures: Gestures::default(),
             pinch: PinchGate::default(),
+            inverse: Inverse::new(path),
             renderer,
             encoder,
             wanted,
@@ -1246,6 +1286,62 @@ mod tests {
         assert!(!app.outgoing.contains("a=T"));
     }
 
+    fn thesis() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/synctex/thesis.pdf")
+    }
+
+    const THESIS_PANE: Pane = Pane {
+        columns: 80,
+        rows: 30,
+    };
+
+    const ON_INTRO: ScreenCell = ScreenCell {
+        column: 30,
+        row: 20,
+    };
+
+    #[test]
+    fn alt_click_names_the_source_under_the_pointer() {
+        let (mut app, _inbox) = headless_app_for(&thesis(), THESIS_PANE);
+        app.handle(Event::Key(Key::Char('j')));
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: ON_INTRO.column,
+            row: ON_INTRO.row,
+            modifiers: KeyModifiers::ALT,
+        };
+        app.handle(Event::Mouse(translate_mouse(mouse).unwrap()));
+        app.handle(Event::Mouse(MouseInput::Release(ON_INTRO)));
+        assert_eq!(app.status(), "page 2/5 · doc.pdf · intro.tex:4");
+    }
+
+    #[test]
+    fn a_pdf_without_synctex_data_says_how_to_build_it() {
+        let (mut app, _inbox) = headless_app(THESIS_PANE);
+        app.handle(Event::Mouse(MouseInput::Hover(ON_INTRO)));
+        app.handle(Event::Key(Key::Char('e')));
+        assert_eq!(
+            app.status(),
+            "page 1/3 · doc.pdf · no SyncTeX data: build with -synctex=1"
+        );
+    }
+
+    #[test]
+    fn e_beside_the_page_says_there_is_no_source() {
+        let (mut app, _inbox) = headless_app_for(&thesis(), THESIS_PANE);
+        app.handle(Event::Key(Key::Char('a')));
+        app.handle(Event::Mouse(MouseInput::Hover(ScreenCell {
+            column: 0,
+            row: 5,
+        })));
+        app.handle(Event::Key(Key::Char('e')));
+        assert!(
+            app.status().ends_with(" · no source here"),
+            "{}",
+            app.status()
+        );
+    }
+
     #[test]
     fn the_status_row_is_kept_out_of_the_page_area() {
         assert_eq!(page_area(Rect::new(0, 0, 80, 24)), Rect::new(0, 0, 80, 23));
@@ -1267,6 +1363,28 @@ mod tests {
                 sideways: false,
                 at: ScreenCell { column: 3, row: 4 },
             })
+        );
+    }
+
+    #[test]
+    fn alt_and_control_presses_become_inverse_gestures() {
+        let press = |modifiers| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 7,
+            row: 9,
+            modifiers,
+        };
+        assert_eq!(
+            translate_mouse(press(KeyModifiers::ALT)),
+            Some(MouseInput::ModifierPress(ScreenCell { column: 7, row: 9 }))
+        );
+        assert_eq!(
+            translate_mouse(press(KeyModifiers::CONTROL)),
+            Some(MouseInput::ModifierPress(ScreenCell { column: 7, row: 9 }))
+        );
+        assert_eq!(
+            translate_mouse(press(KeyModifiers::NONE)),
+            Some(MouseInput::Press(ScreenCell { column: 7, row: 9 }))
         );
     }
 

@@ -71,6 +71,12 @@ fn scenario(root: &Path) -> Outcome<()> {
     ])?;
     session.step("start", "page 1/3 · doc.pdf", Page::Changed)?;
 
+    session.send("e")?;
+    session.wait_for_status("the missing SyncTeX hint", |status| {
+        status == "page 1/3 · doc.pdf · no SyncTeX data: build with -synctex=1"
+    })?;
+    println!("ok   e-without-synctex-data: build hint");
+
     session.send(&WHEEL_DOWN.repeat(80))?;
     session.step(
         "wheel-scrolls-into-page-two",
@@ -124,6 +130,35 @@ fn scenario(root: &Path) -> Outcome<()> {
         Page::Changed,
     )?;
 
+    copy(&fixtures.join("synctex/thesis.pdf"), &doc)?;
+    copy(
+        &fixtures.join("synctex/thesis.synctex.gz"),
+        &work.join("doc.synctex.gz"),
+    )?;
+    session.wait_for_status("the thesis to load", |status| status.contains("/5 · "))?;
+    session.send("s")?;
+    session.wait_for_status("fit width on the thesis", |status| {
+        status.contains("/5 · doc.pdf") && !status.contains("fit page")
+    })?;
+    for (label, trigger) in [
+        ("alt-click", ALT_CLICK),
+        ("control-click", CONTROL_CLICK),
+        ("e-at-the-pointer", "e"),
+    ] {
+        session.send(trigger)?;
+        session.wait_for_status(
+            &format!("{label} to name a source line"),
+            names_a_source_line,
+        )?;
+        println!(
+            "ok   {label}: {}",
+            status_line(&session.screen()).unwrap_or_default()
+        );
+        session.wait_for_status("the source line to leave the status bar", |status| {
+            !status.contains(".tex:")
+        })?;
+    }
+
     session.send("q")?;
     session.wait_for_status("termleaf to quit", |status| !status.contains("doc.pdf"))?;
     Ok(())
@@ -131,6 +166,8 @@ fn scenario(root: &Path) -> Outcome<()> {
 
 const WHEEL_DOWN: &str = "\x1b[<65;40;10M";
 const CONTROL_WHEEL_UP: &str = "\x1b[<80;40;10M";
+const ALT_CLICK: &str = "\x1b[<8;40;10M\x1b[<8;40;10m";
+const CONTROL_CLICK: &str = "\x1b[<16;40;12M\x1b[<16;40;12m";
 const DOUBLE_CLICK: &str = "\x1b[<0;40;10M\x1b[<0;40;10m\x1b[<0;40;10M\x1b[<0;40;10m";
 
 fn copy(from: &Path, to: &Path) -> Outcome<()> {
@@ -303,6 +340,13 @@ pub fn first_pane_id(pane_list_json: &str) -> Option<String> {
 
 pub fn status_line(screen: &str) -> Option<&str> {
     screen.lines().map(str::trim).rfind(|line| !line.is_empty())
+}
+
+pub fn names_a_source_line(status: &str) -> bool {
+    status
+        .rsplit_once(" · ")
+        .and_then(|(_, notice)| notice.rsplit_once(".tex:"))
+        .is_some_and(|(_, line)| !line.is_empty() && line.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 pub fn page_is_drawn(screenshot: &RgbImage) -> bool {
@@ -524,6 +568,13 @@ mod tests {
     #[test]
     fn a_blank_screen_has_no_status_line() {
         assert_eq!(status_line("\n  \n"), None);
+    }
+
+    #[test]
+    fn a_status_ending_in_a_tex_line_names_a_source_line() {
+        assert!(names_a_source_line(
+            "page 2/5 · doc.pdf · chapters/intro.tex:4"
+        ));
     }
 
     #[test]

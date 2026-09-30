@@ -18,6 +18,7 @@ pub enum Wheel {
 pub enum MouseInput {
     Hover(ScreenCell),
     Press(ScreenCell),
+    ModifierPress(ScreenCell),
     Drag(ScreenCell),
     Release(ScreenCell),
     Wheel {
@@ -31,7 +32,11 @@ pub enum MouseInput {
 impl MouseInput {
     pub fn at(self) -> ScreenCell {
         match self {
-            Self::Hover(at) | Self::Press(at) | Self::Drag(at) | Self::Release(at) => at,
+            Self::Hover(at)
+            | Self::Press(at)
+            | Self::ModifierPress(at)
+            | Self::Drag(at)
+            | Self::Release(at) => at,
             Self::Wheel { at, .. } => at,
         }
     }
@@ -42,16 +47,23 @@ struct Press {
     last: ScreenCell,
     dragged: bool,
     double: bool,
+    inverse: bool,
 }
 
 #[derive(Debug, Default)]
 pub struct Gestures {
     press: Option<Press>,
     last_click: Option<(ScreenCell, Instant)>,
+    pointer: Option<ScreenCell>,
 }
 
 impl Gestures {
+    pub fn pointer(&self) -> Option<ScreenCell> {
+        self.pointer
+    }
+
     pub fn feed(&mut self, input: MouseInput, now: Instant) -> Option<Command> {
+        self.pointer = Some(input.at());
         match input {
             MouseInput::Wheel {
                 direction,
@@ -68,11 +80,22 @@ impl Gestures {
                     last: at,
                     dragged: false,
                     double,
+                    inverse: false,
                 });
                 if double {
                     self.last_click = None;
                     return Some(Command::ToggleFit(at));
                 }
+                None
+            }
+            MouseInput::ModifierPress(at) => {
+                self.last_click = None;
+                self.press = Some(Press {
+                    last: at,
+                    dragged: false,
+                    double: false,
+                    inverse: true,
+                });
                 None
             }
             MouseInput::Drag(at) => {
@@ -91,6 +114,9 @@ impl Gestures {
                 let press = self.press.take()?;
                 if press.dragged || press.double {
                     return None;
+                }
+                if press.inverse {
+                    return Some(Command::Inverse(Some(at)));
                 }
                 self.last_click = Some((at, now));
                 Some(Command::Click(at))

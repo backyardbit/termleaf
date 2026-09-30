@@ -1,6 +1,7 @@
 mod app;
 mod encoder;
 mod graphics;
+mod inverse;
 mod keys;
 mod kitty;
 mod layout;
@@ -14,7 +15,7 @@ mod shelf;
     not(test),
     expect(
         dead_code,
-        reason = "inverse and forward search call the parser in the next PRs of the stack"
+        reason = "forward search calls the parser in a later PR of the stack"
     )
 )]
 mod synctex;

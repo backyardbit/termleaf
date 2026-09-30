@@ -61,6 +61,13 @@ fn translate_mouse(mouse: MouseEvent) -> Option<MouseInput> {
         })
     };
     match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left)
+            if mouse
+                .modifiers
+                .intersects(KeyModifiers::ALT | KeyModifiers::CONTROL) =>
+        {
+            Some(MouseInput::ModifierPress(at))
+        }
         MouseEventKind::Down(MouseButton::Left) => Some(MouseInput::Press(at)),
         MouseEventKind::Drag(MouseButton::Left) => Some(MouseInput::Drag(at)),
         MouseEventKind::Up(MouseButton::Left) => Some(MouseInput::Release(at)),
@@ -70,5 +77,36 @@ fn translate_mouse(mouse: MouseEvent) -> Option<MouseInput> {
         MouseEventKind::ScrollRight => wheel(Wheel::Right),
         MouseEventKind::Moved => Some(MouseInput::Hover(at)),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn press(modifiers: KeyModifiers) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 3,
+            row: 4,
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn alt_and_control_presses_become_inverse_gestures() {
+        let at = ScreenCell { column: 3, row: 4 };
+        assert_eq!(
+            translate_mouse(press(KeyModifiers::ALT)),
+            Some(MouseInput::ModifierPress(at))
+        );
+        assert_eq!(
+            translate_mouse(press(KeyModifiers::CONTROL)),
+            Some(MouseInput::ModifierPress(at))
+        );
+        assert_eq!(
+            translate_mouse(press(KeyModifiers::NONE)),
+            Some(MouseInput::Press(at))
+        );
     }
 }

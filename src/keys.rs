@@ -36,6 +36,7 @@ pub enum Command {
     FitPage,
     ToggleFit(ScreenCell),
     Click(ScreenCell),
+    Inverse(Option<ScreenCell>),
     Quit,
 }
 
@@ -91,6 +92,7 @@ impl KeyParser {
                     '-' => Some(zoom(repeat, -1)),
                     's' => Some(Command::FitWidth),
                     'a' => Some(Command::FitPage),
+                    'e' => Some(Command::Inverse(None)),
                     'q' => Some(Command::Quit),
                     _ => None,
                 }

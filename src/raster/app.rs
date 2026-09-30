@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
@@ -11,6 +12,7 @@ use ratatui::text::Line;
 use ratatui::widgets::Widget;
 use ratatui::{DefaultTerminal, Frame};
 
+use crate::inverse::Inverse;
 use crate::keys::{Command, Key, KeyParser};
 use crate::layout::{CellSize, Pane, View};
 use crate::mouse::{Gestures, MouseInput};
@@ -66,6 +68,7 @@ struct OnScreen {
 
 pub struct App {
     file_name: String,
+    inverse: Inverse,
     viewer: Viewer,
     keys: KeyParser,
     gestures: Gestures,
@@ -96,6 +99,7 @@ pub struct App {
 
 pub struct Parts {
     pub file_name: String,
+    pub path: PathBuf,
     pub pages: Vec<PageInfo>,
     pub cell: CellSize,
     pub pane: Pane,
@@ -109,6 +113,7 @@ impl App {
     pub fn new(parts: Parts) -> Self {
         Self {
             file_name: parts.file_name,
+            inverse: Inverse::new(&parts.path),
             viewer: Viewer::new(parts.pages, parts.cell, parts.pane),
             keys: KeyParser::default(),
             gestures: Gestures::default(),
@@ -151,6 +156,7 @@ impl App {
                 now,
             );
             self.prepare_frame(now);
+            self.inverse.expire(now);
             self.flush(terminal)?;
             terminal.draw(|frame| self.draw(frame))?;
             let first = match inbox.recv_timeout(self.idle_wait(Instant::now())) {
@@ -177,6 +183,7 @@ impl App {
             self.resize_settles_at,
             self.zooming_until,
             self.paint_due,
+            self.inverse.notice_ends(),
         ]
         .into_iter()
         .flatten()
@@ -236,6 +243,13 @@ impl App {
     fn apply_at(&mut self, command: Command, now: Instant) -> Flow {
         if command == Command::Quit {
             return Flow::Quit;
+        }
+        if let Command::Inverse(at) = command {
+            let position = self
+                .viewer
+                .position_under(at.or_else(|| self.gestures.pointer()));
+            self.inverse.search(position, now);
+            return Flow::Continue;
         }
         let scale = self.viewer.view().layout.scale();
         self.viewer.apply(command);
@@ -411,12 +425,14 @@ impl App {
                 self.generation = generation;
                 self.reload_retries = 0;
                 self.viewer.reloaded(pages);
+                self.inverse.reloaded();
                 self.tiles.forget(|key| key.generation != generation);
                 self.in_flight.clear();
             }
             Response::Unchanged { generation } if generation == self.requested_generation => {
                 self.reload_retries = 0;
                 self.viewer.unchanged();
+                self.inverse.reloaded();
             }
             Response::Unreadable { generation } if generation == self.requested_generation => {
                 self.viewer.unreadable();
@@ -471,17 +487,25 @@ impl App {
         let area = frame.area();
         let pages = page_area(area);
         frame.render_widget(PaintedElsewhere, pages);
-        let status = self
-            .viewer
-            .status_line(&self.file_name, self.keys.command_line());
         frame.render_widget(
-            Line::styled(status, Style::default().add_modifier(Modifier::REVERSED)),
+            Line::styled(
+                self.status(),
+                Style::default().add_modifier(Modifier::REVERSED),
+            ),
             Rect {
                 y: area.y + pages.height,
                 height: area.height.min(1),
                 ..area
             },
         );
+    }
+
+    fn status(&self) -> String {
+        self.viewer.status_line(
+            &self.file_name,
+            self.keys.command_line(),
+            self.inverse.notice(),
+        )
     }
 }
 
@@ -564,7 +588,7 @@ mod tests {
             let responses = events.clone();
             let tiles = events.clone();
             Renderer::spawn(
-                path,
+                path.clone(),
                 move |response| {
                     let _ = responses.send(Event::Renderer(response));
                 },
@@ -582,6 +606,7 @@ mod tests {
         };
         let app = App::new(Parts {
             file_name: "doc.pdf".to_owned(),
+            path,
             pages,
             cell: CELL,
             pane,
@@ -822,6 +847,23 @@ mod tests {
         );
         app.handle(Event::Painted(painting));
         assert!(app.outgoing.is_empty());
+    }
+
+    #[test]
+    fn a_modifier_click_names_the_source_until_the_notice_expires() {
+        let (mut app, _inbox) = headless_app(fixture("synctex/thesis.pdf"), PANE);
+        app.handle(Event::Key(Key::Char('j')));
+        let on_intro = crate::keys::ScreenCell {
+            column: 30,
+            row: 20,
+        };
+        app.handle(Event::Mouse(MouseInput::ModifierPress(on_intro)));
+        app.handle(Event::Mouse(MouseInput::Release(on_intro)));
+        assert_eq!(app.status(), "page 2/5 · doc.pdf · intro.tex:4");
+        let now = Instant::now();
+        assert!(app.idle_wait(now) <= Duration::from_secs(4));
+        app.inverse.expire(now + Duration::from_secs(4));
+        assert_eq!(app.status(), "page 2/5 · doc.pdf");
     }
 
     #[test]
