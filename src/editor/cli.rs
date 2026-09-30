@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -9,6 +9,7 @@ const REPLY_WITHIN: Duration = Duration::from_secs(2);
 
 pub trait Cli {
     fn run(&self, program: &str, arguments: &[String]) -> Result<String>;
+    fn feed(&self, program: &str, arguments: &[String], input: &[u8]) -> Result<String>;
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -26,41 +27,59 @@ fn drain(stream: Option<impl Read + Send + 'static>) -> thread::JoinHandle<Vec<u
 
 impl Cli for SystemCli {
     fn run(&self, program: &str, arguments: &[String]) -> Result<String> {
-        let mut child = Command::new(program)
-            .args(arguments)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .with_context(|| format!("could not run {program}"))?;
-        let stdout = drain(child.stdout.take());
-        let stderr = drain(child.stderr.take());
-        let deadline = Instant::now() + REPLY_WITHIN;
-        let status = loop {
-            if let Some(status) = child.try_wait()? {
-                break status;
-            }
-            if Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                bail!(
-                    "{program} did not answer within {} s",
-                    REPLY_WITHIN.as_secs()
-                );
-            }
-            thread::sleep(Duration::from_millis(1));
-        };
-        let stdout = stdout.join().unwrap_or_default();
-        let stderr = stderr.join().unwrap_or_default();
-        if !status.success() {
+        execute(program, arguments, None)
+    }
+
+    fn feed(&self, program: &str, arguments: &[String], input: &[u8]) -> Result<String> {
+        execute(program, arguments, Some(input))
+    }
+}
+
+fn execute(program: &str, arguments: &[String], input: Option<&[u8]>) -> Result<String> {
+    let mut child = Command::new(program)
+        .args(arguments)
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("could not run {program}"))?;
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
+    if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+        let input = input.to_vec();
+        thread::spawn(move || {
+            let _ = stdin.write_all(&input);
+        });
+    }
+    let deadline = Instant::now() + REPLY_WITHIN;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
             bail!(
-                "{program} {} failed: {}",
-                arguments.join(" "),
-                String::from_utf8_lossy(&stderr).trim()
+                "{program} did not answer within {} s",
+                REPLY_WITHIN.as_secs()
             );
         }
-        Ok(String::from_utf8_lossy(&stdout).into_owned())
+        thread::sleep(Duration::from_millis(1));
+    };
+    let stdout = stdout.join().unwrap_or_default();
+    let stderr = stderr.join().unwrap_or_default();
+    if !status.success() {
+        bail!(
+            "{program} {} failed: {}",
+            arguments.join(" "),
+            String::from_utf8_lossy(&stderr).trim()
+        );
     }
+    Ok(String::from_utf8_lossy(&stdout).into_owned())
 }
 
 pub fn owned(arguments: &[&str]) -> Vec<String> {
@@ -87,6 +106,7 @@ pub mod fake {
     #[derive(Default)]
     pub struct FakeCli {
         calls: RefCell<Vec<Vec<String>>>,
+        fed: RefCell<Vec<Vec<u8>>>,
         replies: Vec<(Vec<String>, Reply)>,
     }
 
@@ -113,6 +133,10 @@ pub mod fake {
         pub fn calls(&self) -> Vec<Vec<String>> {
             self.calls.borrow().clone()
         }
+
+        pub fn fed(&self) -> Vec<Vec<u8>> {
+            self.fed.borrow().clone()
+        }
     }
 
     impl Cli for FakeCli {
@@ -134,6 +158,11 @@ pub mod fake {
                 }
             }
         }
+
+        fn feed(&self, program: &str, arguments: &[String], input: &[u8]) -> Result<String> {
+            self.fed.borrow_mut().push(input.to_vec());
+            self.run(program, arguments)
+        }
     }
 }
 
@@ -149,6 +178,13 @@ mod tests {
                 .expect("sh runs"),
             "a b"
         );
+    }
+
+    #[test]
+    fn fed_bytes_reach_the_program_unchanged() {
+        let bytes = b"\x1c\x0e:drop /t/my\\ thesis/ch5.tex | 77\r";
+        let echoed = SystemCli.feed("cat", &[], bytes).expect("cat runs");
+        assert_eq!(echoed.as_bytes(), bytes);
     }
 
     #[test]

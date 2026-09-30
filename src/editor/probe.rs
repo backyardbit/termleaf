@@ -49,13 +49,6 @@ pub trait Multiplexer {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Anchor {
     Process(Pid),
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "WezTerm names its panes by tty in a later PR of the stack"
-        )
-    )]
     Tty(PathBuf),
 }
 

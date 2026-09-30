@@ -69,13 +69,6 @@ pub struct Layer {
 }
 
 impl Layer {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the kitty adapter shows the hint in a later PR of the stack"
-        )
-    )]
     pub fn hint(&self) -> Option<&'static str> {
         match (self.kind, &self.control) {
             (MultiplexerKind::Kitty, None) => Some("kitty remote control is off"),

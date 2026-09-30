@@ -3,6 +3,7 @@ mod detect;
 mod evidence;
 mod herdr;
 mod inject;
+mod kitty;
 #[cfg(test)]
 mod live;
 mod nvim;
@@ -15,6 +16,7 @@ mod ps;
 mod safety;
 mod screen;
 mod tmux;
+mod wezterm;
 mod zellij;
 
 use std::path::{Path, PathBuf};
@@ -24,6 +26,7 @@ use detect::{Environment, MultiplexerKind, ProcessEnvironment, detect};
 use evidence::{OnDisk, neovim_socket};
 use herdr::Herdr;
 use inject::{Failure, inject};
+use kitty::Kitty;
 use nvim::{Rpc, RpcError, Socket};
 use probe::{
     Candidate, Choice, Editor, EditorKind, LoadedFiles, Multiplexer, Refusal, Wanted, candidates,
@@ -33,6 +36,7 @@ use process::{Pid, ProcessTable, ancestors};
 use safety::recheck;
 use screen::Screen;
 use tmux::Tmux;
+use wezterm::Wezterm;
 use zellij::Zellij;
 
 use crate::inverse::Editors;
@@ -244,7 +248,20 @@ impl Jumper {
                     let screen = Screen::new(&SystemCli, &table, session);
                     jump_with(&screen, &table, own, wanted, &loaded, &rpc)
                 }
-                Some(_) => continue,
+                Some((MultiplexerKind::Kitty, Some(control), _)) => {
+                    let kitty = Kitty::new(&SystemCli, control);
+                    jump_with(&kitty, &table, own, wanted, &loaded, &rpc)
+                }
+                Some((MultiplexerKind::Wezterm, _, _)) => {
+                    let wezterm = Wezterm::new(&SystemCli, env.var("WEZTERM_EXECUTABLE_DIR"));
+                    jump_with(&wezterm, &table, own, wanted, &loaded, &rpc)
+                }
+                Some(_) => {
+                    if let Some(hint) = layer.and_then(|layer| layer.hint()) {
+                        unavailable.get_or_insert(Jumped::Unavailable(hint.to_owned()));
+                    }
+                    continue;
+                }
                 None => jump_plain(&table, wanted, &loaded, &rpc),
             };
             if !matches!(jumped, Jumped::NotChosen(Choice::NoEditor)) {

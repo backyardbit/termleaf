@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-use crate::{herdr, screen, tmux, zellij};
+use crate::{herdr, kitty, screen, tmux, wezterm, zellij};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -22,6 +22,8 @@ pub enum Backend {
     Plain,
     Zellij,
     Screen,
+    Kitty,
+    Wezterm,
 }
 
 impl Backend {
@@ -32,6 +34,8 @@ impl Backend {
             Self::Plain => "plain",
             Self::Zellij => "zellij",
             Self::Screen => "screen",
+            Self::Kitty => "kitty",
+            Self::Wezterm => "wezterm",
         }
     }
 }
@@ -120,6 +124,8 @@ fn scenario(root: &Path, backend: Backend) -> Outcome<()> {
         Backend::Plain => tmux::start(&work, &termleaf, true)?,
         Backend::Zellij => zellij::start(&work, &termleaf)?,
         Backend::Screen => screen::start(&work, &termleaf)?,
+        Backend::Kitty => kitty::start(&work, &termleaf)?,
+        Backend::Wezterm => wezterm::start(&work, &termleaf)?,
     };
     server.wait_for_status("termleaf to open the thesis", |status| {
         status == "page 1/5 · doc.pdf"
