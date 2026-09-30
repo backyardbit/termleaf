@@ -63,6 +63,10 @@ impl Multiplexer for LiveTmux {
     fn screen(&self, pane: &str) -> Option<String> {
         self.run(&["capture-pane", "-p", "-t", pane]).ok()
     }
+
+    fn send(&self, _pane: &str, _input: &[u8], _paste: bool) -> Result<()> {
+        bail!("the live tmux lister only reads")
+    }
 }
 
 fn locations(env: &impl Environment) -> Vec<SourceLocation> {
@@ -174,7 +178,9 @@ fn probe_every_pane_of_the_live_tmux_session() {
                 location.line,
                 candidate.label()
             ),
-            Choice::NoEditor | Choice::Tie(_) => choice.status(location).unwrap_or_default(),
+            Choice::NoEditor | Choice::Tie(_) => choice
+                .status(&format!("{}:{}", short(&location.file), location.line))
+                .unwrap_or_default(),
         };
         println!("  {text}");
     }
