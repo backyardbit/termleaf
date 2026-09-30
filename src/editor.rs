@@ -1,5 +1,6 @@
 mod detect;
 mod evidence;
+mod herdr;
 mod inject;
 #[cfg(test)]
 mod live;
@@ -14,8 +15,9 @@ mod tmux;
 
 use std::path::{Path, PathBuf};
 
-use detect::{MultiplexerKind, ProcessEnvironment, detect};
+use detect::{Environment, MultiplexerKind, ProcessEnvironment, detect};
 use evidence::OnDisk;
+use herdr::Herdr;
 use inject::{Failure, inject};
 use probe::{
     Choice, LoadedFiles, Multiplexer, Refusal, Wanted, candidates, choose, own_pane, survey,
@@ -104,16 +106,28 @@ impl Jumper {
             return Jumped::NotChosen(Choice::NoEditor);
         };
         let layers = detect(&env, &ancestors(&table, Pid(std::process::id())));
-        let Some((socket, own)) = layers
-            .iter()
-            .find(|layer| layer.kind == MultiplexerKind::Tmux)
-            .and_then(|layer| Some((layer.control.clone()?, layer.own_pane.clone())))
-        else {
-            return Jumped::NotChosen(Choice::NoEditor);
-        };
         let loaded = OnDisk::new(&table, &env);
-        let tmux = self.tmux(&socket, own.as_deref());
-        jump_with(tmux, &table, own.as_deref(), Wanted { at, inputs }, &loaded)
+        let wanted = Wanted { at, inputs };
+        for layer in &layers {
+            let own = layer.own_pane.as_deref();
+            let jumped = match (layer.kind, layer.control.as_deref()) {
+                (MultiplexerKind::Tmux, Some(socket)) => {
+                    jump_with(self.tmux(socket, own), &table, own, wanted, &loaded)
+                }
+                (MultiplexerKind::Herdr, Some(socket)) => {
+                    let program = env
+                        .var("HERDR_BIN_PATH")
+                        .unwrap_or_else(|| "herdr".to_owned());
+                    let herdr = Herdr::new(PathBuf::from(program), socket.to_path_buf());
+                    jump_with(&herdr, &table, own, wanted, &loaded)
+                }
+                _ => continue,
+            };
+            if !matches!(jumped, Jumped::NotChosen(Choice::NoEditor)) {
+                return jumped;
+            }
+        }
+        Jumped::NotChosen(Choice::NoEditor)
     }
 }
 

@@ -2123,6 +2123,7 @@ dependencies = [
  "notify",
  "ratatui",
  "ratatui-image",
+ "serde_json",
 ]
 
 [[package]]
