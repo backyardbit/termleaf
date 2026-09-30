@@ -53,6 +53,7 @@ fn scenario(root: &Path) -> Outcome<()> {
         status.ends_with(" · follow: chapters/method.tex:1")
     })?;
     println!("ok   vim opened method.tex: {status}");
+    lone_focus_in(&server, "vim")?;
 
     flips_once(
         &server,
@@ -191,6 +192,7 @@ fn scenario(root: &Path) -> Outcome<()> {
         "nvim at chapters/method.tex:1",
         "page 3/5",
     )?;
+    lone_focus_in(&server, "nvim")?;
     flips_once(
         &server,
         "nvim 60G then j j j",
@@ -272,6 +274,7 @@ fn scenario(root: &Path) -> Outcome<()> {
         "hx at chapters/method.tex:1",
         "page 3/5",
     )?;
+    lone_focus_in(&server, "hx")?;
     flips_once(
         &server,
         "hx 60G then j j j",
@@ -333,6 +336,12 @@ fn scenario(root: &Path) -> Outcome<()> {
         (!left).then_some(())
     })?;
     println!("ok   termleaf removed its socket when its pane was killed");
+    Ok(())
+}
+
+fn lone_focus_in(server: &Server, editor: &str) -> Outcome<()> {
+    server.text(&server.viewer, "\x1b[I")?;
+    println!("ok   a lone focus-in sent to termleaf before {editor} moves");
     Ok(())
 }
 

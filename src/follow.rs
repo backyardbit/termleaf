@@ -686,6 +686,22 @@ mod tests {
     }
 
     #[test]
+    fn a_lone_focus_in_keeps_follow_reading_until_a_focus_out_is_seen() {
+        let mut scene = Scene::new("lone", 5);
+        let gate = scene.follow.gate.clone();
+        scene.follow.focus(true);
+        assert!(gate.glance().open);
+        scene.request("chapters/intro.tex", 35);
+        scene.request("chapters/method.tex", 10);
+        assert_eq!(scene.viewer.page(), 3);
+        scene.follow.focus(false);
+        scene.follow.focus(true);
+        assert!(!gate.glance().open);
+        scene.request("chapters/intro.tex", 35);
+        assert_eq!(scene.viewer.page(), 3);
+    }
+
+    #[test]
     fn off_keeps_the_newest_request_and_on_shows_it_at_once_even_with_focus() {
         let mut scene = Scene::new("switch", 5);
         scene.follow = Follow::new(false);
