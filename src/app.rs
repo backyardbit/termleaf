@@ -1370,6 +1370,7 @@ mod tests {
                 editor: Some("nvim"),
             })
         };
+        app.handle(Event::Focus(false));
         app.handle(Event::Focus(true));
         app.handle(intro(35));
         assert_eq!(app.viewer.page(), 0);
