@@ -45,6 +45,7 @@ fn scenario(root: &Path) -> Outcome<()> {
     server.wait_for_status("termleaf to open the thesis", |status| {
         status == "page 1/5 · doc.pdf"
     })?;
+    server.keys(&server.viewer, &["Escape"])?;
     server.respawn(
         &server.editor,
         &format!("{env} vim -u DEFAULTS -i NONE -S snippet.vim chapters/method.tex"),
@@ -74,6 +75,35 @@ fn scenario(root: &Path) -> Outcome<()> {
         &server,
         "G",
         || server.text(&server.editor, "G"),
+        "chapters/intro.tex:55",
+        "page 3/5",
+    )?;
+
+    server.keys(&server.viewer, &["F"])?;
+    server.wait_for_status("F to turn follow off", |status| {
+        status == "page 3/5 · doc.pdf · follow off"
+    })?;
+    stays(&server, "vim moving while follow is off", || {
+        server.text(&server.editor, ":e chapters/method.tex\r60G")
+    })?;
+    flips_once(
+        &server,
+        "F again",
+        || server.keys(&server.viewer, &["F"]),
+        "chapters/method.tex:60",
+        "page 5/5",
+    )?;
+    server.text(&server.viewer, ":nofollow\r")?;
+    server.wait_for_status(":nofollow", |status| {
+        status == "page 5/5 · doc.pdf · follow off"
+    })?;
+    stays(&server, "vim moving after :nofollow", || {
+        server.text(&server.editor, ":e chapters/intro.tex\r")
+    })?;
+    flips_once(
+        &server,
+        ":follow",
+        || server.text(&server.viewer, ":follow\r"),
         "chapters/intro.tex:55",
         "page 3/5",
     )?;
@@ -122,6 +152,29 @@ fn scenario(root: &Path) -> Outcome<()> {
         status.starts_with("page 3/5 · ") && status.ends_with(" · follow: chapters/intro.tex:35")
     })?;
     println!("ok   SyncTeX data written after the PDF is read again: {status}");
+
+    server.respawn(
+        &server.viewer,
+        &format!(
+            "{env} '{}' --graphics kitty --no-follow doc.pdf",
+            termleaf.display()
+        ),
+        &work,
+    )?;
+    server.wait_for_status("termleaf --no-follow to open the thesis", |status| {
+        status == "page 1/5 · doc.pdf · follow off"
+    })?;
+    server.keys(&server.viewer, &["Escape"])?;
+    stays(&server, "a follow line under --no-follow", || {
+        client("chapters/method.tex:10")
+    })?;
+    flips_once(
+        &server,
+        "F under --no-follow",
+        || server.keys(&server.viewer, &["F"]),
+        "chapters/method.tex:10",
+        "page 4/5",
+    )?;
 
     server.respawn(&server.viewer, "sleep 86400", &work)?;
     poll("termleaf to remove its socket on SIGHUP", || {
@@ -191,6 +244,21 @@ fn flips_once(
         ));
     }
     println!("ok   {label}: {} → {golden}, once", pages[0]);
+    Ok(())
+}
+
+fn stays(server: &Server, label: &str, act: impl FnOnce() -> Outcome<()>) -> Outcome<()> {
+    let before = server.status();
+    act()?;
+    let started = Instant::now();
+    while started.elapsed() < QUIET_FOR {
+        let status = server.status();
+        if !status.is_empty() && status != before {
+            return Err(format!("{label} changed the status to {status:?}"));
+        }
+        thread::sleep(SAMPLE_EVERY);
+    }
+    println!("ok   {label} leaves termleaf alone: {before}");
     Ok(())
 }
 

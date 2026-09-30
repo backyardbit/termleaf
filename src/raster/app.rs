@@ -101,6 +101,7 @@ pub struct App {
 }
 
 pub struct Parts {
+    pub follow: bool,
     pub file_name: String,
     pub path: PathBuf,
     pub editors: Box<dyn Editors>,
@@ -118,7 +119,7 @@ impl App {
         Self {
             file_name: parts.file_name,
             inverse: Inverse::new(&parts.path, parts.editors),
-            follow: Follow::default(),
+            follow: Follow::new(parts.follow),
             viewer: Viewer::new(parts.pages, parts.cell, parts.pane),
             keys: KeyParser::default(),
             gestures: Gestures::default(),
@@ -263,6 +264,17 @@ impl App {
                 .position_under(at.or_else(|| self.gestures.pointer()));
             self.inverse.search(position, now);
             return Flow::Continue;
+        }
+        match command {
+            Command::ToggleFollow => {
+                self.follow.toggle(&mut self.viewer, &mut self.inverse);
+                return Flow::Continue;
+            }
+            Command::SetFollow(on) => {
+                self.follow.set(on, &mut self.viewer, &mut self.inverse);
+                return Flow::Continue;
+            }
+            _ => {}
         }
         let scale = self.viewer.view().layout.scale();
         self.viewer.apply(command);
@@ -622,6 +634,7 @@ mod tests {
             panic!("the fixture did not load");
         };
         let app = App::new(Parts {
+            follow: true,
             file_name: "doc.pdf".to_owned(),
             path,
             editors: Box::new(StatusOnly),
@@ -865,6 +878,18 @@ mod tests {
         );
         app.handle(Event::Painted(painting));
         assert!(app.outgoing.is_empty());
+    }
+
+    #[test]
+    fn capital_f_and_the_follow_commands_switch_follow_off_and_on() {
+        let (mut app, _inbox) = headless_app(fixture("synctex/thesis.pdf"), PANE);
+        app.handle(Event::Key(Key::Char('F')));
+        assert_eq!(app.status(), "page 1/5 · doc.pdf · follow off");
+        for key in ":follow".chars() {
+            app.handle(Event::Key(Key::Char(key)));
+        }
+        app.handle(Event::Key(Key::Enter));
+        assert_eq!(app.status(), "page 1/5 · doc.pdf");
     }
 
     #[test]

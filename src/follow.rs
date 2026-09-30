@@ -173,6 +173,8 @@ fn remove_on_signals(socket: PathBuf) {
 
 #[derive(Debug, Default)]
 pub struct Follow {
+    off: bool,
+    parked: Option<Request>,
     focused: bool,
     reloading: bool,
     held: Option<Request>,
@@ -181,6 +183,34 @@ pub struct Follow {
 }
 
 impl Follow {
+    pub fn new(on: bool) -> Self {
+        Self {
+            off: !on,
+            ..Self::default()
+        }
+    }
+
+    pub fn toggle(&mut self, viewer: &mut Viewer, inverse: &mut Inverse) {
+        self.set(self.off, viewer, inverse);
+    }
+
+    pub fn set(&mut self, on: bool, viewer: &mut Viewer, inverse: &mut Inverse) {
+        if on != self.off {
+            return;
+        }
+        self.off = !on;
+        if on {
+            self.last_page = None;
+            if let Some(request) = self.parked.take() {
+                if self.reloading {
+                    self.held = Some(request);
+                } else {
+                    self.show(request, viewer, inverse);
+                }
+            }
+        }
+    }
+
     pub fn focus(&mut self, focused: bool) {
         self.focused = focused;
     }
@@ -197,7 +227,12 @@ impl Follow {
     }
 
     pub fn beside(&self, notice: Option<&str>) -> Option<String> {
-        let parts: Vec<&str> = notice.into_iter().chain(self.segment.as_deref()).collect();
+        let segment = if self.off {
+            Some("follow off")
+        } else {
+            self.segment.as_deref()
+        };
+        let parts: Vec<&str> = notice.into_iter().chain(segment).collect();
         (!parts.is_empty()).then(|| parts.join(" · "))
     }
 
@@ -206,9 +241,17 @@ impl Follow {
             self.held = Some(request);
             return;
         }
+        if self.off {
+            self.parked = Some(request);
+            return;
+        }
         if self.focused {
             return;
         }
+        self.show(request, viewer, inverse);
+    }
+
+    fn show(&mut self, request: Request, viewer: &mut Viewer, inverse: &mut Inverse) {
         let (input, target, stale) = match inverse.synctex() {
             Ok((synctex, stale)) => {
                 let wanted = canonical(&request.file);
@@ -514,6 +557,44 @@ mod tests {
         assert_eq!(scene.viewer.page(), 3);
         scene.follow.focus(false);
         scene.request("chapters/intro.tex", 5);
+        assert_eq!(scene.viewer.page(), 1);
+    }
+
+    #[test]
+    fn off_keeps_the_newest_request_and_on_shows_it_at_once_even_with_focus() {
+        let mut scene = Scene::new("switch", 5);
+        scene.follow = Follow::new(false);
+        assert_eq!(scene.segment().as_deref(), Some("follow off"));
+        scene.request("chapters/intro.tex", 35);
+        scene.request("chapters/method.tex", 10);
+        assert_eq!(scene.viewer.page(), 0);
+        assert_eq!(scene.segment().as_deref(), Some("follow off"));
+        scene.follow.focus(true);
+        scene
+            .follow
+            .set(true, &mut scene.viewer, &mut scene.inverse);
+        assert_eq!(scene.viewer.page(), 3);
+        assert_eq!(
+            scene.segment().as_deref(),
+            Some("follow: chapters/method.tex:10")
+        );
+        scene
+            .follow
+            .set(true, &mut scene.viewer, &mut scene.inverse);
+        scene.follow.toggle(&mut scene.viewer, &mut scene.inverse);
+        assert_eq!(scene.segment().as_deref(), Some("follow off"));
+        scene.follow.toggle(&mut scene.viewer, &mut scene.inverse);
+        assert_eq!(
+            scene.segment().as_deref(),
+            Some("follow: chapters/method.tex:10")
+        );
+        scene.follow.toggle(&mut scene.viewer, &mut scene.inverse);
+        scene.request("chapters/intro.tex", 5);
+        scene.follow.reloading();
+        scene.follow.toggle(&mut scene.viewer, &mut scene.inverse);
+        assert_eq!(scene.viewer.page(), 3);
+        scene.follow.focus(false);
+        scene.reloaded();
         assert_eq!(scene.viewer.page(), 1);
     }
 
