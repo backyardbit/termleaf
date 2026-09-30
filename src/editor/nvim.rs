@@ -1,6 +1,6 @@
 use std::io::{self, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -18,6 +18,18 @@ const JUMP: &str = "local file, line = ...
 vim.cmd(\"drop \" .. vim.fn.fnameescape(file))
 vim.api.nvim_win_set_cursor(0, { math.min(line, vim.api.nvim_buf_line_count(0)), 0 })
 vim.cmd(\"normal! zv\")";
+const FOLLOW_DELAY: u64 = 150;
+const FOLLOW: &str = "local chan, delay = ...
+local group = vim.api.nvim_create_augroup(\"termleaf_follow_\" .. chan, { clear = true })
+local timer = vim.uv.new_timer()
+local function send()
+  local ok = pcall(vim.rpcnotify, chan, \"termleaf_cursor\", vim.api.nvim_buf_get_name(0), vim.api.nvim_win_get_cursor(0)[1])
+  if not ok then pcall(vim.api.nvim_del_augroup_by_id, group); timer:stop() end
+end
+vim.api.nvim_create_autocmd({ \"CursorMoved\", \"CursorMovedI\", \"BufEnter\", \"WinEnter\" }, { group = group, callback = function()
+  timer:stop(); timer:start(delay, 0, vim.schedule_wrap(send))
+end })
+timer:start(0, 0, vim.schedule_wrap(send))";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -347,6 +359,41 @@ fn steer(nvim: &mut Client, file: &Path, line: u32) -> Result<(), RpcError> {
     Ok(())
 }
 
+pub fn follow(socket: &Path, on_cursor: impl Fn(PathBuf, u32)) -> Result<()> {
+    let mut nvim = Client::connect(socket)?;
+    let Value::Array(info) = nvim.call("nvim_get_api_info", Vec::new())? else {
+        bail!("nvim_get_api_info gave no list");
+    };
+    let Some(&Value::Integer(channel)) = info.first() else {
+        bail!("nvim_get_api_info gave no channel");
+    };
+    nvim.call(
+        "nvim_exec_lua",
+        vec![
+            Arg::Text(FOLLOW),
+            Arg::List(vec![
+                Arg::Int(u64::try_from(channel)?),
+                Arg::Int(FOLLOW_DELAY),
+            ]),
+        ],
+    )?;
+    nvim.reader.get_ref().set_read_timeout(None)?;
+    loop {
+        if let Value::Array(parts) = decode(&mut nvim.reader, 0)?
+            && let [
+                Value::Integer(2),
+                Value::Text(method),
+                Value::Array(arguments),
+            ] = parts.as_slice()
+            && method == "termleaf_cursor"
+            && let [Value::Text(file), Value::Integer(line)] = arguments.as_slice()
+            && let Ok(line) = u32::try_from(*line)
+        {
+            on_cursor(PathBuf::from(file), line);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
@@ -647,6 +694,113 @@ mod tests {
         let (outcome, methods, _) = jump(|_| None, file);
         assert_eq!(failure(outcome), "could not send: the path is not UTF-8");
         assert!(methods.is_empty());
+    }
+
+    fn notice(method: &str, arguments: Vec<Value>) -> Value {
+        Value::Array(vec![
+            Value::Integer(2),
+            text(method),
+            Value::Array(arguments),
+        ])
+    }
+
+    #[test]
+    fn follow_registers_the_autocmds_and_hands_on_each_cursor_notice() {
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or_default();
+        let socket = std::env::temp_dir().join(format!("termleaf-nvim-follow-{nanos}.sock"));
+        let listener = UnixListener::bind(&socket).unwrap();
+        let (handed, received) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut writer = stream;
+            let mut calls = Vec::new();
+            let mut results = vec![
+                Value::Nil,
+                Value::Array(vec![Value::Integer(7), Value::Map(Vec::new())]),
+            ];
+            while let Some(result) = results.pop()
+                && let Ok(Value::Array(request)) = decode(&mut reader, 0)
+                && let [_, id, Value::Text(method), params] = request.as_slice()
+            {
+                calls.push((method.clone(), params.clone()));
+                let mut out = Vec::new();
+                write(
+                    &Value::Array(vec![Value::Integer(1), id.clone(), Value::Nil, result]),
+                    &mut out,
+                );
+                writer.write_all(&out).unwrap();
+            }
+            let file = text("/tmp/thesis/ch5.tex");
+            let mut out = Vec::new();
+            for message in [
+                notice("redraw", Vec::new()),
+                notice("termleaf_cursor", vec![file.clone(), Value::Integer(-1)]),
+                notice("termleaf_cursor", vec![file, Value::Integer(12)]),
+            ] {
+                write(&message, &mut out);
+            }
+            writer.write_all(&out).unwrap();
+            let _ = received.recv_timeout(Duration::from_secs(5));
+            calls
+        });
+        let seen = std::cell::RefCell::new(Vec::new());
+        let outcome = follow(&socket, |file, line| {
+            seen.borrow_mut().push((file, line));
+            let _ = handed.send(());
+        });
+        let calls = server.join().unwrap();
+        std::fs::remove_file(&socket).unwrap();
+        assert!(outcome.is_err());
+        assert_eq!(
+            seen.into_inner(),
+            [(PathBuf::from("/tmp/thesis/ch5.tex"), 12)]
+        );
+        assert_eq!(
+            calls,
+            [
+                ("nvim_get_api_info".to_owned(), Value::Array(Vec::new())),
+                (
+                    "nvim_exec_lua".to_owned(),
+                    Value::Array(vec![
+                        text(FOLLOW),
+                        Value::Array(vec![Value::Integer(7), Value::Integer(150)]),
+                    ])
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn follow_needs_a_channel_and_a_neovim_that_runs_the_autocmds() {
+        let answers: [fn(&str) -> Answer; 3] = [
+            |_| Some(Ok(Value::Nil)),
+            |_| Some(Ok(Value::Array(Vec::new()))),
+            |method| match method {
+                "nvim_get_api_info" => Some(Ok(Value::Array(vec![Value::Integer(7)]))),
+                _ => Some(Err(text("E5108: vim.uv is nil"))),
+            },
+        ];
+        let failures = answers.map(|answer| {
+            let (socket, server) = serve(answer);
+            let failed = follow(&socket, |_, _| panic!("no cursor was sent"))
+                .unwrap_err()
+                .to_string();
+            server.join().unwrap();
+            std::fs::remove_file(socket).unwrap();
+            failed
+        });
+        assert_eq!(
+            failures,
+            [
+                "nvim_get_api_info gave no list",
+                "nvim_get_api_info gave no channel",
+                "nvim: E5108: vim.uv is nil",
+            ]
+        );
     }
 
     #[test]

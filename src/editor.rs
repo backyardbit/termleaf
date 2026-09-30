@@ -19,7 +19,11 @@ mod tmux;
 mod wezterm;
 mod zellij;
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 use cli::SystemCli;
 use detect::{Environment, MultiplexerKind, ProcessEnvironment, detect};
@@ -39,7 +43,8 @@ use tmux::Tmux;
 use wezterm::Wezterm;
 use zellij::Zellij;
 
-use crate::inverse::Editors;
+use crate::follow::Request;
+use crate::inverse::{Editors, Inverse};
 use crate::synctex::SourceLocation;
 
 #[cfg(target_os = "linux")]
@@ -75,6 +80,9 @@ impl Jumped {
 }
 
 const PLAIN_LABEL: &str = "nvim (rpc)";
+const SCAN_EVERY: Duration = Duration::from_secs(2);
+
+type Watched = Arc<Mutex<HashSet<PathBuf>>>;
 
 fn rpc_target(file: &Path) -> PathBuf {
     std::path::absolute(file).unwrap_or_else(|_| file.to_path_buf())
@@ -181,6 +189,66 @@ pub fn jump_plain(
         Err(RpcError::Failed(failure)) => Jumped::Failed(label, failure),
         Err(RpcError::Unreachable(error)) => Jumped::Failed(label, Failure::Send(error)),
     }
+}
+
+fn neovims_holding(
+    table: &impl ProcessTable,
+    loaded: &impl LoadedFiles,
+    inputs: &[PathBuf],
+) -> Vec<PathBuf> {
+    plain_neovims(table)
+        .into_iter()
+        .filter(|(editor, _)| inputs.iter().any(|input| loaded.holds(editor, input)))
+        .map(|(_, socket)| socket)
+        .collect()
+}
+
+fn watch(
+    socket: PathBuf,
+    watched: &Watched,
+    on_request: &Arc<impl Fn(Request) + Send + Sync + 'static>,
+) {
+    if !watched
+        .lock()
+        .is_ok_and(|mut set| set.insert(socket.clone()))
+    {
+        return;
+    }
+    let watched = Arc::clone(watched);
+    let on_request = Arc::clone(on_request);
+    thread::spawn(move || {
+        let _ = nvim::follow(&socket, |file, line| {
+            on_request(Request {
+                file,
+                line,
+                editor: Some("nvim"),
+            });
+        });
+        if let Ok(mut set) = watched.lock() {
+            set.remove(&socket);
+        }
+    });
+}
+
+pub fn follow_neovims(pdf: PathBuf, on_request: impl Fn(Request) + Send + Sync + 'static) {
+    let on_request = Arc::new(on_request);
+    let watched = Watched::default();
+    thread::spawn(move || {
+        let mut inverse = Inverse::new(&pdf, Box::new(Jumper::default()));
+        loop {
+            let inputs: Vec<PathBuf> = inverse
+                .synctex()
+                .map(|(synctex, _)| synctex.inputs().map(Path::to_path_buf).collect())
+                .unwrap_or_default();
+            if let Ok(table) = system_processes() {
+                let loaded = OnDisk::new(&table, &ProcessEnvironment);
+                for socket in neovims_holding(&table, &loaded, &inputs) {
+                    watch(socket, &watched, &on_request);
+                }
+            }
+            thread::sleep(SCAN_EVERY);
+        }
+    });
 }
 
 #[derive(Default)]
@@ -508,6 +576,68 @@ mod tests {
             "2 editors could take ch5.tex:77"
         );
         assert!(nvim.calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn only_our_neovims_holding_an_input_of_the_pdf_are_followed() {
+        let holds = Holds(vec![
+            (201, "/tmp/thesis/main.tex"),
+            (301, "/tmp/elsewhere.tex"),
+            (400, "/tmp/thesis/main.tex"),
+            (500, "/tmp/thesis/main.tex"),
+            (600, "/tmp/thesis/main.tex"),
+        ]);
+        let inputs = [PathBuf::from("/tmp/thesis/main.tex")];
+        assert_eq!(
+            neovims_holding(&terminals(), &holds, &inputs),
+            [PathBuf::from("/run/user/1000/nvim.202.0")]
+        );
+    }
+
+    #[test]
+    fn a_neovim_is_watched_once_and_its_cursor_is_named_until_it_hangs_up() {
+        use std::io::Write;
+        let socket =
+            std::env::temp_dir().join(format!("termleaf-watch-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&socket);
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let watched = Watched::default();
+        let (sent, received) = std::sync::mpsc::channel();
+        let on_request = Arc::new(move |request: Request| {
+            let _ = sent.send(request);
+        });
+        watch(socket.clone(), &watched, &on_request);
+        watch(socket.clone(), &watched, &on_request);
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+        for (id, result) in [(1, &[0x92, 0x07, 0x80][..]), (2, &[0xc0])] {
+            nvim::decode(&mut reader, 0).unwrap();
+            stream.write_all(&[0x94, 0x01, id, 0xc0]).unwrap();
+            stream.write_all(result).unwrap();
+        }
+        let mut notice = vec![0x93, 0x02];
+        nvim::encode(&nvim::Arg::Text("termleaf_cursor"), &mut notice);
+        notice.push(0x92);
+        nvim::encode(&nvim::Arg::Text("/tmp/thesis/ch5.tex"), &mut notice);
+        notice.push(0x0c);
+        stream.write_all(&notice).unwrap();
+        assert_eq!(
+            received.recv_timeout(Duration::from_secs(5)),
+            Ok(Request {
+                file: PathBuf::from("/tmp/thesis/ch5.tex"),
+                line: 12,
+                editor: Some("nvim"),
+            })
+        );
+        drop((stream, reader));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while watched.lock().unwrap().contains(&socket) {
+            assert!(std::time::Instant::now() < deadline, "still watched");
+            thread::sleep(Duration::from_millis(10));
+        }
+        listener.set_nonblocking(true).unwrap();
+        assert!(listener.accept().is_err());
+        std::fs::remove_file(&socket).unwrap();
     }
 
     #[test]

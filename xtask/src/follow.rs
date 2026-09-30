@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -12,6 +12,7 @@ const SETTLES_WITHIN: Duration = Duration::from_secs(15);
 const QUIET_FOR: Duration = Duration::from_secs(1);
 const HELD_KEY_REPEATS: Duration = Duration::from_millis(100);
 const STALE: &str = " · SyncTeX data is older than the PDF";
+const TERMLEAF_AUTOCMDS: &str = "luaeval('#vim.tbl_filter(function(a) return vim.startswith(a.group_name or \"\", \"termleaf_follow\") end, vim.api.nvim_get_autocmds({}))')";
 
 pub fn run(root: &Path) -> ExitCode {
     match scenario(root) {
@@ -63,7 +64,7 @@ fn scenario(root: &Path) -> Outcome<()> {
         "chapters/method.tex:63",
         "page 5/5",
     )?;
-    held_j_stays(&server)?;
+    held_j_stays(&server, "chapters/method.tex:71")?;
     flips_once(
         &server,
         ":e chapters/intro.tex",
@@ -80,9 +81,7 @@ fn scenario(root: &Path) -> Outcome<()> {
     )?;
 
     server.keys(&server.viewer, &["F"])?;
-    server.wait_for_status("F to turn follow off", |status| {
-        status == "page 3/5 · doc.pdf · follow off"
-    })?;
+    turned_off(&server, "F to turn follow off", "page 3/5")?;
     stays(&server, "vim moving while follow is off", || {
         server.text(&server.editor, ":e chapters/method.tex\r60G")
     })?;
@@ -94,9 +93,7 @@ fn scenario(root: &Path) -> Outcome<()> {
         "page 5/5",
     )?;
     server.text(&server.viewer, ":nofollow\r")?;
-    server.wait_for_status(":nofollow", |status| {
-        status == "page 5/5 · doc.pdf · follow off"
-    })?;
+    turned_off(&server, ":nofollow", "page 5/5")?;
     stays(&server, "vim moving after :nofollow", || {
         server.text(&server.editor, ":e chapters/intro.tex\r")
     })?;
@@ -161,9 +158,11 @@ fn scenario(root: &Path) -> Outcome<()> {
         ),
         &work,
     )?;
-    server.wait_for_status("termleaf --no-follow to open the thesis", |status| {
-        status == "page 1/5 · doc.pdf · follow off"
-    })?;
+    turned_off(
+        &server,
+        "termleaf --no-follow to open the thesis",
+        "page 1/5",
+    )?;
     server.keys(&server.viewer, &["Escape"])?;
     stays(&server, "a follow line under --no-follow", || {
         client("chapters/method.tex:10")
@@ -176,9 +175,92 @@ fn scenario(root: &Path) -> Outcome<()> {
         "page 4/5",
     )?;
 
+    let viewer = format!("{env} '{}' --graphics kitty doc.pdf", termleaf.display());
+    server.respawn(&server.viewer, &viewer, &work)?;
+    server.wait_for_status("termleaf to open the thesis for nvim", |status| {
+        status == "page 1/5 · doc.pdf"
+    })?;
+    server.keys(&server.viewer, &["Escape"])?;
+    flips_once(
+        &server,
+        "nvim --clean opening method.tex",
+        || {
+            server.respawn(
+                &server.editor,
+                &format!("{env} nvim --clean chapters/method.tex"),
+                &work,
+            )
+        },
+        "nvim at chapters/method.tex:1",
+        "page 3/5",
+    )?;
+    flips_once(
+        &server,
+        "nvim 60G then j j j",
+        || server.text(&server.editor, "60Gjjj"),
+        "nvim at chapters/method.tex:63",
+        "page 5/5",
+    )?;
+    held_j_stays(&server, "nvim at chapters/method.tex:71")?;
+    server.keys(&server.viewer, &["F"])?;
+    turned_off(&server, "F to turn follow off with nvim", "page 5/5")?;
+    stays(&server, "nvim moving while follow is off", || {
+        server.text(&server.editor, ":e chapters/intro.tex\r")
+    })?;
+    flips_once(
+        &server,
+        "F again with nvim",
+        || server.keys(&server.viewer, &["F"]),
+        "nvim at chapters/intro.tex:1",
+        "page 2/5",
+    )?;
+
+    server.respawn(
+        &server.viewer,
+        &format!(
+            "{env} '{}' --graphics kitty --no-follow doc.pdf",
+            termleaf.display()
+        ),
+        &work,
+    )?;
+    turned_off(
+        &server,
+        "termleaf --no-follow to open the thesis for nvim",
+        "page 1/5",
+    )?;
+    server.keys(&server.viewer, &["Escape"])?;
+    stays(&server, "nvim moving under --no-follow", || {
+        server.text(&server.editor, "G")
+    })?;
+    let nvim = neovim_socket(&sockets)?;
+    let messages = expression(&nvim, "execute('messages')")?;
+    let hooks = expression(&nvim, TERMLEAF_AUTOCMDS)?;
+    if !messages.is_empty() || hooks != "0" {
+        return Err(format!(
+            "nvim kept {hooks} termleaf autocmds after its viewer quit, with messages {messages:?}"
+        ));
+    }
+    println!(
+        "ok   the quit viewer's autocmds removed themselves, :messages is empty, and --no-follow added none"
+    );
+    flips_once(
+        &server,
+        "F under --no-follow with nvim",
+        || server.keys(&server.viewer, &["F"]),
+        "nvim at chapters/intro.tex:55",
+        "page 3/5",
+    )?;
+    let hooks = expression(&nvim, TERMLEAF_AUTOCMDS)?;
+    if hooks != "4" {
+        return Err(format!(
+            "F registered {hooks} autocmds in nvim, not one group of 4"
+        ));
+    }
+    println!("ok   F registered one group of 4 autocmds in nvim");
+
     server.respawn(&server.viewer, "sleep 86400", &work)?;
     poll("termleaf to remove its socket on SIGHUP", || {
-        let left = fs::read_dir(&sockets)
+        let left = fs::read_dir(sockets.join("termleaf"))
             .map(|entries| {
                 entries
                     .flatten()
@@ -262,7 +344,35 @@ fn stays(server: &Server, label: &str, act: impl FnOnce() -> Outcome<()>) -> Out
     Ok(())
 }
 
-fn held_j_stays(server: &Server) -> Outcome<()> {
+fn turned_off(server: &Server, label: &str, page: &str) -> Outcome<()> {
+    let wanted = format!("{page} · doc.pdf · follow off");
+    poll(label, || (server.whole_status() == wanted).then_some(()))
+        .map_err(|error| format!("{error}; last status: {:?}", server.whole_status()))
+}
+
+fn neovim_socket(sockets: &Path) -> Outcome<PathBuf> {
+    fs::read_dir(sockets)
+        .map_err(|error| format!("reading {}: {error}", sockets.display()))?
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("nvim."))
+        })
+        .ok_or_else(|| format!("no nvim socket in {}", sockets.display()))
+}
+
+fn expression(socket: &Path, expression: &str) -> Outcome<String> {
+    let output = Command::new("nvim")
+        .arg("--server")
+        .arg(socket)
+        .args(["--remote-expr", expression])
+        .output()
+        .map_err(|error| format!("running nvim --server: {error}"))?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn held_j_stays(server: &Server, settled: &str) -> Outcome<()> {
     let start = page(&server.status()).unwrap_or_default();
     let mut pages = vec![start.clone()];
     for _ in 0..8 {
@@ -277,7 +387,7 @@ fn held_j_stays(server: &Server) -> Outcome<()> {
             thread::sleep(SAMPLE_EVERY);
         }
     }
-    pages_until(server, "chapters/method.tex:71", &mut pages)?;
+    pages_until(server, settled, &mut pages)?;
     if pages != [start.as_str()] {
         return Err(format!("holding j moved the page: {pages:?}"));
     }

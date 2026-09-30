@@ -19,7 +19,7 @@ use ratatui::DefaultTerminal;
 use ratatui_image::picker::Picker;
 
 use crate::app::Options;
-use crate::follow::{self, Listener};
+use crate::follow::{self, Follow, Listener};
 use crate::graphics::{Raster, tmux_server};
 use crate::layout::CellSize;
 use crate::pinch;
@@ -144,10 +144,18 @@ fn show(
             let _ = events.send(Event::Painted(painting));
         })
     };
+    let neovims = events.clone();
     input::spawn_input(events);
     let font = picker.font_size();
     let mut app = App::new(Parts {
-        follow: options.follow,
+        follow: Follow::new(options.follow).starting({
+            let path = path.to_path_buf();
+            move || {
+                crate::editor::follow_neovims(path, move |request| {
+                    let _ = neovims.send(Event::Follow(request));
+                });
+            }
+        }),
         file_name: path.file_name().map_or_else(
             || path.display().to_string(),
             |name| name.to_string_lossy().into_owned(),

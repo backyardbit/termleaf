@@ -96,7 +96,7 @@ fn main() -> ExitCode {
                 "  wezterm jump nvim, vim and hx from termleaf between panes of a headless WezTerm mux server (needs wezterm, wezterm-mux-server and the editors)"
             );
             eprintln!(
-                "  follow move termleaf with vim and the follow snippet, termleaf --follow, F, :follow, :nofollow and --no-follow in a headless tmux (needs tmux and vim)"
+                "  follow move termleaf with vim and the follow snippet, nvim with no config, termleaf --follow, F, :follow, :nofollow and --no-follow in a headless tmux (needs tmux, vim and nvim)"
             );
             ExitCode::FAILURE
         }
