@@ -372,8 +372,9 @@ fn pages_until(server: &Server, settled: &str, pages: &mut Vec<String>) -> Outco
         match settled_at {
             Some(at) if at.elapsed() >= QUIET_FOR => return Ok(()),
             None if Instant::now() >= deadline => {
-                return Err(format!(
-                    "timed out waiting for follow: {settled}; last status: {status:?}"
+                return Err(failure(
+                    server,
+                    &format!("timed out waiting for follow: {settled}; last status: {status:?}"),
                 ));
             }
             _ => thread::sleep(SAMPLE_EVERY),
@@ -418,8 +419,23 @@ fn stays(server: &Server, label: &str, act: impl FnOnce() -> Outcome<()>) -> Out
 
 fn turned_off(server: &Server, label: &str, page: &str) -> Outcome<()> {
     let wanted = format!("{page} · doc.pdf · follow off");
-    poll(label, || (server.whole_status() == wanted).then_some(()))
-        .map_err(|error| format!("{error}; last status: {:?}", server.whole_status()))
+    poll(label, || (server.whole_status() == wanted).then_some(())).map_err(|error| {
+        failure(
+            server,
+            &format!("{error}; last status: {:?}", server.whole_status()),
+        )
+    })
+}
+
+fn failure(server: &Server, message: &str) -> String {
+    format!(
+        "{message}\nviewer {} exited: {}\nviewer capture: {:?}\neditor {} capture: {:?}",
+        server.viewer,
+        server.host.exited(&server.viewer),
+        server.screen(&server.viewer),
+        server.editor,
+        server.screen(&server.editor),
+    )
 }
 
 fn neovim_socket(sockets: &Path) -> Outcome<PathBuf> {
