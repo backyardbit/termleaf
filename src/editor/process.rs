@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -36,7 +37,63 @@ pub trait ProcessTable {
     fn cwd(&self, pid: Pid) -> Option<PathBuf>;
     fn listening_sockets(&self, pid: Pid) -> Vec<PathBuf>;
     fn own_uid(&self) -> Option<u32>;
-    fn foreground_leaders(&self) -> Vec<Process>;
+    fn processes(&self) -> Vec<Process>;
+    fn environment(&self, pid: Pid) -> Vec<(String, String)>;
+
+    fn foreground_leaders(&self) -> Vec<Process> {
+        self.processes()
+            .into_iter()
+            .filter(|process| process.foreground_group == Some(process.pid()))
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PaneTags<'a> {
+    pub session_variable: &'a str,
+    pub session: &'a str,
+    pub pane_variable: &'a str,
+    pub servers: &'a [&'a str],
+}
+
+pub fn pane_roots(table: &impl ProcessTable, tags: PaneTags<'_>) -> HashMap<String, Pid> {
+    let mut members: HashMap<String, Vec<Process>> = HashMap::new();
+    for process in table.processes() {
+        let environment = table.environment(process.pid());
+        let value = |name: &str| {
+            environment
+                .iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.as_str())
+        };
+        if value(tags.session_variable) != Some(tags.session) {
+            continue;
+        }
+        if let Some(pane) = value(tags.pane_variable) {
+            members.entry(pane.to_owned()).or_default().push(process);
+        }
+    }
+    members
+        .into_iter()
+        .filter_map(|(pane, processes)| {
+            let spawned_by_server = processes
+                .iter()
+                .filter(|process| {
+                    table
+                        .process(process.parent)
+                        .is_some_and(|parent| tags.servers.contains(&parent.program.as_str()))
+                })
+                .min_by_key(|process| process.identity.start.0);
+            let oldest = || {
+                processes
+                    .iter()
+                    .min_by_key(|process| process.identity.start.0)
+            };
+            spawned_by_server
+                .or_else(oldest)
+                .map(|root| (pane, root.pid()))
+        })
+        .collect()
 }
 
 const SHELLS: &[&str] = &[
@@ -87,6 +144,7 @@ pub mod fake {
         arguments: HashMap<Pid, Vec<String>>,
         cwds: HashMap<Pid, PathBuf>,
         sockets: HashMap<Pid, Vec<PathBuf>>,
+        environments: HashMap<Pid, Vec<(String, String)>>,
     }
 
     impl FakeTable {
@@ -136,6 +194,14 @@ pub mod fake {
                     .collect(),
             );
             self.cwds.insert(Pid(pid), PathBuf::from(cwd));
+            self
+        }
+
+        pub fn variable(&mut self, pid: u32, name: &str, value: &str) -> &mut Self {
+            self.environments
+                .entry(Pid(pid))
+                .or_default()
+                .push((name.to_owned(), value.to_owned()));
             self
         }
 
@@ -195,12 +261,12 @@ pub mod fake {
             Some(OUR_UID)
         }
 
-        fn foreground_leaders(&self) -> Vec<Process> {
-            self.processes
-                .iter()
-                .filter(|process| process.foreground_group == Some(process.pid()))
-                .cloned()
-                .collect()
+        fn processes(&self) -> Vec<Process> {
+            self.processes.clone()
+        }
+
+        fn environment(&self, pid: Pid) -> Vec<(String, String)> {
+            self.environments.get(&pid).cloned().unwrap_or_default()
         }
     }
 }
@@ -217,6 +283,57 @@ mod tests {
         assert!(is_shell("fish"));
         assert!(!is_shell("nvim"));
         assert!(!is_shell("less"));
+    }
+
+    const ZELLIJ: PaneTags<'static> = PaneTags {
+        session_variable: "ZELLIJ_SESSION_NAME",
+        session: "thesis",
+        pane_variable: "ZELLIJ_PANE_ID",
+        servers: &["zellij"],
+    };
+
+    fn in_pane(table: &mut FakeTable, pid: u32, pane: &str) {
+        table
+            .variable(pid, "ZELLIJ_SESSION_NAME", "thesis")
+            .variable(pid, "ZELLIJ_PANE_ID", pane);
+    }
+
+    #[test]
+    fn each_pane_is_rooted_at_the_process_the_server_spawned() {
+        let mut table = FakeTable::default();
+        table
+            .spawn(10, 1, "zellij")
+            .spawn(15, 1, "tmux")
+            .spawn(20, 10, "bash")
+            .spawn(21, 20, "tmux")
+            .spawn(40, 15, "bash")
+            .started(40, 5)
+            .spawn(30, 10, "hx")
+            .spawn(50, 10, "bash")
+            .spawn(60, 10, "bash");
+        for (pid, pane) in [(20, "1"), (21, "1"), (40, "1"), (30, "2")] {
+            in_pane(&mut table, pid, pane);
+        }
+        table
+            .variable(50, "ZELLIJ_SESSION_NAME", "other")
+            .variable(50, "ZELLIJ_PANE_ID", "3")
+            .variable(60, "ZELLIJ_SESSION_NAME", "thesis");
+        let roots = pane_roots(&table, ZELLIJ);
+        assert_eq!(roots.len(), 2);
+        assert_eq!(roots.get("1"), Some(&Pid(20)));
+        assert_eq!(roots.get("2"), Some(&Pid(30)));
+    }
+
+    #[test]
+    fn without_the_server_the_oldest_process_of_a_pane_is_its_root() {
+        let mut table = FakeTable::default();
+        table
+            .spawn(50, 1, "bash")
+            .spawn(51, 50, "vim")
+            .started(51, 1);
+        in_pane(&mut table, 50, "3");
+        in_pane(&mut table, 51, "3");
+        assert_eq!(pane_roots(&table, ZELLIJ).get("3"), Some(&Pid(51)));
     }
 
     #[test]

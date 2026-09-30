@@ -1,8 +1,11 @@
 mod e2e;
 mod herdr;
 mod jumps;
+mod pane_shell;
+mod screen;
 mod tmux;
 mod xterm;
+mod zellij;
 
 use std::fmt;
 use std::fs;
@@ -51,8 +54,10 @@ fn main() -> ExitCode {
         Some("tmux") => jumps::run(&workspace_root(), jumps::Backend::Tmux),
         Some("herdr") => jumps::run(&workspace_root(), jumps::Backend::Herdr),
         Some("plain") => jumps::run(&workspace_root(), jumps::Backend::Plain),
+        Some("zellij") => jumps::run(&workspace_root(), jumps::Backend::Zellij),
+        Some("screen") => jumps::run(&workspace_root(), jumps::Backend::Screen),
         _ => {
-            eprintln!("usage: cargo xtask <lint|check|e2e|xterm|tmux|herdr|plain>");
+            eprintln!("usage: cargo xtask <lint|check|e2e|xterm|tmux|herdr|plain|zellij|screen>");
             eprintln!("  lint   run the anti-slop source checks");
             eprintln!("  check  run fmt, clippy, tests and lint");
             eprintln!(
@@ -69,6 +74,12 @@ fn main() -> ExitCode {
             );
             eprintln!(
                 "  plain  jump nvim over its socket with no multiplexer around termleaf (needs tmux as a pty host and nvim)"
+            );
+            eprintln!(
+                "  zellij jump nvim, vim and hx from termleaf in a headless zellij 0.44+ (needs zellij, tmux and the editors)"
+            );
+            eprintln!(
+                "  screen jump nvim, vim and hx from termleaf in a headless GNU screen (needs screen, tmux and the editors)"
             );
             ExitCode::FAILURE
         }

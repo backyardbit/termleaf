@@ -2,13 +2,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-use crate::{herdr, tmux};
+use crate::{herdr, screen, tmux, zellij};
 use std::thread;
 use std::time::{Duration, Instant};
 
 pub const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const STEP_TIMEOUT: Duration = Duration::from_secs(15);
 const NOTICE_CLEARS: Duration = Duration::from_millis(4500);
+const KEY_TAKES: Duration = Duration::from_secs(3);
 const CLICKS: [(u16, u16); 4] = [(60, 34), (40, 42), (50, 26), (30, 10)];
 pub const PROMPT: &str = "shell$ ";
 
@@ -19,6 +20,8 @@ pub enum Backend {
     Tmux,
     Herdr,
     Plain,
+    Zellij,
+    Screen,
 }
 
 impl Backend {
@@ -27,6 +30,8 @@ impl Backend {
             Self::Tmux => "tmux",
             Self::Herdr => "herdr",
             Self::Plain => "plain",
+            Self::Zellij => "zellij",
+            Self::Screen => "screen",
         }
     }
 }
@@ -113,6 +118,8 @@ fn scenario(root: &Path, backend: Backend) -> Outcome<()> {
         Backend::Tmux => tmux::start(&work, &termleaf, false)?,
         Backend::Herdr => herdr::start(&work, &termleaf)?,
         Backend::Plain => tmux::start(&work, &termleaf, true)?,
+        Backend::Zellij => zellij::start(&work, &termleaf)?,
+        Backend::Screen => screen::start(&work, &termleaf)?,
     };
     server.wait_for_status("termleaf to open the thesis", |status| {
         status == "page 1/5 · doc.pdf"
@@ -120,7 +127,10 @@ fn scenario(root: &Path, backend: Backend) -> Outcome<()> {
     poll("page two", || {
         if server.status() == "page 1/5 · doc.pdf" {
             server.keys(&server.viewer, &["j"]).ok()?;
-            thread::sleep(Duration::from_millis(700));
+            let pressed = Instant::now();
+            while server.status() == "page 1/5 · doc.pdf" && pressed.elapsed() < KEY_TAKES {
+                thread::sleep(POLL_INTERVAL);
+            }
         }
         (server.status() == "page 2/5 · doc.pdf").then_some(())
     })?;
@@ -155,6 +165,7 @@ fn scenario(root: &Path, backend: Backend) -> Outcome<()> {
         return Err("the shell ran a command".to_owned());
     }
     println!("ok   the shell pane received nothing");
+    server.host.focus_kept()?;
     Ok(())
 }
 
@@ -188,6 +199,10 @@ pub trait Host {
     fn respawn(&self, pane: &str, command: &str, work: &Path) -> Outcome<()>;
     fn exited(&self, pane: &str) -> bool;
     fn copy_mode(&self, pane: &str) -> Outcome<bool>;
+
+    fn focus_kept(&self) -> Outcome<()> {
+        Ok(())
+    }
 }
 
 pub struct Server {
