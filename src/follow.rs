@@ -3,8 +3,9 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use signal_hook::consts::{SIGHUP, SIGTERM};
@@ -177,9 +178,95 @@ fn remove_on_signals(socket: PathBuf) {
 }
 
 #[derive(Default)]
+struct Reading {
+    focused: bool,
+    off: bool,
+    sync: bool,
+    generation: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Glance {
+    pub open: bool,
+    pub sync: bool,
+    generation: u64,
+}
+
+#[derive(Clone, Default)]
+pub struct Gate(Arc<(Mutex<Reading>, Condvar)>);
+
+impl Gate {
+    fn change(&self, change: impl FnOnce(&mut Reading)) {
+        let (reading, changed) = &*self.0;
+        if let Ok(mut reading) = reading.lock() {
+            change(&mut reading);
+            reading.generation += 1;
+            changed.notify_all();
+        }
+    }
+
+    fn turn(&self, on: bool) {
+        self.change(|reading| {
+            reading.off = !on;
+            reading.sync |= on;
+        });
+    }
+
+    fn focus(&self, focused: bool) {
+        self.change(|reading| reading.focused = focused);
+    }
+
+    pub fn synced(&self) {
+        self.change(|reading| reading.sync = false);
+    }
+
+    pub fn glance(&self) -> Glance {
+        let (reading, _) = &*self.0;
+        reading.lock().map_or(
+            Glance {
+                open: false,
+                sync: false,
+                generation: 0,
+            },
+            |reading| Glance {
+                open: !reading.focused && !reading.off,
+                sync: reading.sync,
+                generation: reading.generation,
+            },
+        )
+    }
+
+    pub fn wait(&self, glance: Glance, until: Option<Instant>) {
+        let (reading, changed) = &*self.0;
+        let Ok(mut reading) = reading.lock() else {
+            return;
+        };
+        while reading.generation == glance.generation {
+            let waited = match until {
+                Some(until) => {
+                    let Some(left) = until.checked_duration_since(Instant::now()) else {
+                        return;
+                    };
+                    changed
+                        .wait_timeout(reading, left)
+                        .map(|(reading, _)| reading)
+                        .ok()
+                }
+                None => changed.wait(reading).ok(),
+            };
+            let Some(next) = waited else {
+                return;
+            };
+            reading = next;
+        }
+    }
+}
+
+#[derive(Default)]
 pub struct Follow {
     off: bool,
-    start: Option<Box<dyn FnOnce()>>,
+    gate: Gate,
+    start: Option<Box<dyn FnOnce(Gate)>>,
     syncing: bool,
     parked: Option<Request>,
     focused: bool,
@@ -191,13 +278,15 @@ pub struct Follow {
 
 impl Follow {
     pub fn new(on: bool) -> Self {
-        Self {
+        let follow = Self {
             off: !on,
             ..Self::default()
-        }
+        };
+        follow.gate.turn(on);
+        follow
     }
 
-    pub fn starting(mut self, start: impl FnOnce() + 'static) -> Self {
+    pub fn starting(mut self, start: impl FnOnce(Gate) + 'static) -> Self {
         self.start = Some(Box::new(start));
         self.started();
         self
@@ -208,7 +297,7 @@ impl Follow {
             && let Some(start) = self.start.take()
         {
             self.syncing = true;
-            start();
+            start(self.gate.clone());
         }
     }
 
@@ -221,21 +310,21 @@ impl Follow {
             return;
         }
         self.off = !on;
+        self.gate.turn(on);
         if on {
             self.started();
             self.last_page = None;
-            if let Some(request) = self.parked.take() {
-                if self.reloading {
-                    self.held = Some(request);
-                } else {
-                    self.show(request, viewer, inverse);
-                }
+            match self.parked.take() {
+                Some(request) if self.reloading => self.held = Some(request),
+                Some(request) => self.show(request, viewer, inverse),
+                None => self.syncing = true,
             }
         }
     }
 
     pub fn focus(&mut self, focused: bool) {
         self.focused = focused;
+        self.gate.focus(focused);
     }
 
     pub fn reloading(&mut self) {
@@ -639,7 +728,7 @@ mod tests {
         let starts = std::rc::Rc::new(std::cell::Cell::new(0));
         let counter = |starts: &std::rc::Rc<std::cell::Cell<u32>>| {
             let starts = std::rc::Rc::clone(starts);
-            move || starts.set(starts.get() + 1)
+            move |_| starts.set(starts.get() + 1)
         };
         let mut scene = Scene::new("start", 5);
         scene.follow = Follow::new(false).starting(counter(&starts));
@@ -656,8 +745,51 @@ mod tests {
             scene.follow.toggle(&mut scene.viewer, &mut scene.inverse);
         }
         assert_eq!(starts.get(), 1);
+        scene.request("chapters/method.tex", 10);
+        assert_eq!(scene.viewer.page(), 3);
+        scene.request("chapters/intro.tex", 35);
+        assert_eq!(scene.viewer.page(), 3);
         drop(Follow::new(true).starting(counter(&starts)));
         assert_eq!(starts.get(), 2);
+    }
+
+    #[test]
+    fn panes_are_read_only_while_follow_is_on_without_focus_and_turning_it_on_asks_for_a_sync() {
+        let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut scene = Scene::new("gate", 5);
+        scene.follow = Follow::new(false).starting({
+            let slot = std::rc::Rc::clone(&slot);
+            move |gate| *slot.borrow_mut() = Some(gate)
+        });
+        scene.follow.focus(true);
+        scene.follow.toggle(&mut scene.viewer, &mut scene.inverse);
+        let gate: Gate = slot.borrow().clone().unwrap();
+        let open = |gate: &Gate| {
+            let glance = gate.glance();
+            (glance.open, glance.sync)
+        };
+        assert_eq!(open(&gate), (false, true));
+        gate.synced();
+        assert_eq!(open(&gate), (false, false));
+        let glance = gate.glance();
+        let waiting = gate.clone();
+        let waited = thread::spawn(move || {
+            let started = Instant::now();
+            waiting.wait(glance, None);
+            started.elapsed()
+        });
+        thread::sleep(Duration::from_millis(20));
+        scene.follow.focus(false);
+        assert!(waited.join().unwrap() < Duration::from_secs(5));
+        assert_eq!(open(&gate), (true, false));
+        scene.follow.toggle(&mut scene.viewer, &mut scene.inverse);
+        assert_eq!(open(&gate), (false, false));
+        let started = Instant::now();
+        gate.wait(gate.glance(), Some(started + Duration::from_millis(20)));
+        assert!(started.elapsed() >= Duration::from_millis(20));
+        gate.wait(gate.glance(), Some(started));
+        scene.follow.toggle(&mut scene.viewer, &mut scene.inverse);
+        assert_eq!(open(&gate), (true, true));
     }
 
     #[test]

@@ -150,8 +150,8 @@ fn show(
     let mut app = App::new(Parts {
         follow: Follow::new(options.follow).starting({
             let path = path.to_path_buf();
-            move || {
-                crate::editor::follow_neovims(path, move |request| {
+            move |gate| {
+                crate::editor::follow_editors(path, gate, move |request| {
                     let _ = neovims.send(Event::Follow(request));
                 });
             }

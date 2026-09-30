@@ -1,3 +1,4 @@
+mod capture;
 mod cli;
 mod detect;
 mod evidence;
@@ -19,14 +20,14 @@ mod tmux;
 mod wezterm;
 mod zellij;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cli::SystemCli;
-use detect::{Environment, MultiplexerKind, ProcessEnvironment, detect};
+use detect::{Environment, Layer, MultiplexerKind, ProcessEnvironment, detect};
 use evidence::{OnDisk, neovim_socket};
 use herdr::Herdr;
 use inject::{Failure, inject};
@@ -43,7 +44,7 @@ use tmux::Tmux;
 use wezterm::Wezterm;
 use zellij::Zellij;
 
-use crate::follow::Request;
+use crate::follow::{Gate, Request};
 use crate::inverse::{Editors, Inverse};
 use crate::synctex::SourceLocation;
 
@@ -81,6 +82,9 @@ impl Jumped {
 
 const PLAIN_LABEL: &str = "nvim (rpc)";
 const SCAN_EVERY: Duration = Duration::from_secs(2);
+const CAPTURE_EVERY: Duration = Duration::from_millis(500);
+const CAPTURE_AT_MOST_EVERY: Duration = Duration::from_secs(2);
+const SURVEY_AT_MOST_EVERY: Duration = Duration::from_secs(8);
 
 type Watched = Arc<Mutex<HashSet<PathBuf>>>;
 
@@ -230,7 +234,7 @@ fn watch(
     });
 }
 
-pub fn follow_neovims(pdf: PathBuf, on_request: impl Fn(Request) + Send + Sync + 'static) {
+fn follow_neovims(pdf: PathBuf, on_request: impl Fn(Request) + Send + Sync + 'static) {
     let on_request = Arc::new(on_request);
     let watched = Watched::default();
     thread::spawn(move || {
@@ -249,6 +253,230 @@ pub fn follow_neovims(pdf: PathBuf, on_request: impl Fn(Request) + Send + Sync +
             thread::sleep(SCAN_EVERY);
         }
     });
+}
+
+fn helix_panes(
+    multiplexer: &impl Multiplexer,
+    table: &impl ProcessTable,
+    own: Option<&str>,
+) -> Vec<(String, PathBuf)> {
+    let Ok(verdicts) = survey(multiplexer, table, own) else {
+        return Vec::new();
+    };
+    candidates(multiplexer.kind(), &verdicts)
+        .into_iter()
+        .filter(|candidate| candidate.editor.kind == EditorKind::Helix)
+        .filter_map(|candidate| {
+            Some((candidate.pane.id, table.cwd(candidate.editor.identity.pid)?))
+        })
+        .collect()
+}
+
+struct Watch {
+    cwd: PathBuf,
+    seen: Option<Request>,
+    every: Duration,
+    due: Instant,
+}
+
+#[derive(Default)]
+struct HelixPanes {
+    panes: HashMap<String, Watch>,
+    survey_every: Duration,
+}
+
+impl HelixPanes {
+    fn survey(
+        &mut self,
+        multiplexer: &impl Multiplexer,
+        table: &impl ProcessTable,
+        own: Option<&str>,
+        now: Instant,
+    ) -> bool {
+        let found = helix_panes(multiplexer, table, own);
+        let same = !found.is_empty()
+            && found.len() == self.panes.len()
+            && found.iter().all(|(pane, _)| self.panes.contains_key(pane));
+        self.panes
+            .retain(|pane, _| found.iter().any(|(id, _)| id == pane));
+        for (pane, cwd) in found {
+            self.panes
+                .entry(pane)
+                .and_modify(|watch| watch.cwd.clone_from(&cwd))
+                .or_insert(Watch {
+                    cwd,
+                    seen: None,
+                    every: CAPTURE_EVERY,
+                    due: now,
+                });
+        }
+        self.survey_every = if same {
+            (self.survey_every * 2).clamp(SCAN_EVERY, SURVEY_AT_MOST_EVERY)
+        } else {
+            SCAN_EVERY
+        };
+        !self.panes.is_empty()
+    }
+
+    fn resync(&mut self, now: Instant) {
+        for watch in self.panes.values_mut() {
+            watch.seen = None;
+            watch.due = now;
+        }
+    }
+
+    fn read_due(
+        &mut self,
+        multiplexer: &impl Multiplexer,
+        now: Instant,
+        on_request: &impl Fn(Request),
+    ) {
+        let mut moved = false;
+        for (pane, watch) in &mut self.panes {
+            if watch.due > now {
+                continue;
+            }
+            let request = multiplexer
+                .screen(pane)
+                .as_deref()
+                .and_then(capture::statusline)
+                .map(|(name, line)| Request {
+                    file: watch.cwd.join(name),
+                    line,
+                    editor: Some("hx"),
+                });
+            match request {
+                Some(request) if watch.seen.as_ref() != Some(&request) => {
+                    watch.seen = Some(request.clone());
+                    watch.every = CAPTURE_EVERY;
+                    moved = true;
+                    on_request(request);
+                }
+                _ => watch.every = (watch.every * 2).min(CAPTURE_AT_MOST_EVERY),
+            }
+            watch.due = now + watch.every;
+        }
+        if moved {
+            self.survey_every = SCAN_EVERY;
+        }
+    }
+
+    fn next_due(&self) -> Option<Instant> {
+        self.panes.values().map(|watch| watch.due).min()
+    }
+}
+
+fn follow_in(
+    multiplexer: &impl Multiplexer,
+    table: &impl ProcessTable,
+    own: Option<&str>,
+    helix: &mut HelixPanes,
+    gate: &Gate,
+    on_request: &impl Fn(Request),
+) -> bool {
+    if !helix.survey(multiplexer, table, own, Instant::now()) {
+        return false;
+    }
+    let survey_at = Instant::now() + helix.survey_every;
+    loop {
+        let glance = gate.glance();
+        let now = Instant::now();
+        if glance.sync {
+            gate.synced();
+            helix.resync(now);
+        }
+        if glance.open || glance.sync {
+            helix.read_due(multiplexer, now, on_request);
+        }
+        if glance.open && now >= survey_at {
+            return true;
+        }
+        let until = glance
+            .open
+            .then(|| helix.next_due().map_or(survey_at, |due| due.min(survey_at)));
+        gate.wait(glance, until);
+    }
+}
+
+fn follow_layer(
+    layer: &Layer,
+    table: &impl ProcessTable,
+    helix: &mut HelixPanes,
+    gate: &Gate,
+    on_request: &impl Fn(Request),
+) -> bool {
+    let env = ProcessEnvironment;
+    let own = layer.own_pane.as_deref();
+    match (
+        layer.kind,
+        layer.control.as_deref(),
+        layer.session.as_deref(),
+    ) {
+        (MultiplexerKind::Tmux, Some(socket), _) => {
+            let tmux = Tmux::new(socket.to_path_buf(), own.map(str::to_owned));
+            follow_in(&tmux, table, own, helix, gate, on_request)
+        }
+        (MultiplexerKind::Herdr, Some(socket), _) => {
+            let program = env
+                .var("HERDR_BIN_PATH")
+                .unwrap_or_else(|| "herdr".to_owned());
+            let herdr = Herdr::new(PathBuf::from(program), socket.to_path_buf());
+            follow_in(&herdr, table, own, helix, gate, on_request)
+        }
+        (MultiplexerKind::Zellij, _, Some(session)) => Zellij::connect(&SystemCli, table, session)
+            .is_ok_and(|zellij| follow_in(&zellij, table, own, helix, gate, on_request)),
+        (MultiplexerKind::Screen, _, Some(session)) => {
+            let screen = Screen::new(&SystemCli, table, session);
+            follow_in(&screen, table, own, helix, gate, on_request)
+        }
+        (MultiplexerKind::Kitty, Some(control), _) => {
+            let kitty = Kitty::new(&SystemCli, control);
+            follow_in(&kitty, table, own, helix, gate, on_request)
+        }
+        (MultiplexerKind::Wezterm, _, _) => {
+            let wezterm = Wezterm::new(&SystemCli, env.var("WEZTERM_EXECUTABLE_DIR"));
+            follow_in(&wezterm, table, own, helix, gate, on_request)
+        }
+        _ => false,
+    }
+}
+
+fn follow_helix(gate: Gate, on_request: impl Fn(Request) + Send + 'static) {
+    thread::spawn(move || {
+        let mut helix = HelixPanes::default();
+        loop {
+            let glance = gate.glance();
+            if !glance.open && !glance.sync {
+                gate.wait(glance, None);
+                continue;
+            }
+            let followed = system_processes().is_ok_and(|table| {
+                detect(
+                    &ProcessEnvironment,
+                    &ancestors(&table, Pid(std::process::id())),
+                )
+                .iter()
+                .any(|layer| follow_layer(layer, &table, &mut helix, &gate, &on_request))
+            });
+            if !followed {
+                helix.panes.clear();
+                gate.synced();
+                let glance = gate.glance();
+                gate.wait(glance, Some(Instant::now() + SCAN_EVERY));
+            }
+        }
+    });
+}
+
+pub fn follow_editors(
+    pdf: PathBuf,
+    gate: Gate,
+    on_request: impl Fn(Request) + Send + Sync + 'static,
+) {
+    let on_request = Arc::new(on_request);
+    let helix = Arc::clone(&on_request);
+    follow_neovims(pdf, move |request| on_request(request));
+    follow_helix(gate, move |request| helix(request));
 }
 
 #[derive(Default)]
@@ -354,7 +582,7 @@ mod tests {
     use std::cell::RefCell;
 
     use super::inject::fake::Recorder;
-    use super::probe::fake::layout;
+    use super::probe::fake::{FakeMultiplexer, layout};
     use super::probe::{Editor, Pane};
     use super::process::fake::{FakeTable, OUR_UID};
 
@@ -638,6 +866,89 @@ mod tests {
         listener.set_nonblocking(true).unwrap();
         assert!(listener.accept().is_err());
         std::fs::remove_file(&socket).unwrap();
+    }
+
+    #[test]
+    fn a_helix_pane_is_read_once_due_and_backs_off_while_it_stays_still() {
+        let (mut table, mut multiplexer) = layout();
+        let requests = RefCell::new(Vec::new());
+        let push = |request: Request| requests.borrow_mut().push(request);
+        let at = |line| Request {
+            file: PathBuf::from("/tmp/thesis/chapters/ch5.tex"),
+            line,
+            editor: Some("hx"),
+        };
+        let show = |multiplexer: &mut FakeMultiplexer, screen: &str| {
+            multiplexer
+                .screens
+                .insert("%3".to_owned(), screen.to_owned());
+        };
+        let start = Instant::now();
+        let after = |millis| start + Duration::from_millis(millis);
+        let mut helix = HelixPanes::default();
+        show(&mut multiplexer, " NOR   chapters/ch5.tex   1 sel  40:1\n");
+        assert!(!helix.survey(&multiplexer, &table, Some("%0"), start));
+        table.argv(401, &["hx"], "/tmp/thesis");
+        assert!(helix.survey(&multiplexer, &table, Some("%0"), start));
+        let read = |helix: &mut HelixPanes, multiplexer: &FakeMultiplexer, millis| {
+            helix.read_due(multiplexer, after(millis), &push);
+            helix.panes["%3"].every.as_millis()
+        };
+        assert_eq!(read(&mut helix, &multiplexer, 0), 500);
+        assert_eq!(read(&mut helix, &multiplexer, 400), 500);
+        assert_eq!(read(&mut helix, &multiplexer, 500), 1000);
+        show(&mut multiplexer, "typable-command\n:o\n");
+        assert_eq!(read(&mut helix, &multiplexer, 1500), 2000);
+        assert_eq!(read(&mut helix, &multiplexer, 3500), 2000);
+        assert_eq!(helix.next_due(), Some(after(5500)));
+        for survey_every in [4, 8, 8] {
+            assert!(helix.survey(&multiplexer, &table, Some("%0"), start));
+            assert_eq!(helix.survey_every, Duration::from_secs(survey_every));
+        }
+        show(
+            &mut multiplexer,
+            " INS   chapters/ch5.tex [+]   1 sel  41:3\n",
+        );
+        assert_eq!(read(&mut helix, &multiplexer, 5500), 500);
+        assert_eq!(helix.survey_every, SCAN_EVERY);
+        helix.resync(after(5600));
+        assert_eq!(read(&mut helix, &multiplexer, 5600), 500);
+        assert_eq!(*requests.borrow(), [at(40), at(41), at(41)]);
+        multiplexer.panes.replace(Vec::new());
+        assert!(!helix.survey(&multiplexer, &table, Some("%0"), start));
+        assert!(!helix.survey(&multiplexer, &table, Some("%0"), start));
+        assert!(helix.panes.is_empty());
+        assert_eq!(helix.survey_every, SCAN_EVERY);
+    }
+
+    #[test]
+    fn a_multiplexer_that_cannot_be_reached_follows_nothing() {
+        let missing = Some(PathBuf::from("/nonexistent/termleaf-follow"));
+        let layer = |kind, control: Option<PathBuf>, session: Option<&str>| Layer {
+            kind,
+            own_pane: None,
+            session: session.map(str::to_owned),
+            control,
+        };
+        let requests = RefCell::new(Vec::new());
+        let mut helix = HelixPanes::default();
+        for unreachable in [
+            layer(MultiplexerKind::Tmux, missing.clone(), None),
+            layer(MultiplexerKind::Herdr, missing.clone(), None),
+            layer(MultiplexerKind::Zellij, None, Some("termleaf-none")),
+            layer(MultiplexerKind::Screen, None, Some("termleaf-none")),
+            layer(MultiplexerKind::Kitty, missing.clone(), None),
+            layer(MultiplexerKind::Konsole, None, None),
+        ] {
+            assert!(!follow_layer(
+                &unreachable,
+                &FakeTable::default(),
+                &mut helix,
+                &Gate::default(),
+                &|request| requests.borrow_mut().push(request),
+            ));
+        }
+        assert!(requests.borrow().is_empty());
     }
 
     #[test]

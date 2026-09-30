@@ -183,6 +183,9 @@ pub fn prepare(root: &Path, name: &str) -> Outcome<PathBuf> {
     let fixtures = root.join("tests/fixtures/synctex");
     let work = root.join(format!("target/e2e-{name}"));
     let _ = fs::remove_dir_all(&work);
+    if let Some(swap) = neovim_swap_directory() {
+        clear_swap_files(&swap, &work);
+    }
     fs::create_dir_all(work.join("chapters")).map_err(|error| error.to_string())?;
     fs::create_dir_all(work.join("hx-config/helix")).map_err(|error| error.to_string())?;
     for file in ["thesis.tex", "chapters/intro.tex", "chapters/method.tex"] {
@@ -200,6 +203,22 @@ pub fn prepare(root: &Path, name: &str) -> Outcome<PathBuf> {
         .replace("/tmp/thesis/", &format!("{}/", work.display()));
     fs::write(work.join("doc.synctex"), synctex).map_err(|error| error.to_string())?;
     Ok(work)
+}
+
+fn neovim_swap_directory() -> Option<PathBuf> {
+    std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
+        .map(|state| state.join("nvim/swap"))
+}
+
+fn clear_swap_files(swap: &Path, work: &Path) {
+    let prefix = format!("{}%", work.display()).replace('/', "%");
+    for entry in fs::read_dir(swap).into_iter().flatten().flatten() {
+        if entry.file_name().to_string_lossy().starts_with(&prefix) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
 }
 
 pub trait Host {
@@ -663,6 +682,28 @@ pub fn status_line(screen: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_work_directory_swap_files_are_cleared() {
+        let swap = std::env::temp_dir().join(format!("xtask-swap-{}", std::process::id()));
+        fs::create_dir_all(&swap).unwrap();
+        let names = [
+            "%work%e2e-follow%chapters%intro.tex.swp",
+            "%work%e2e-follow2%chapters%intro.tex.swp",
+            "%home%thesis%intro.tex.swp",
+        ];
+        for name in names {
+            fs::write(swap.join(name), "").unwrap();
+        }
+        clear_swap_files(&swap, Path::new("/work/e2e-follow"));
+        let mut left: Vec<String> = fs::read_dir(&swap)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        fs::remove_dir_all(&swap).unwrap();
+        assert_eq!(left, [names[2], names[1]]);
+    }
 
     #[test]
     fn an_editor_state_is_read_from_the_right() {
