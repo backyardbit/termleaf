@@ -300,3 +300,4 @@ td kbd { margin: 1px 0; }
   .btn-sm { padding: 8px 12px; }
   .tab { padding: 13px 9px 14px; font-size: 14px; }
 }
+.editors td:first-child { width: auto; }

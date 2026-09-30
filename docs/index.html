@@ -29,6 +29,7 @@
           <li class="hide-sm"><a href="#features">Features</a></li>
           <li><a href="#install">Install</a></li>
           <li class="hide-sm"><a href="#keys">Keys</a></li>
+          <li class="hide-sm"><a href="#synctex">SyncTeX</a></li>
           <li><a class="btn btn-outline btn-sm" href="https://github.com/backyardbit/termleaf">
             <svg class="gh-icon" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
             GitHub</a></li>
@@ -228,6 +229,8 @@
                 <tr><td><kbd>:$</kbd></td><td>last page</td></tr>
                 <tr><td><kbd>+</kbd> / <kbd>-</kbd></td><td>zoom in / out (<code>=</code> also zooms in; takes a count)</td></tr>
                 <tr><td><kbd>s</kbd> / <kbd>a</kbd></td><td>fit width / fit page</td></tr>
+                <tr><td><kbd>e</kbd></td><td>open the source line under the pointer in your editor</td></tr>
+                <tr><td><kbd>F</kbd> <kbd>:follow</kbd> <kbd>:nofollow</kbd></td><td>follow your editor on / off</td></tr>
                 <tr><td><kbd>q</kbd> <kbd>:q</kbd> <kbd>Ctrl-C</kbd></td><td>quit</td></tr>
               </tbody>
             </table>
@@ -243,12 +246,33 @@
                 <tr><td>drag</td><td>pan</td></tr>
                 <tr><td>click</td><td>follow a link (<code>\ref</code>, citations, table of contents)</td></tr>
                 <tr><td>double-click</td><td>switch between fit width and fit page</td></tr>
+                <tr><td><kbd>Alt</kbd> + click, <kbd>Ctrl</kbd> + click</td><td>open the source line under the click in your editor</td></tr>
                 <tr><td>pinch</td><td>zoom at the pointer</td></tr>
               </tbody>
             </table>
           </div>
         </div>
         <p class="note">Pinch to zoom needs an OS permission. On macOS, the terminal app needs Input Monitoring. On Linux, your user must be in the <code>input</code> group. <code>termleaf --no-pinch</code> turns it off. <a href="https://github.com/backyardbit/termleaf#pinch-to-zoom">Details are in the README.</a></p>
+      </div>
+    </section>
+
+    <section id="synctex" class="section">
+      <div class="container narrow">
+        <div class="section-head">
+          <h2>SyncTeX</h2>
+          <p>Build with <code>-synctex=1</code> (for example <code>latexmk -pdf -synctex=1 -pvc</code>). <kbd>e</kbd> or <kbd>Alt</kbd> + click opens the source line in your editor. Follow is on by default: as you move through a <code>.tex</code> file, termleaf shows the page with your cursor's line. <kbd>F</kbd>, <code>:follow</code> and <code>:nofollow</code> switch it, and <code>termleaf --no-follow</code> starts with it off.</p>
+        </div>
+        <div class="table-card">
+          <table class="editors">
+            <thead><tr><th scope="col">Editor</th><th scope="col">Inverse search</th><th scope="col">Follow</th><th scope="col">Setup</th></tr></thead>
+            <tbody>
+              <tr><td>Neovim</td><td>over its RPC socket</td><td>over its RPC socket</td><td>none</td></tr>
+              <tr><td>Helix</td><td>typed keys, in a multiplexer</td><td>reads its statusline, in a multiplexer</td><td>none</td></tr>
+              <tr><td>Vim</td><td>typed keys, in a multiplexer</td><td>the Vim snippet</td><td><a href="https://github.com/backyardbit/termleaf/blob/master/tests/fixtures/snippet.vim"><code>snippet.vim</code></a>, for follow only</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="note">Multiplexers: tmux, herdr, zellij 0.44 or later, GNU screen, kitty windows (with remote control on) and WezTerm panes. The editor runs in the same one as termleaf. Anywhere else, only Neovim works. <code>termleaf --follow file.tex:line</code> sends a position from scripts and editor keys. <a href="https://github.com/backyardbit/termleaf#synctex">The README has the details and Helix's limits.</a></p>
       </div>
     </section>
   </main>
