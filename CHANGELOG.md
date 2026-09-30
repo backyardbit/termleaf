@@ -26,7 +26,7 @@ Build with `-synctex=1`. The README's SyncTeX section has the details.
 - Editors:
   - Neovim needs no config. It is reached over its RPC socket, in a multiplexer or without one.
   - Helix needs no config. Inverse search types the jump into its pane, and follow reads its statusline through the multiplexer.
-  - Vim: inverse search types the jump into its pane. Follow needs `tests/fixtures/snippet.vim`.
+  - Vim: inverse search types the jump into its pane. Follow needs `contrib/termleaf.vim`.
 - Multiplexers: tmux, herdr, zellij 0.44 or later, GNU screen, kitty windows (with `allow_remote_control` and `listen_on`), and WezTerm panes.
 - Each termleaf listens on `$XDG_RUNTIME_DIR/termleaf/<pid>.sock`, or on `${TMPDIR:-/tmp}/termleaf-$USER/<pid>.sock`, in a directory with mode 0700.
 

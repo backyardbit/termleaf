@@ -162,10 +162,10 @@ F = ":sh termleaf --follow %{buffer_name}:%{cursor_line}:%{cursor_column}"
 
 ### Vim snippet
 
-Vim has no socket termleaf can reach, so follow needs [`tests/fixtures/snippet.vim`](tests/fixtures/snippet.vim), which the end-to-end tests also use:
+Vim has no socket termleaf can reach, so follow needs [`contrib/termleaf.vim`](contrib/termleaf.vim), which the end-to-end tests also use:
 
 ```sh
-curl -fLo ~/.vim/plugin/termleaf.vim --create-dirs https://raw.githubusercontent.com/backyardbit/termleaf/master/tests/fixtures/snippet.vim
+curl -fLo ~/.vim/plugin/termleaf.vim --create-dirs https://raw.githubusercontent.com/backyardbit/termleaf/master/contrib/termleaf.vim
 ```
 
 In `.tex` buffers, it sends the cursor position to every termleaf 150 ms after the last move, and only when the position changed. `:TermleafFollowToggle`, or `let g:termleaf_follow = 0`, stops it sending. It needs a Vim with `+channel` whose `ch_open()` takes `unix:` addresses (tested with Vim 9.1). Inverse search needs no snippet.
