@@ -17,12 +17,12 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui_image::FontSize;
-use ratatui_image::picker::{Capability, Picker};
+use ratatui_image::picker::Capability;
 
 use crate::editor::{self, Jumper};
 use crate::encoder::{self, Encoded, Encoder, Job, Wanted};
 use crate::follow::{self, Follow, Listener, Request};
-use crate::graphics::{self, Choice, Protocol};
+use crate::graphics::{self, Choice, Protocol, TerminalInfo};
 use crate::inverse::Inverse;
 use crate::keys::{Command, Key, KeyParser, ScreenCell};
 use crate::kitty::{self, CellGrid, ImageId, Payload, Placeholders, Placement};
@@ -184,7 +184,7 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
     result
 }
 
-fn payload_for(picker: &Picker) -> Payload {
+fn payload_for(picker: &TerminalInfo) -> Payload {
     compression_if(picker.capabilities())
 }
 

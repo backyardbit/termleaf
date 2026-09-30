@@ -16,11 +16,10 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use ratatui::DefaultTerminal;
-use ratatui_image::picker::Picker;
 
 use crate::app::Options;
 use crate::follow::{self, Follow, Listener};
-use crate::graphics::{Raster, tmux_server};
+use crate::graphics::{Raster, TerminalInfo, tmux_server};
 use crate::layout::CellSize;
 use crate::pinch;
 use crate::raster::app::{
@@ -34,7 +33,7 @@ pub fn run(
     path: &Path,
     options: Options,
     mut terminal: DefaultTerminal,
-    picker: &Picker,
+    picker: &TerminalInfo,
     raster: Raster,
 ) -> Result<()> {
     let result = show(path, &options, &mut terminal, picker, raster);
@@ -89,7 +88,7 @@ fn show(
     path: &Path,
     options: &Options,
     terminal: &mut DefaultTerminal,
-    picker: &Picker,
+    picker: &TerminalInfo,
     raster: Raster,
 ) -> Result<()> {
     let encode = encoder_for(raster);
