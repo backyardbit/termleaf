@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.3.0
+
+- Search native PDF text with `/` and Enter. `n` and `N` move between matches, counts work, and Escape cancels the prompt or dismisses results (#42).
+- Search is case-insensitive, supports Unicode and phrases spanning lines, and runs in the background. The status bar shows progress and match counts. Scanned PDFs need an existing text layer; search does not perform OCR (#42).
+- Matches are highlighted in Kitty, Sixel and iTerm2 graphics. Highlights follow zooming and scrolling, and successful PDF rebuilds rerun the query without moving the view (#42).
+- Stop terminal queries before reading user input, so terminal replies cannot become stray key presses (#41).
+
 ## v0.2.1
 
 - Follow no longer stops after a focus-in that no focus-out follows. termleaf used to treat itself as focused from then on and ignore every editor position after the first, for Neovim, Helix, the Vim snippet and `termleaf --follow`, on every OS. termleaf now trusts focus reports only after it has seen a focus-out (#39).
