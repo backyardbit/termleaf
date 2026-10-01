@@ -1,6 +1,13 @@
 use std::io;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
+use std::os::fd::AsFd;
+#[cfg(not(target_os = "macos"))]
+use std::os::fd::{AsRawFd, BorrowedFd};
 use std::thread;
+
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+use macos::wait_for_hangup;
 
 pub fn restore(mut terminal: ratatui::DefaultTerminal) {
     let _ = ratatui::try_restore();
@@ -17,6 +24,7 @@ pub fn on_hangup(ended: impl FnOnce() + Send + 'static) {
     });
 }
 
+#[cfg(not(target_os = "macos"))]
 fn wait_for_hangup(input: BorrowedFd<'_>) -> io::Result<()> {
     loop {
         let mut descriptor = libc::pollfd {
