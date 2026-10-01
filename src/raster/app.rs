@@ -23,6 +23,7 @@ use crate::raster::frame::tile_keys;
 use crate::raster::painter::{Job, Painter, Painting};
 use crate::raster::tiles::Tiles;
 use crate::renderer::{Generation, RenderKey, Renderer, Response};
+use crate::search::Search;
 use crate::viewer::Viewer;
 
 const RELOAD_SETTLE: Duration = Duration::from_millis(100);
@@ -73,6 +74,9 @@ pub struct App {
     inverse: Inverse,
     follow: Follow,
     viewer: Viewer,
+    search: Search,
+    document_generation: Generation,
+    serial: Generation,
     keys: KeyParser,
     gestures: Gestures,
     pinch: PinchGate,
@@ -121,6 +125,9 @@ impl App {
             inverse: Inverse::new(&parts.path, parts.editors),
             follow: parts.follow,
             viewer: Viewer::new(parts.pages, parts.cell, parts.pane),
+            search: Search::default(),
+            document_generation: 0,
+            serial: 0,
             keys: KeyParser::default(),
             gestures: Gestures::default(),
             pinch: PinchGate::default(),
@@ -255,6 +262,19 @@ impl App {
     }
 
     fn apply_at(&mut self, command: Command, now: Instant) -> Flow {
+        let revision = self.search.revision();
+        if self.search.command(
+            command,
+            &mut self.keys,
+            &mut self.viewer,
+            &self.renderer,
+            self.document_generation,
+        ) {
+            if self.search.revision() != revision {
+                self.refresh_highlights();
+            }
+            return Flow::Continue;
+        }
         if command == Command::Quit {
             return Flow::Quit;
         }
@@ -438,9 +458,32 @@ impl App {
         self.renderer.render_all(&batch);
     }
 
+    fn next_generation(&mut self) -> Generation {
+        self.serial = self
+            .serial
+            .max(self.generation)
+            .max(self.requested_generation)
+            + 1;
+        self.serial
+    }
+
+    fn refresh_highlights(&mut self) {
+        self.generation = self.next_generation();
+        self.renderer.highlight(
+            self.document_generation,
+            self.generation,
+            self.search.highlights.clone(),
+        );
+        self.tiles.forget(|_| true);
+        self.in_flight.clear();
+        self.submitted = None;
+        self.first_valid_job = self.next_job;
+        self.outgoing.clear();
+    }
+
     fn start_reload(&mut self) {
         self.reload_at = None;
-        self.requested_generation += 1;
+        self.requested_generation = self.next_generation();
         self.renderer.load(self.requested_generation);
     }
 
@@ -448,8 +491,11 @@ impl App {
         match response {
             Response::Loaded { generation, pages } if generation == self.requested_generation => {
                 self.generation = generation;
+                self.document_generation = generation;
                 self.reload_retries = 0;
                 self.viewer.reloaded(pages);
+                self.search
+                    .restart(&self.renderer, self.document_generation);
                 self.inverse.reloaded();
                 self.tiles.forget(|key| key.generation != generation);
                 self.in_flight.clear();
@@ -458,6 +504,7 @@ impl App {
             Response::Unchanged { generation } if generation == self.requested_generation => {
                 self.reload_retries = 0;
                 self.viewer.unchanged();
+
                 self.inverse.reloaded();
                 self.follow.reloaded(&mut self.viewer, &mut self.inverse);
             }
@@ -469,6 +516,14 @@ impl App {
                 }
                 if self.reload_at.is_none() {
                     self.follow.reloaded(&mut self.viewer, &mut self.inverse);
+                }
+            }
+            Response::Searched { ticket, result } => {
+                if self
+                    .search
+                    .receive(&ticket, self.document_generation, result, &mut self.viewer)
+                {
+                    self.refresh_highlights();
                 }
             }
             Response::Loaded { .. } | Response::Unreadable { .. } | Response::Unchanged { .. } => {}
@@ -485,7 +540,8 @@ impl App {
     }
 
     fn receive_painting(&mut self, painting: Painting) {
-        let stale = painting.id < self.first_valid_job
+        let stale = painting.generation != self.generation
+            || painting.id < self.first_valid_job
             || self
                 .written_job
                 .is_some_and(|written| painting.id <= written)
@@ -531,9 +587,21 @@ impl App {
     }
 
     fn status(&self) -> String {
+        if let Some(query) = self.keys.search_line() {
+            return format!("/{query}");
+        }
+        let search = self.search.status();
         let notice = self.follow.beside(self.inverse.notice());
-        self.viewer
-            .status_line(&self.file_name, self.keys.command_line(), notice.as_deref())
+        let notice = [notice, search]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ");
+        self.viewer.status_line(
+            &self.file_name,
+            self.keys.command_line(),
+            (!notice.is_empty()).then_some(notice.as_str()),
+        )
     }
 }
 
@@ -701,6 +769,131 @@ mod tests {
                 Err(_) => panic!("no frame was painted"),
             }
         }
+    }
+
+    fn type_search(app: &mut App, query: &str) {
+        app.handle(Event::Key(Key::Char('/')));
+        for character in query.chars() {
+            app.handle(Event::Key(Key::Char(character)));
+        }
+        app.handle(Event::Key(Key::Enter));
+    }
+
+    fn finish_search(app: &mut App, inbox: &Receiver<Event>) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app
+            .search
+            .status()
+            .is_some_and(|status| status.contains("searching…"))
+        {
+            let event = inbox
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .expect("search did not finish");
+            app.handle(event);
+        }
+    }
+
+    #[test]
+    fn a_late_painting_cannot_restore_a_dismissed_search_highlight() {
+        let (mut app, inbox) = headless_app(fixture("three-pages.pdf"), PANE);
+        type_search(&mut app, "page");
+        finish_search(&mut app, &inbox);
+        let old = Painting {
+            id: 999,
+            view: app.viewer.view().clone(),
+            generation: app.generation,
+            bytes: "old highlights".to_owned(),
+        };
+        app.handle(Event::Key(Key::Escape));
+        app.handle(Event::Painted(old));
+        assert!(!app.outgoing.contains("old highlights"));
+    }
+
+    #[test]
+    fn search_prompt_navigation_no_matches_and_dismissal_work_together() {
+        let (mut app, inbox) = headless_app(fixture("three-pages.pdf"), PANE);
+        type_search(&mut app, "page");
+        finish_search(&mut app, &inbox);
+        assert!(app.status().ends_with("/page · 1/3"), "{}", app.status());
+        app.handle(Event::Key(Key::Char('N')));
+        assert_eq!(app.viewer.page(), 2);
+        assert!(app.status().ends_with("/page · 3/3"));
+        app.handle(Event::Key(Key::Char('n')));
+        assert_eq!(app.viewer.page(), 0);
+        type_search(&mut app, "not in this PDF café");
+        finish_search(&mut app, &inbox);
+        assert!(app.status().ends_with("no matches"));
+        app.handle(Event::Key(Key::Escape));
+        assert!(!app.status().contains("matches"));
+        assert!(app.search.highlights.hits.is_empty());
+    }
+
+    #[test]
+    fn cancelling_a_pending_search_rejects_its_late_result() {
+        let (mut app, inbox) = headless_app(fixture("three-pages.pdf"), PANE);
+        type_search(&mut app, "three");
+        let result = inbox.recv_timeout(Duration::from_secs(10)).unwrap();
+        app.handle(Event::Key(Key::Escape));
+        app.handle(result);
+        assert_eq!(app.viewer.page(), 0);
+        assert!(app.search.highlights.hits.is_empty());
+        assert!(app.search.status().is_none());
+    }
+
+    #[test]
+    fn a_new_search_rejects_the_previous_query_and_empty_enter_repeats() {
+        let (mut app, inbox) = headless_app(fixture("three-pages.pdf"), PANE);
+        type_search(&mut app, "three");
+        let previous = inbox.recv_timeout(Duration::from_secs(10)).unwrap();
+        type_search(&mut app, "two");
+        app.handle(previous);
+        assert_eq!(app.viewer.page(), 0);
+        finish_search(&mut app, &inbox);
+        assert_eq!(app.viewer.page(), 1);
+        assert!(app.status().ends_with("/two · 1/1"));
+        app.handle(Event::Key(Key::Char('g')));
+        app.handle(Event::Key(Key::Char('g')));
+        type_search(&mut app, "");
+        finish_search(&mut app, &inbox);
+        assert_eq!(app.viewer.page(), 1);
+    }
+
+    #[test]
+    fn reload_rejects_old_results_and_restarts_without_moving_the_view() {
+        let (mut app, inbox) = headless_app(fixture("three-pages.pdf"), PANE);
+        type_search(&mut app, "page");
+        let previous = inbox.recv_timeout(Duration::from_secs(10)).unwrap();
+        let bytes = std::fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/three-pages.pdf"),
+        )
+        .unwrap();
+        app.viewer.apply(Command::Scroll {
+            columns: 0,
+            rows: 10,
+        });
+        let before = app.viewer.view().top;
+        app.requested_generation = 7;
+        app.handle(Event::Renderer(Response::Loaded {
+            generation: 7,
+            pages: crate::pdf::Pdf::from_bytes(&bytes).unwrap().pages(),
+        }));
+        app.handle(previous);
+        assert!(app.search.highlights.hits.is_empty());
+        let ticket = crate::search::Ticket {
+            document: 7,
+            query_id: 2,
+            query: "page".to_owned(),
+        };
+        let hits = crate::pdf::Pdf::from_bytes(&bytes)
+            .unwrap()
+            .search(0, "page")
+            .unwrap();
+        app.handle(Event::Renderer(Response::Searched {
+            ticket,
+            result: Ok(hits),
+        }));
+        assert_eq!(app.viewer.view().top, before);
+        assert_eq!(app.search.highlights.hits.len(), 1);
     }
 
     #[test]

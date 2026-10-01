@@ -12,6 +12,7 @@ mod pdf;
 mod pinch;
 mod raster;
 mod renderer;
+mod search;
 mod shelf;
 mod synctex;
 mod viewer;
@@ -33,6 +34,8 @@ keys:
   :<n>         go to page n
   + / -        zoom in / out (= also zooms in)
   s / a        fit width / fit page
+  /            search PDF text (Enter submits, Escape cancels/dismisses)
+  n / N        next / previous match, wrapping at the ends
   F            follow the editor on / off (also :follow and :nofollow)
   q, Ctrl-C    quit
 

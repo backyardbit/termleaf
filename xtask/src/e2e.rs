@@ -71,6 +71,8 @@ fn scenario(root: &Path) -> Outcome<()> {
     ])?;
     session.step("start", "page 1/3 · doc.pdf", Page::Changed)?;
 
+    search_scenario(&mut session)?;
+
     session.send("e")?;
     session.wait_for_status("the missing SyncTeX hint", |status| {
         status == "page 1/3 · doc.pdf · no SyncTeX data: build with -synctex=1"
@@ -174,6 +176,68 @@ fn copy(from: &Path, to: &Path) -> Outcome<()> {
     fs::copy(from, to)
         .map(|_| ())
         .map_err(|error| format!("copying {} to {}: {error}", from.display(), to.display()))
+}
+
+fn search_scenario(session: &mut Session) -> Outcome<()> {
+    let plain = session.previous.as_ref().map_or(0, highlighted_pixels);
+    session.send("/page\r")?;
+    session.step(
+        "search-first",
+        "page 1/3 · doc.pdf · /page · 1/3",
+        Page::Changed,
+    )?;
+    let highlighted = session.previous.as_ref().map_or(0, highlighted_pixels);
+    if highlighted < plain + 100 {
+        return Err(format!(
+            "search highlights missing: {plain} before, {highlighted} after"
+        ));
+    }
+    session.send("N")?;
+    session.step(
+        "search-wrap-backwards",
+        "page 3/3 · doc.pdf · /page · 3/3",
+        Page::Changed,
+    )?;
+    session.send("n")?;
+    session.step(
+        "search-wrap-forwards",
+        "page 1/3 · doc.pdf · /page · 1/3",
+        Page::Changed,
+    )?;
+    session.send("+")?;
+    session.wait_for_status("zoom with search results", |status| {
+        status.contains('%') && status.ends_with("/page · 1/3")
+    })?;
+    poll(STEP_TIMEOUT, "zoomed search highlights", || {
+        let screen = session.screenshot("search-zoom").ok()?;
+        (highlighted_pixels(&screen) > plain + 100).then_some(())
+    })?;
+    session.send("s/no-such-text\r")?;
+    session.step(
+        "search-no-matches",
+        "page 1/3 · doc.pdf · /no-such-text · no matches",
+        Page::Changed,
+    )?;
+    let cleared = session.previous.as_ref().map_or(0, highlighted_pixels);
+    if cleared > plain + 20 {
+        return Err(format!(
+            "old search highlights remain: {plain} before, {cleared} after clearing"
+        ));
+    }
+    session.send("\x1b")?;
+    session.wait_for_status("search dismissed", |status| status == "page 1/3 · doc.pdf")?;
+    session.send("gg")?;
+    session.step("search-dismissed", "page 1/3 · doc.pdf", Page::Changed)
+}
+
+pub fn highlighted_pixels(image: &RgbImage) -> usize {
+    image
+        .pixels()
+        .filter(|pixel| {
+            let [red, green, blue] = pixel.0;
+            red > 200 && green > 120 && u16::from(blue) + 50 < u16::from(green)
+        })
+        .count()
 }
 
 struct Session {

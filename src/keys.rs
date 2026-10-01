@@ -39,6 +39,10 @@ pub enum Command {
     Inverse(Option<ScreenCell>),
     ToggleFollow,
     SetFollow(bool),
+    SearchSubmit,
+    SearchNext(usize),
+    SearchPrevious(usize),
+    SearchDismiss,
     Quit,
 }
 
@@ -47,9 +51,37 @@ pub struct KeyParser {
     count: Option<usize>,
     awaiting_second_g: bool,
     command_line: Option<String>,
+    search_line: Option<String>,
 }
 
 impl KeyParser {
+    pub fn search_line(&self) -> Option<&str> {
+        self.search_line.as_deref()
+    }
+
+    pub fn take_search(&mut self) -> String {
+        self.search_line.take().unwrap_or_default()
+    }
+
+    fn feed_search(&mut self, key: Key) -> Option<Command> {
+        match key {
+            Key::Enter => return Some(Command::SearchSubmit),
+            Key::Escape => self.search_line = None,
+            Key::Backspace => {
+                if let Some(line) = &mut self.search_line {
+                    line.pop();
+                }
+            }
+            Key::Char(character) if !character.is_control() => {
+                if let Some(line) = &mut self.search_line {
+                    line.push(character);
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
     pub fn command_line(&self) -> Option<&str> {
         self.command_line.as_deref()
     }
@@ -58,8 +90,15 @@ impl KeyParser {
         if key == Key::Interrupt {
             return Some(Command::Quit);
         }
+        if self.search_line.is_some() {
+            return self.feed_search(key);
+        }
         if self.command_line.is_some() {
             return self.feed_command_line(key);
+        }
+        if key == Key::Escape {
+            self.reset();
+            return Some(Command::SearchDismiss);
         }
         let Key::Char(character) = key else {
             self.reset();
@@ -77,6 +116,11 @@ impl KeyParser {
                 self.awaiting_second_g = true;
                 None
             }
+            '/' => {
+                self.reset();
+                self.search_line = Some(String::new());
+                None
+            }
             ':' => {
                 self.reset();
                 self.command_line = Some(String::new());
@@ -87,6 +131,8 @@ impl KeyParser {
                 self.reset();
                 let repeat = count.unwrap_or(1);
                 match character {
+                    'n' => Some(Command::SearchNext(repeat)),
+                    'N' => Some(Command::SearchPrevious(repeat)),
                     'j' => Some(Command::Next(repeat)),
                     'k' => Some(Command::Previous(repeat)),
                     'G' => Some(count.map_or(Command::Last, Command::GoTo)),
@@ -160,6 +206,32 @@ fn parse_command_line(line: &str) -> Option<Command> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_text_keeps_navigation_keys_and_unicode_in_the_prompt() {
+        let mut keys = KeyParser::default();
+        for character in "/nN café".chars() {
+            assert_eq!(keys.feed(Key::Char(character)), None);
+        }
+        assert_eq!(keys.search_line(), Some("nN café"));
+        assert_eq!(keys.feed(Key::Backspace), None);
+        assert_eq!(keys.search_line(), Some("nN caf"));
+        assert_eq!(keys.feed(Key::Enter), Some(Command::SearchSubmit));
+        assert_eq!(keys.take_search(), "nN caf");
+        assert_eq!(keys.feed(Key::Char('n')), Some(Command::SearchNext(1)));
+        assert_eq!(keys.feed(Key::Char('N')), Some(Command::SearchPrevious(1)));
+        assert_eq!(keys.feed(Key::Escape), Some(Command::SearchDismiss));
+    }
+
+    #[test]
+    fn escape_cancels_only_the_unsubmitted_prompt() {
+        let mut keys = KeyParser::default();
+        keys.feed(Key::Char('/'));
+        keys.feed(Key::Char('q'));
+        assert_eq!(keys.feed(Key::Escape), None);
+        assert_eq!(keys.search_line(), None);
+        assert_eq!(keys.feed(Key::Char('q')), Some(Command::Quit));
+    }
 
     fn run(input: &str) -> Vec<Command> {
         let mut parser = KeyParser::default();
