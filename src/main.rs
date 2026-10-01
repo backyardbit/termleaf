@@ -12,8 +12,10 @@ mod pdf;
 mod pinch;
 mod raster;
 mod renderer;
+mod search;
 mod shelf;
 mod synctex;
+mod terminal;
 mod viewer;
 mod watch;
 
@@ -33,6 +35,8 @@ keys:
   :<n>         go to page n
   + / -        zoom in / out (= also zooms in)
   s / a        fit width / fit page
+  /            search PDF text (Enter submits, Escape cancels/dismisses)
+  n / N        next / previous match, wrapping at the ends
   F            follow the editor on / off (also :follow and :nofollow)
   q, Ctrl-C    quit
 
@@ -139,7 +143,8 @@ fn main() -> ExitCode {
     match app::run(path, options) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("termleaf: {error:#}");
+            use std::io::Write;
+            let _ = writeln!(std::io::stderr(), "termleaf: {error:#}");
             ExitCode::FAILURE
         }
     }

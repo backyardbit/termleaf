@@ -324,18 +324,46 @@ fn scenario(root: &Path) -> Outcome<()> {
         "page 3/5",
     )?;
 
-    server.respawn(&server.viewer, "sleep 86400", &work)?;
+    hangup_viewer(&server, &work, &sockets)?;
+    for attempt in 1..=10 {
+        server.respawn(&server.viewer, &viewer, &work)?;
+        server.wait_for_status("termleaf to open for the hangup check", |status| {
+            status.contains(" · doc.pdf")
+        })?;
+        hangup_viewer(&server, &work, &sockets)?;
+        println!("ok   repeated pane hangup {attempt}/10");
+    }
+    Ok(())
+}
+
+fn viewer_sockets(directory: &Path) -> Vec<PathBuf> {
+    fs::read_dir(directory.join("termleaf"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "sock")
+        })
+        .collect()
+}
+
+fn hangup_viewer(server: &Server, work: &Path, sockets: &Path) -> Outcome<()> {
+    let before = viewer_sockets(sockets);
+    if before.is_empty() {
+        return Err("the running viewer has no follow socket".to_owned());
+    }
+    server.respawn(&server.viewer, "sleep 86400", work)?;
     poll("termleaf to remove its socket on SIGHUP", || {
-        let left = fs::read_dir(sockets.join("termleaf"))
-            .map(|entries| {
-                entries
-                    .flatten()
-                    .any(|entry| entry.path().extension().is_some_and(|ext| ext == "sock"))
-            })
-            .unwrap_or(false);
-        (!left).then_some(())
+        viewer_sockets(sockets).is_empty().then_some(())
+    }).map_err(|error| {
+        let left = viewer_sockets(sockets);
+        let pids: Vec<String> = left.iter().filter_map(|path| path.file_stem()?.to_str()?.parse::<u32>().ok().map(|pid| pid.to_string())).collect();
+        let processes = Command::new("ps").args(["-p", &pids.join(","), "-o", "pid=,ppid=,pgid=,state=,comm="]).output().map(|output| String::from_utf8_lossy(&output.stdout).into_owned()).unwrap_or_default();
+        format!("{error}; sockets before: {before:?}; remaining: {left:?}; processes: {processes:?}; pane: {:?}", server.status())
     })?;
-    println!("ok   termleaf removed its socket when its pane was killed");
+    println!("ok   termleaf removed its socket when its pane was killed: {before:?}");
     Ok(())
 }
 

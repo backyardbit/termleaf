@@ -58,8 +58,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install build dependencies, Xvfb, ImageMagick, xterm and xdotool
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libfontconfig-dev xvfb imagemagick libgl1-mesa-dri xterm xdotool
+      - name: Install build dependencies, Xvfb, ImageMagick, xterm, xdotool and FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libfontconfig-dev xvfb imagemagick libgl1-mesa-dri xterm xdotool ffmpeg
       - name: Install Ghostty
         run: |
           gh release download 1.3.1-0-ppa2 --repo mkasberg/ghostty-ubuntu --pattern 'ghostty_*_amd64_24.04.deb' --dir "$RUNNER_TEMP/ghostty"
@@ -133,4 +133,6 @@ jobs:
           path: |
             target/e2e/screenshots
             target/e2e/ghostty.log
+            target/e2e/recording.log
+            target/e2e/search-demo.mp4
             target/xterm

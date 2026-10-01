@@ -5,6 +5,8 @@ use std::thread;
 
 use image::RgbImage;
 
+use crate::search::{Highlights, Hit, MAX_HITS, Ticket};
+
 use crate::pdf::{PageInfo, Pdf, PixelRegion, Scale};
 
 pub type Generation = u64;
@@ -17,13 +19,23 @@ pub struct RenderKey {
     pub region: PixelRegion,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 enum Request {
     Load(Generation),
     Render(RenderKey),
+    Search(Ticket),
+    Highlight {
+        document: Generation,
+        generation: Generation,
+        highlights: Highlights,
+    },
 }
 
 pub enum Response {
+    Searched {
+        ticket: Ticket,
+        result: Result<Vec<Hit>, String>,
+    },
     Loaded {
         generation: Generation,
         pages: Vec<PageInfo>,
@@ -49,6 +61,18 @@ impl Renderer {
         let (requests, inbox) = mpsc::channel();
         thread::spawn(move || serve(&path, &inbox, &respond, &deliver));
         Self { requests }
+    }
+
+    pub fn search(&self, ticket: Ticket) {
+        self.send(Request::Search(ticket));
+    }
+
+    pub fn highlight(&self, document: Generation, generation: Generation, highlights: Highlights) {
+        self.send(Request::Highlight {
+            document,
+            generation,
+            highlights,
+        });
     }
 
     pub fn load(&self, generation: Generation) {
@@ -77,6 +101,8 @@ struct LoadedPdf {
     generation: Generation,
     pdf: Pdf,
     bytes: Vec<u8>,
+    rendered_generation: Generation,
+    highlights: Highlights,
 }
 
 fn load(path: &Path, generation: Generation, loaded: &mut Option<LoadedPdf>) -> Response {
@@ -94,6 +120,8 @@ fn load(path: &Path, generation: Generation, loaded: &mut Option<LoadedPdf>) -> 
             let pages = pdf.pages();
             *loaded = Some(LoadedPdf {
                 generation,
+                rendered_generation: generation,
+                highlights: Highlights::default(),
                 pdf,
                 bytes,
             });
@@ -111,8 +139,13 @@ fn serve(
 ) {
     let mut loaded: Option<LoadedPdf> = None;
     let mut pending: Vec<Request> = Vec::new();
+    let mut searching: Option<Scan> = None;
     loop {
         pending.extend(inbox.try_iter().flatten());
+        if pending.is_empty() && searching.is_some() {
+            scan_page(&mut searching, loaded.as_ref(), respond);
+            continue;
+        }
         if pending.is_empty() {
             match inbox.recv() {
                 Ok(batch) => pending.extend(batch),
@@ -121,19 +154,79 @@ fn serve(
             continue;
         }
         match next_request(&mut pending) {
-            Request::Load(generation) => respond(load(path, generation, &mut loaded)),
+            Request::Load(generation) => {
+                respond(load(path, generation, &mut loaded));
+            }
+            Request::Search(ticket) => {
+                searching = (!ticket.query.is_empty()).then_some(Scan {
+                    ticket,
+                    page: 0,
+                    hits: Vec::new(),
+                });
+            }
+            Request::Highlight {
+                document,
+                generation,
+                highlights,
+            } => {
+                if let Some(current) = &mut loaded
+                    && current.generation == document
+                {
+                    current.rendered_generation = generation;
+                    current.highlights = highlights;
+                }
+            }
             Request::Render(key) => {
                 let Some(current) = &mut loaded else {
                     continue;
                 };
-                if current.generation != key.generation {
+                if current.rendered_generation != key.generation {
                     continue;
                 }
-                if let Ok(image) = current.pdf.render(key.page, key.scale, key.region) {
+                if let Ok(mut image) = current.pdf.render(key.page, key.scale, key.region) {
+                    current
+                        .highlights
+                        .tint(key.page, key.scale, key.region, &mut image);
                     deliver(key, image);
                 }
             }
         }
+    }
+}
+
+struct Scan {
+    ticket: Ticket,
+    page: usize,
+    hits: Vec<Hit>,
+}
+
+fn scan_page(scan: &mut Option<Scan>, loaded: Option<&LoadedPdf>, respond: &impl Fn(Response)) {
+    let Some(mut current) = scan.take() else {
+        return;
+    };
+    let Some(loaded) = loaded.filter(|loaded| loaded.generation == current.ticket.document) else {
+        return;
+    };
+    match loaded.pdf.search(current.page, &current.ticket.query) {
+        Ok(hits) => current
+            .hits
+            .extend(hits.into_iter().take(MAX_HITS - current.hits.len())),
+        Err(error) => {
+            respond(Response::Searched {
+                ticket: current.ticket,
+                result: Err(error.to_string()),
+            });
+            return;
+        }
+    }
+    current.page += 1;
+    if current.page == loaded.pdf.page_count() || current.hits.len() >= MAX_HITS {
+        respond(Response::Searched {
+            ticket: current.ticket,
+            result: Ok(current.hits),
+        });
+    } else {
+        *scan = Some(current);
     }
 }
 
@@ -146,12 +239,18 @@ fn next_request(pending: &mut Vec<Request>) -> Request {
         pending.retain(|request| !matches!(request, Request::Load(_)));
         return load;
     }
+    if let Some(index) = pending
+        .iter()
+        .position(|request| !matches!(request, Request::Render(_)))
+    {
+        return pending.remove(index);
+    }
     let newest = pending.pop().unwrap_or(Request::Load(0));
     pending.retain(|request| *request != newest);
     if let Request::Render(wanted) = &newest {
         pending.retain(|request| match request {
             Request::Render(key) => key.scale == wanted.scale,
-            Request::Load(_) => true,
+            _ => true,
         });
     }
     newest
@@ -199,6 +298,95 @@ mod tests {
         responses
             .recv_timeout(std::time::Duration::from_secs(10))
             .unwrap()
+    }
+
+    #[test]
+    fn highlight_revisions_render_pixels_without_reloading_the_pdf() {
+        let path = scratch_copy_of_fixture();
+        let (send, responses) = mpsc::channel();
+        let (tiles, rendered) = mpsc::channel();
+        let renderer = Renderer::spawn(
+            path.clone(),
+            move |response| {
+                send.send(response).unwrap();
+            },
+            move |key, image| {
+                tiles.send((key, image)).unwrap();
+            },
+        );
+        renderer.load(0);
+        next_response(&responses);
+        let pdf = Pdf::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
+        renderer.highlight(
+            0,
+            1,
+            Highlights {
+                hits: pdf.search(0, "page").unwrap(),
+                current: Some(0),
+            },
+        );
+        let key = RenderKey {
+            generation: 1,
+            page: 0,
+            scale: Scale::from_pixels_per_point(1.0),
+            region: PixelRegion {
+                x: 0,
+                y: 0,
+                width: 600,
+                height: 800,
+            },
+        };
+        renderer.render(key);
+        let (returned, image) = rendered
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("highlighted tile never rendered");
+        assert_eq!(returned, key);
+        assert!(
+            image
+                .pixels()
+                .any(|pixel| pixel[0] > 200 && pixel[1] > 120 && pixel[2] < 100)
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_search_scans_one_page_per_turn_and_preserves_multiline_hits() {
+        let path = scratch_copy_of_fixture();
+        let mut loaded = None;
+        load(&path, 7, &mut loaded);
+        let ticket = Ticket {
+            document: 7,
+            query_id: 2,
+            query: "page".to_owned(),
+        };
+        let mut scan = Some(Scan {
+            ticket: ticket.clone(),
+            page: 0,
+            hits: Vec::new(),
+        });
+        let (send, responses) = mpsc::channel();
+        let respond = |response| send.send(response).unwrap();
+        scan_page(&mut scan, loaded.as_ref(), &respond);
+        assert_eq!(scan.as_ref().unwrap().page, 1);
+        assert_eq!(scan.as_ref().unwrap().hits.len(), 1);
+        scan_page(&mut scan, loaded.as_ref(), &respond);
+        scan_page(&mut scan, loaded.as_ref(), &respond);
+        assert!(scan.is_none());
+        assert!(
+            matches!(next_response(&responses), Response::Searched { ticket: returned, result: Ok(hits) } if returned == ticket && hits.len() == 3)
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn queued_cancellation_precedes_render_work() {
+        let ticket = Ticket {
+            document: 1,
+            query_id: 2,
+            query: String::new(),
+        };
+        let mut pending = vec![render(0), Request::Search(ticket.clone()), render(1)];
+        assert_eq!(next_request(&mut pending), Request::Search(ticket));
     }
 
     #[test]

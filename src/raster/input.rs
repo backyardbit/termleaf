@@ -11,6 +11,10 @@ use crate::mouse::{MouseInput, Wheel};
 use crate::raster::app::Event;
 
 pub fn spawn_input(events: Sender<Event>) {
+    let closed = events.clone();
+    crate::terminal::on_hangup(move || {
+        let _ = closed.send(Event::TerminalClosed);
+    });
     thread::spawn(move || {
         while let Ok(terminal_event) = event::read() {
             if let Some(event) = translate_event(terminal_event)

@@ -131,6 +131,47 @@ impl Pdf {
             .collect()
     }
 
+    pub fn page_count(&self) -> usize {
+        self.page_count
+    }
+
+    pub fn search(&self, page_index: usize, query: &str) -> Result<Vec<crate::search::Hit>> {
+        use mupdf::text_page::SearchHitResponse;
+        let mut hits = Vec::new();
+        if query.trim().is_empty() {
+            return Ok(hits);
+        }
+        let page = self.load(page_index)?;
+        let bounds = page.bounds()?;
+        let text = page.to_text_page(mupdf::TextPageFlags::empty())?;
+        text.search_cb(query, &mut hits, |hits, quads| {
+            let areas = quads
+                .iter()
+                .map(|quad| {
+                    let points = [&quad.ul, &quad.ur, &quad.ll, &quad.lr];
+                    PointRect {
+                        x0: points.iter().map(|p| p.x).fold(f32::INFINITY, f32::min) - bounds.x0,
+                        y0: points.iter().map(|p| p.y).fold(f32::INFINITY, f32::min) - bounds.y0,
+                        x1: points.iter().map(|p| p.x).fold(f32::NEG_INFINITY, f32::max)
+                            - bounds.x0,
+                        y1: points.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max)
+                            - bounds.y0,
+                    }
+                })
+                .collect();
+            hits.push(crate::search::Hit {
+                page: page_index,
+                areas,
+            });
+            if hits.len() >= crate::search::MAX_HITS {
+                SearchHitResponse::AbortSearch
+            } else {
+                SearchHitResponse::ContinueSearch
+            }
+        })?;
+        Ok(hits)
+    }
+
     pub fn render(
         &mut self,
         page_index: usize,
@@ -261,6 +302,28 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures")
             .join(name)
+    }
+
+    #[test]
+    fn unicode_and_multiline_matches_keep_one_navigation_stop_per_occurrence() {
+        let pdf = open("search.pdf");
+        assert_eq!(pdf.search(0, "CAFÉ").unwrap().len(), 1);
+        assert_eq!(pdf.search(0, "naïve résumé").unwrap().len(), 1);
+        assert_eq!(pdf.search(0, "needle").unwrap().len(), 2);
+        let multiline = pdf.search(0, "across several").unwrap();
+        assert_eq!(multiline.len(), 1);
+        assert_eq!(multiline[0].areas.len(), 2);
+    }
+
+    #[test]
+    fn native_text_search_finds_each_occurrence_and_ignores_case() {
+        let pdf = open("three-pages.pdf");
+        let hits = pdf.search(0, "THIS IS PAGE").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(!hits[0].areas.is_empty());
+        assert!(hits[0].areas[0].x1 > hits[0].areas[0].x0);
+        assert!(pdf.search(0, "").unwrap().is_empty());
+        assert!(pdf.search(0, "not present café").unwrap().is_empty());
     }
 
     #[test]

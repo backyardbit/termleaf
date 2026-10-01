@@ -90,6 +90,31 @@ fn scenario(root: &Path) -> Outcome<()> {
     xdotool(&["key", "j"])?;
     let next = session.frame_shown(&log, &work, "next-page", 2)?;
     println!("ok   next-page: new frame shown at {next:.1} dB");
+    let before = fs::read(&log).map_err(|error| error.to_string())?;
+    let plain = frames(&before)
+        .last()
+        .and_then(|frame| decode(frame))
+        .map_or(0, |image| crate::e2e::highlighted_pixels(&image));
+    xdotool(&["type", "--clearmodifiers", "/page"])?;
+    xdotool(&["key", "Return"])?;
+    poll("a Sixel frame with search highlights", || {
+        let output = fs::read(&log).ok()?;
+        let written = frames(&output);
+        let frame = decode(written.last()?)?;
+        (crate::e2e::highlighted_pixels(&frame) > plain + 100).then_some(())
+    })?;
+    let count = frames(&fs::read(&log).map_err(|error| error.to_string())?).len();
+    let search = session.frame_shown(&log, &work, "search-highlight", count)?;
+    println!("ok   search-highlight: highlighted frame shown at {search:.1} dB");
+    xdotool(&["key", "Escape"])?;
+    poll("a Sixel frame without search highlights", || {
+        let output = fs::read(&log).ok()?;
+        let written = frames(&output);
+        let frame = decode(written.last()?)?;
+        (crate::e2e::highlighted_pixels(&frame) <= plain).then_some(())
+    })?;
+    let count = frames(&fs::read(&log).map_err(|error| error.to_string())?).len();
+    session.frame_shown(&log, &work, "search-dismissed", count)?;
     xdotool(&["key", "q"])?;
     poll("termleaf to quit", || {
         session.terminal.try_wait().ok().flatten().map(|_| ())

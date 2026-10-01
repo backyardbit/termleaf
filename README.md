@@ -56,6 +56,9 @@ The file must exist when termleaf starts. If a later build leaves the PDF broken
 | `+` / `-` | zoom in / out (`=` also zooms in; takes a count) |
 | `s` / `a` | fit width / fit page |
 | `e` | open the source line under the pointer in your editor ([SyncTeX](#synctex)) |
+| `/`, then Enter | search PDF text |
+| `n`, `N` | next / previous match, wrapping at the ends (counts work) |
+| Escape | cancel a search prompt, or dismiss search results |
 | `F`, `:follow`, `:nofollow` | follow your editor on / off ([SyncTeX](#synctex)) |
 | `q`, `:q`, `Ctrl-C` | quit |
 
@@ -70,6 +73,14 @@ Pages scroll continuously and open at fit width.
 | click | follow a link (`\ref`, citations, table of contents) |
 | double-click | switch between fit width and fit page |
 | `Alt` + click, `Ctrl` + click | open the source line under the click in your editor ([SyncTeX](#synctex)) |
+
+### Text search
+
+Press `/`, type a phrase and press Enter. Matches are yellow, with the current match in orange; the status bar shows the query and current/total match count. `n` and `N` move forwards and backwards, wrapping at the ends. A count such as `3n` skips three matches. An empty prompt repeats the last submitted query. Escape cancels an unsubmitted prompt, keeping the previous search; Escape outside the prompt dismisses the search and its highlights. A query with no results says `no matches`.
+
+Search is case-insensitive and uses the PDF's native text, including Unicode and phrases spanning lines. It does not perform OCR: scanned pages need an existing text layer. Search runs in the background a page at a time, behind pending rendering work. The status says `searching…` until it finishes. Results are limited to 10,000 matches, with an explicit limit notice; a text-extraction failure says `search failed`.
+
+Highlights work with Kitty, Sixel and iTerm2 graphics and follow zooming and scrolling. A successful PDF rebuild reruns the query without moving your view; incomplete rebuilds keep the last good PDF and its matches. Search does not turn editor follow off; use `F` when you want to browse independently of editor movement.
 
 ### Pinch to zoom
 
