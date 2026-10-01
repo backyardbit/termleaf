@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
 use std::thread;
@@ -71,7 +72,10 @@ fn scenario(root: &Path) -> Outcome<()> {
     ])?;
     session.step("start", "page 1/3 · doc.pdf", Page::Changed)?;
 
-    search_scenario(&mut session)?;
+    let mut recording = Recording::start(&work)?;
+    let searched = search_scenario(&mut session);
+    recording.finish()?;
+    searched?;
 
     session.send("e")?;
     session.wait_for_status("the missing SyncTeX hint", |status| {
@@ -180,7 +184,13 @@ fn copy(from: &Path, to: &Path) -> Outcome<()> {
 
 fn search_scenario(session: &mut Session) -> Outcome<()> {
     let plain = session.previous.as_ref().map_or(0, highlighted_pixels);
-    session.send("/page\r")?;
+    thread::sleep(Duration::from_secs(2));
+    session.send("/")?;
+    session.wait_for_status("search prompt", |status| status == "/")?;
+    session.send("page")?;
+    session.wait_for_status("search query", |status| status == "/page")?;
+    thread::sleep(Duration::from_secs(2));
+    session.send("\r")?;
     session.step(
         "search-first",
         "page 1/3 · doc.pdf · /page · 1/3",
@@ -192,18 +202,21 @@ fn search_scenario(session: &mut Session) -> Outcome<()> {
             "search highlights missing: {plain} before, {highlighted} after"
         ));
     }
+    thread::sleep(Duration::from_secs(2));
     session.send("N")?;
     session.step(
         "search-wrap-backwards",
         "page 3/3 · doc.pdf · /page · 3/3",
         Page::Changed,
     )?;
+    thread::sleep(Duration::from_secs(2));
     session.send("n")?;
     session.step(
         "search-wrap-forwards",
         "page 1/3 · doc.pdf · /page · 1/3",
         Page::Changed,
     )?;
+    thread::sleep(Duration::from_secs(2));
     session.send("+")?;
     session.wait_for_status("zoom with search results", |status| {
         status.contains('%') && status.ends_with("/page · 1/3")
@@ -212,6 +225,7 @@ fn search_scenario(session: &mut Session) -> Outcome<()> {
         let screen = session.screenshot("search-zoom").ok()?;
         (highlighted_pixels(&screen) > plain + 100).then_some(())
     })?;
+    thread::sleep(Duration::from_secs(2));
     session.send("s/no-such-text\r")?;
     session.step(
         "search-no-matches",
@@ -224,10 +238,13 @@ fn search_scenario(session: &mut Session) -> Outcome<()> {
             "old search highlights remain: {plain} before, {cleared} after clearing"
         ));
     }
+    thread::sleep(Duration::from_secs(2));
     session.send("\x1b")?;
     session.wait_for_status("search dismissed", |status| status == "page 1/3 · doc.pdf")?;
     session.send("gg")?;
-    session.step("search-dismissed", "page 1/3 · doc.pdf", Page::Changed)
+    session.step("search-dismissed", "page 1/3 · doc.pdf", Page::Changed)?;
+    thread::sleep(Duration::from_secs(2));
+    Ok(())
 }
 
 pub fn highlighted_pixels(image: &RgbImage) -> usize {
@@ -238,6 +255,67 @@ pub fn highlighted_pixels(image: &RgbImage) -> usize {
             red > 200 && green > 120 && u16::from(blue) + 50 < u16::from(green)
         })
         .count()
+}
+
+struct Recording {
+    process: Child,
+}
+
+impl Recording {
+    fn start(work: &Path) -> Outcome<Self> {
+        let display = std::env::var("DISPLAY").map_err(|error| error.to_string())?;
+        let log =
+            fs::File::create(work.join("recording.log")).map_err(|error| error.to_string())?;
+        let process = Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-f",
+                "x11grab",
+                "-video_size",
+                "1400x900",
+                "-framerate",
+                "15",
+                "-i",
+                &display,
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "20",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+            ])
+            .arg(work.join("search-demo.mp4"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(log)
+            .spawn()
+            .map_err(|error| format!("starting demo recording: {error}"))?;
+        Ok(Self { process })
+    }
+
+    fn finish(&mut self) -> Outcome<()> {
+        if let Some(mut input) = self.process.stdin.take() {
+            input.write_all(b"q\n").map_err(|error| error.to_string())?;
+        }
+        let status = poll(Duration::from_secs(20), "demo recording to finish", || {
+            self.process.try_wait().ok().flatten()
+        })?;
+        if !status.success() {
+            return Err(format!("demo recording failed: {status}"));
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Recording {
+    fn drop(&mut self) {
+        let _ = self.process.kill();
+        let _ = self.process.wait();
+    }
 }
 
 struct Session {
