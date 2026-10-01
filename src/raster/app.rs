@@ -45,6 +45,7 @@ pub enum Event {
     Focus(bool),
     Resized,
     FileChanged,
+    TerminalClosed,
     Renderer(Response),
     Tile(RenderKey, RgbImage),
     Painted(Painting),
@@ -226,6 +227,7 @@ impl App {
                 self.pinch.focus(focused);
                 self.follow.focus(focused);
             }
+            Event::TerminalClosed => return Flow::Quit,
             Event::Resized => {}
             Event::FileChanged => {
                 self.follow.reloading();
@@ -791,6 +793,12 @@ mod tests {
                 .expect("search did not finish");
             app.handle(event);
         }
+    }
+
+    #[test]
+    fn a_closed_terminal_exits_even_when_other_event_sources_remain_alive() {
+        let (mut app, _inbox) = headless_app(fixture("three-pages.pdf"), PANE);
+        assert_eq!(app.handle(Event::TerminalClosed), Flow::Quit);
     }
 
     #[test]

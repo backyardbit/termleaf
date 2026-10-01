@@ -15,6 +15,7 @@ mod renderer;
 mod search;
 mod shelf;
 mod synctex;
+mod terminal;
 mod viewer;
 mod watch;
 
@@ -142,7 +143,8 @@ fn main() -> ExitCode {
     match app::run(path, options) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("termleaf: {error:#}");
+            use std::io::Write;
+            let _ = writeln!(std::io::stderr(), "termleaf: {error:#}");
             ExitCode::FAILURE
         }
     }

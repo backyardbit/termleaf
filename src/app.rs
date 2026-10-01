@@ -58,6 +58,7 @@ enum Event {
     Focus(bool),
     Resized,
     FileChanged,
+    TerminalClosed,
     Renderer(Response),
     Encoded(Encoded),
     Follow(Request),
@@ -103,12 +104,12 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
             return raster::run(&path, options, terminal, &picker, protocol);
         }
         Err(error) => {
-            ratatui::restore();
+            crate::terminal::restore(terminal);
             return Err(error);
         }
     };
     let _ = execute!(std::io::stdout(), EnableMouseCapture, EnableFocusChange);
-    let _listener = {
+    let listener = {
         let events = events.clone();
         Listener::spawn(
             &follow::directory(|name| std::env::var(name).ok()),
@@ -181,10 +182,11 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
         outgoing: String::new(),
     };
     let result = app.event_loop(&mut terminal, &inbox);
+    drop(listener);
     app.forget_all_tiles();
     let _ = app.flush(&mut terminal);
     let _ = execute!(std::io::stdout(), DisableFocusChange, DisableMouseCapture);
-    ratatui::restore();
+    crate::terminal::restore(terminal);
     result
 }
 
@@ -201,6 +203,10 @@ fn compression_if(capabilities: &[Capability]) -> Payload {
 }
 
 fn spawn_input(events: Sender<Event>) {
+    let closed = events.clone();
+    crate::terminal::on_hangup(move || {
+        let _ = closed.send(Event::TerminalClosed);
+    });
     thread::spawn(move || {
         while let Ok(terminal_event) = event::read() {
             if let Some(event) = translate_event(terminal_event)
@@ -416,6 +422,7 @@ impl App {
                 self.pinch.focus(focused);
                 self.follow.focus(focused);
             }
+            Event::TerminalClosed => return Flow::Quit,
             Event::Resized => {}
             Event::FileChanged => {
                 self.follow.reloading();
@@ -1008,6 +1015,15 @@ mod tests {
                 .expect("search did not finish");
             app.handle(event);
         }
+    }
+
+    #[test]
+    fn a_closed_terminal_exits_even_when_other_event_sources_remain_alive() {
+        let (mut app, _inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 24,
+        });
+        assert_eq!(app.handle(Event::TerminalClosed), Flow::Quit);
     }
 
     #[test]

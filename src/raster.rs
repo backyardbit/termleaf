@@ -38,7 +38,7 @@ pub fn run(
 ) -> Result<()> {
     let result = show(path, &options, &mut terminal, picker, raster);
     let _ = execute!(std::io::stdout(), DisableFocusChange, DisableMouseCapture);
-    ratatui::restore();
+    crate::terminal::restore(terminal);
     result
 }
 
