@@ -241,8 +241,8 @@ fn search_scenario(session: &mut Session) -> Outcome<()> {
     thread::sleep(Duration::from_secs(2));
     session.send("\x1b")?;
     session.wait_for_status("search dismissed", |status| status == "page 1/3 · doc.pdf")?;
+    session.step("search-dismissed", "page 1/3 · doc.pdf", Page::Unchanged)?;
     session.send("gg")?;
-    session.step("search-dismissed", "page 1/3 · doc.pdf", Page::Changed)?;
     thread::sleep(Duration::from_secs(2));
     Ok(())
 }
