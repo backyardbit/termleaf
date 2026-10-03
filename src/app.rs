@@ -1,6 +1,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -22,7 +23,7 @@ use ratatui_image::picker::Capability;
 use crate::editor::{self, Jumper};
 use crate::encoder::{self, Encoded, Encoder, Job, Wanted};
 use crate::follow::{self, Follow, Listener, Request};
-use crate::graphics::{self, Choice, Protocol, TerminalInfo};
+use crate::graphics::{self, CellWatch, Choice, Protocol, TerminalInfo};
 use crate::inverse::Inverse;
 use crate::keys::{Command, Key, KeyParser, ScreenCell};
 use crate::kitty::{self, CellGrid, ImageId, Payload, Placeholders, Placement};
@@ -60,7 +61,7 @@ enum Event {
     FileChanged,
     TerminalClosed,
     Renderer(Response),
-    Encoded(Encoded),
+    Encoded(u64, Encoded),
     Follow(Request),
 }
 
@@ -70,6 +71,7 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
     }
     let (events, inbox) = mpsc::channel();
     let (jobs, queued) = encoder::queue();
+    let jobs = Arc::new(Mutex::new(jobs));
     let wanted = Wanted::default();
     let renderer = {
         let events = events.clone();
@@ -78,9 +80,7 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
             move |response| {
                 let _ = events.send(Event::Renderer(response));
             },
-            move |key, image| {
-                let _ = jobs.send(Job { key, image });
-            },
+            send_to(Arc::clone(&jobs)),
         )
     };
     renderer.load(0);
@@ -127,18 +127,14 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
         });
     }
     let cell = cell_size(picker.font_size());
-    let encoder = {
-        let events = events.clone();
-        Encoder::spawn(
-            queued,
-            wanted.clone(),
-            cell,
-            payload_for(&picker),
-            move |encoded| {
-                let _ = events.send(Event::Encoded(encoded));
-            },
-        )
+    let encoders = Encoders {
+        jobs,
+        wanted: wanted.clone(),
+        payload: payload_for(&picker),
+        events: events.clone(),
+        epoch: 0,
     };
+    let encoder = encoders.start(queued, cell);
     let neovims = events.clone();
     spawn_input(events);
 
@@ -155,6 +151,7 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
             }
         }),
         viewer: Viewer::new(pages, cell, pane),
+        cells: CellWatch::new(crossterm::terminal::window_size().ok()),
         search: Search::default(),
         document_generation: 0,
         serial: 0,
@@ -163,6 +160,7 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
         pinch: PinchGate::default(),
         renderer,
         encoder,
+        encoders,
         wanted,
         shelf: Shelf::new(SHELF_BYTES),
         shelf_waits: false,
@@ -188,6 +186,50 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
     let _ = execute!(std::io::stdout(), DisableFocusChange, DisableMouseCapture);
     crate::terminal::restore(terminal);
     result
+}
+
+fn send_to(
+    jobs: Arc<Mutex<SyncSender<Job>>>,
+) -> impl Fn(RenderKey, image::RgbImage) + Send + 'static {
+    move |key, image| {
+        let queue = jobs.lock().map(|queue| queue.clone());
+        if let Ok(queue) = queue {
+            let _ = queue.send(Job { key, image });
+        }
+    }
+}
+
+struct Encoders {
+    jobs: Arc<Mutex<SyncSender<Job>>>,
+    wanted: Wanted,
+    payload: Payload,
+    events: Sender<Event>,
+    epoch: u64,
+}
+
+impl Encoders {
+    fn start(&self, queued: Receiver<Job>, cell: CellSize) -> Encoder {
+        let epoch = self.epoch;
+        let events = self.events.clone();
+        Encoder::spawn(
+            queued,
+            self.wanted.clone(),
+            cell,
+            self.payload,
+            move |encoded| {
+                let _ = events.send(Event::Encoded(epoch, encoded));
+            },
+        )
+    }
+
+    fn restart(&mut self, cell: CellSize) -> Encoder {
+        let (jobs, queued) = encoder::queue();
+        if let Ok(mut current) = self.jobs.lock() {
+            *current = jobs;
+        }
+        self.epoch += 1;
+        self.start(queued, cell)
+    }
 }
 
 fn payload_for(picker: &TerminalInfo) -> Payload {
@@ -317,6 +359,7 @@ struct Shown {
 struct App {
     file_name: String,
     viewer: Viewer,
+    cells: CellWatch,
     search: Search,
     document_generation: Generation,
     serial: Generation,
@@ -327,6 +370,7 @@ struct App {
     follow: Follow,
     renderer: Renderer,
     encoder: Encoder,
+    encoders: Encoders,
     wanted: Wanted,
     shelf: Shelf,
     shelf_waits: bool,
@@ -355,7 +399,12 @@ impl App {
         loop {
             let size = terminal.size()?;
             let now = Instant::now();
+            let cell = self.cells.cell(
+                crossterm::terminal::window_size().ok(),
+                self.viewer.view().layout.cell(),
+            );
             self.fit_to_at(
+                cell,
                 pane_of(page_area(Rect::new(0, 0, size.width, size.height))),
                 now,
             );
@@ -430,7 +479,7 @@ impl App {
                 self.reload_at = Some(Instant::now() + RELOAD_SETTLE);
             }
             Event::Renderer(response) => self.receive(response),
-            Event::Encoded(encoded) => self.receive_encoded(encoded),
+            Event::Encoded(epoch, encoded) => self.receive_encoded(epoch, encoded),
             Event::Follow(request) => {
                 self.follow
                     .request(request, &mut self.viewer, &mut self.inverse);
@@ -439,12 +488,17 @@ impl App {
         Flow::Continue
     }
 
-    fn fit_to_at(&mut self, pane: Pane, now: Instant) {
-        if self.viewer.view().pane != pane {
-            let cell = self.viewer.view().layout.cell();
-            self.viewer.resized(cell, pane);
-            self.resize_settles_at = Some(now + RESIZE_SETTLE);
+    fn fit_to_at(&mut self, cell: CellSize, pane: Pane, now: Instant) {
+        let view = self.viewer.view();
+        if view.pane == pane && view.layout.cell() == cell {
+            return;
         }
+        if view.layout.cell() != cell {
+            self.encoder = self.encoders.restart(cell);
+            self.refresh_highlights();
+        }
+        self.viewer.resized(cell, pane);
+        self.resize_settles_at = Some(now + RESIZE_SETTLE);
     }
 
     fn may_transmit(&self, now: Instant) -> bool {
@@ -624,8 +678,10 @@ impl App {
         }
     }
 
-    fn receive_encoded(&mut self, tile: Encoded) {
-        self.encoder.claimed();
+    fn receive_encoded(&mut self, epoch: u64, tile: Encoded) {
+        if epoch == self.encoders.epoch {
+            self.encoder.claimed();
+        }
         self.in_flight.retain(|pending| *pending != tile.key);
         if tile.key.generation != self.generation || self.cached(tile.key).is_some() {
             return;
@@ -921,6 +977,7 @@ mod tests {
     fn headless_app_for(path: &Path, pane: Pane) -> (App, Receiver<Event>) {
         let (events, inbox) = mpsc::channel();
         let (jobs, queued) = encoder::queue();
+        let jobs = Arc::new(Mutex::new(jobs));
         let wanted = Wanted::default();
         let renderer = {
             let events = events.clone();
@@ -929,14 +986,17 @@ mod tests {
                 move |response| {
                     let _ = events.send(Event::Renderer(response));
                 },
-                move |key, image| {
-                    let _ = jobs.send(Job { key, image });
-                },
+                send_to(Arc::clone(&jobs)),
             )
         };
-        let encoder = Encoder::spawn(queued, wanted.clone(), CELL, Payload::Raw, move |encoded| {
-            let _ = events.send(Event::Encoded(encoded));
-        });
+        let encoders = Encoders {
+            jobs,
+            wanted: wanted.clone(),
+            payload: Payload::Raw,
+            events,
+            epoch: 0,
+        };
+        let encoder = encoders.start(queued, CELL);
         renderer.load(0);
         let Ok(Event::Renderer(Response::Loaded { pages, .. })) = inbox.recv() else {
             panic!("the fixture did not load");
@@ -944,6 +1004,7 @@ mod tests {
         let app = App {
             file_name: "doc.pdf".to_owned(),
             viewer: Viewer::new(pages, CELL, pane),
+            cells: CellWatch::new(None),
             search: Search::default(),
             document_generation: 0,
             serial: 0,
@@ -954,6 +1015,7 @@ mod tests {
             follow: Follow::default(),
             renderer,
             encoder,
+            encoders,
             wanted,
             shelf: Shelf::new(SHELF_BYTES),
             shelf_waits: false,
@@ -1208,7 +1270,7 @@ mod tests {
             columns: 84,
             rows: 34,
         };
-        app.fit_to_at(pane, Instant::now());
+        app.fit_to_at(CELL, pane, Instant::now());
         assert_eq!(app.viewer.view().pane, pane);
         app.request_tiles_at(Instant::now());
         assert!(!app.in_flight.is_empty());
@@ -1222,6 +1284,7 @@ mod tests {
         });
         let resized_at = Instant::now();
         app.fit_to_at(
+            CELL,
             Pane {
                 columns: 84,
                 rows: 34,
@@ -1248,6 +1311,7 @@ mod tests {
         });
         let resized_at = Instant::now();
         app.fit_to_at(
+            CELL,
             Pane {
                 columns: 84,
                 rows: 34,
@@ -1377,7 +1441,7 @@ mod tests {
             columns: 0,
             rows: 7,
         });
-        app.fit_to_at(pane, Instant::now());
+        app.fit_to_at(CELL, pane, Instant::now());
         assert_eq!(app.viewer.view().top, 7);
     }
 
@@ -1441,7 +1505,7 @@ mod tests {
         let key = tile_keys(app.generation, app.viewer.view())[0];
         app.wanted.set(vec![key]);
         assert_eq!(app.cached(key), None);
-        app.handle(Event::Encoded(encoded_tile(&app, key)));
+        app.handle(Event::Encoded(0, encoded_tile(&app, key)));
         let id = app.cached(key).expect("the tile is cached");
         assert_eq!(app.outgoing, transmission(id, &encoded_tile(&app, key)));
     }
@@ -1453,7 +1517,7 @@ mod tests {
             rows: 30,
         });
         let key = tile_keys(app.generation, app.viewer.view())[0];
-        app.handle(Event::Encoded(encoded_tile(&app, key)));
+        app.handle(Event::Encoded(0, encoded_tile(&app, key)));
         assert_eq!(app.cached(key), None);
         assert!(app.outgoing.is_empty());
         app.request_tiles_at(Instant::now());
@@ -1479,8 +1543,8 @@ mod tests {
             .into_iter()
             .find(|key| !shown.contains(key))
             .expect("a tile below the view");
-        app.handle(Event::Encoded(encoded_tile(&app, shown[0])));
-        app.handle(Event::Encoded(encoded_tile(&app, prefetched)));
+        app.handle(Event::Encoded(0, encoded_tile(&app, shown[0])));
+        app.handle(Event::Encoded(0, encoded_tile(&app, prefetched)));
         let now = Instant::now() + RESIZE_SETTLE;
         app.request_tiles_at(now);
         assert!(app.outgoing.is_empty());
@@ -1490,7 +1554,7 @@ mod tests {
         assert_eq!(app.cached(prefetched), None);
         assert_ne!(app.idle_wait(now), Duration::ZERO);
         for key in &shown[1..] {
-            app.handle(Event::Encoded(encoded_tile(&app, *key)));
+            app.handle(Event::Encoded(0, encoded_tile(&app, *key)));
         }
         app.request_tiles_at(now);
         assert!(app.cached(prefetched).is_some());
@@ -1505,11 +1569,11 @@ mod tests {
         });
         let key = tile_keys(app.generation, app.viewer.view())[0];
         app.wanted.set(vec![key]);
-        app.handle(Event::Encoded(encoded_tile(&app, key)));
+        app.handle(Event::Encoded(0, encoded_tile(&app, key)));
         app.outgoing.clear();
-        app.handle(Event::Encoded(encoded_tile(&app, key)));
+        app.handle(Event::Encoded(0, encoded_tile(&app, key)));
         app.wanted.set(Vec::new());
-        app.handle(Event::Encoded(encoded_tile(&app, key)));
+        app.handle(Event::Encoded(0, encoded_tile(&app, key)));
         assert!(app.outgoing.is_empty());
         assert!(!app.shelf.holds(key));
         assert_eq!(app.tiles.iter().filter(|tile| tile.key == key).count(), 1);
@@ -1522,7 +1586,7 @@ mod tests {
             rows: 30,
         });
         let old = tile_keys(app.generation, app.viewer.view());
-        app.handle(Event::Encoded(encoded_tile(&app, old[0])));
+        app.handle(Event::Encoded(0, encoded_tile(&app, old[0])));
         let bytes = std::fs::read(
             Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/three-pages.pdf"),
         )
@@ -1535,7 +1599,7 @@ mod tests {
         }));
         assert!(!app.shelf.holds(old[0]));
         app.wanted.set(old.clone());
-        app.handle(Event::Encoded(encoded_tile(&app, old[1])));
+        app.handle(Event::Encoded(0, encoded_tile(&app, old[1])));
         assert_eq!(app.cached(old[1]), None);
         assert!(!app.shelf.holds(old[1]));
         assert!(!app.outgoing.contains("a=T"));
