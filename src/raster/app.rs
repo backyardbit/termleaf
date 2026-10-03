@@ -13,6 +13,7 @@ use ratatui::widgets::Widget;
 use ratatui::{DefaultTerminal, Frame};
 
 use crate::follow::{Follow, Request};
+use crate::graphics::CellWatch;
 use crate::inverse::{Editors, Inverse};
 use crate::keys::{Command, Key, KeyParser};
 use crate::layout::{CellSize, Pane, View};
@@ -75,6 +76,7 @@ pub struct App {
     inverse: Inverse,
     follow: Follow,
     viewer: Viewer,
+    cells: CellWatch,
     search: Search,
     document_generation: Generation,
     serial: Generation,
@@ -126,6 +128,7 @@ impl App {
             inverse: Inverse::new(&parts.path, parts.editors),
             follow: parts.follow,
             viewer: Viewer::new(parts.pages, parts.cell, parts.pane),
+            cells: CellWatch::new(crossterm::terminal::window_size().ok()),
             search: Search::default(),
             document_generation: 0,
             serial: 0,
@@ -165,7 +168,12 @@ impl App {
         loop {
             let size = terminal.size()?;
             let now = Instant::now();
+            let cell = self.cells.cell(
+                crossterm::terminal::window_size().ok(),
+                self.viewer.view().layout.cell(),
+            );
             self.fit_to_at(
+                cell,
                 pane_of(page_area(Rect::new(0, 0, size.width, size.height))),
                 now,
             );
@@ -245,9 +253,9 @@ impl App {
         Flow::Continue
     }
 
-    fn fit_to_at(&mut self, pane: Pane, now: Instant) {
-        if self.viewer.view().pane != pane {
-            let cell = self.viewer.view().layout.cell();
+    fn fit_to_at(&mut self, cell: CellSize, pane: Pane, now: Instant) {
+        let view = self.viewer.view();
+        if view.pane != pane || view.layout.cell() != cell {
             self.viewer.resized(cell, pane);
             self.resize_settles_at = Some(now + RESIZE_SETTLE);
             self.on_screen = None;
@@ -1043,6 +1051,7 @@ mod tests {
         app.outgoing.clear();
         let resized_at = Instant::now();
         app.fit_to_at(
+            CELL,
             Pane {
                 columns: 84,
                 rows: 34,
@@ -1071,6 +1080,7 @@ mod tests {
         app.prepare_frame(settled());
         let painting = next_painting(&mut app, &inbox);
         app.fit_to_at(
+            CELL,
             Pane {
                 columns: 84,
                 rows: 34,
