@@ -961,6 +961,7 @@ fn tile_key(generation: Generation, view: &View, tile: crate::layout::Tile) -> R
 mod tests {
     use super::*;
     use crate::inverse::StatusOnly;
+    use crate::layout::{TILE_COLUMNS, TILE_ROWS, Tile};
 
     const CELL: CellSize = CellSize {
         width: 10,
@@ -1443,6 +1444,68 @@ mod tests {
         });
         app.fit_to_at(CELL, pane, Instant::now());
         assert_eq!(app.viewer.view().top, 7);
+    }
+
+    #[test]
+    fn after_a_new_cell_size_every_tile_in_view_is_sent_again_at_that_cell_size() {
+        let pane = Pane {
+            columns: 80,
+            rows: 30,
+        };
+        let (mut app, inbox) = headless_app(pane);
+        let first_tile = Tile {
+            page: 0,
+            column: 0,
+            row: 0,
+        };
+        while app.viewer.view().layout.tile_region(first_tile).width >= TILE_COLUMNS * CELL.width
+            || app.viewer.view().layout.tile_region(first_tile).height >= TILE_ROWS * CELL.height
+        {
+            app.viewer.apply(Command::Zoom {
+                steps: -1,
+                anchor: None,
+            });
+        }
+        settle(&mut app, &inbox);
+        app.viewer.apply(Command::Scroll {
+            columns: 0,
+            rows: 30,
+        });
+        app.request_tiles_at(Instant::now() + RESIZE_SETTLE);
+        assert!(!app.in_flight.is_empty());
+        app.outgoing.clear();
+        let first_sent = app.next_id;
+        app.fit_to_at(
+            CellSize {
+                width: 20,
+                height: 40,
+            },
+            pane,
+            Instant::now(),
+        );
+        settle(&mut app, &inbox);
+        let sent: Vec<[u32; 4]> = app
+            .outgoing
+            .split("a=T,")
+            .skip(1)
+            .map(|sequence| {
+                [",s=", ",v=", ",c=", ",r="].map(|field| {
+                    let value = &sequence[sequence.find(field).unwrap() + field.len()..];
+                    value.split(',').next().unwrap().parse().unwrap()
+                })
+            })
+            .collect();
+        assert!(!sent.is_empty());
+        for [width, height, columns, rows] in sent {
+            assert_eq!((width, height), (columns * 20, rows * 40));
+        }
+        let sent_ids: Vec<ImageId> = std::iter::successors(Some(first_sent), |id| Some(id.next()))
+            .take_while(|id| *id != app.next_id)
+            .collect();
+        for key in tile_keys(app.generation, app.viewer.view()) {
+            let id = app.cached(key).expect("every tile in view is cached");
+            assert!(sent_ids.contains(&id));
+        }
     }
 
     #[test]

@@ -1086,6 +1086,45 @@ mod tests {
     }
 
     #[test]
+    fn a_new_cell_size_repaints_the_same_pane_at_that_size_and_drops_older_paintings() {
+        let (mut app, inbox) = headless_app(fixture("three-pages.pdf"), PANE);
+        settle(&mut app, &inbox);
+        app.apply_at(
+            Command::Scroll {
+                columns: 0,
+                rows: 1,
+            },
+            Instant::now(),
+        );
+        app.prepare_frame(settled());
+        let painting = next_painting(&mut app, &inbox);
+        app.outgoing.clear();
+        let retina = CellSize {
+            width: 20,
+            height: 40,
+        };
+        app.fit_to_at(retina, PANE, Instant::now());
+        app.handle(Event::Painted(painting));
+        assert!(app.outgoing.is_empty());
+        settle(&mut app, &inbox);
+        assert_eq!(frames_written(&app), 1);
+        assert!(app.outgoing.contains("\"1;1;1600;960"));
+    }
+
+    #[test]
+    fn the_cell_size_is_asked_for_once_per_requery_interval() {
+        let (mut app, _inbox) = headless_app(fixture("three-pages.pdf"), PANE);
+        let start = Instant::now();
+        let second = Duration::from_secs(1);
+        app.requery = Some((2 * second, start));
+        app.requery_cell_at(start + second);
+        app.requery_cell_at(start + 2 * second);
+        app.requery_cell_at(start + 3 * second);
+        assert_eq!(app.outgoing.matches(CELL_SIZE_QUERY).count(), 1);
+        assert_eq!(app.requery_due(), Some(start + 4 * second));
+    }
+
+    #[test]
     fn a_frame_painted_for_the_old_pane_size_is_never_written() {
         let (mut app, inbox) = headless_app(fixture("three-pages.pdf"), PANE);
         settle(&mut app, &inbox);

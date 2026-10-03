@@ -334,6 +334,32 @@ mod tests {
     }
 
     #[test]
+    fn the_cell_size_changes_only_when_the_reported_pixels_per_cell_change() {
+        let size = |width, height| {
+            Some(WindowSize {
+                rows: 40,
+                columns: 100,
+                width,
+                height,
+            })
+        };
+        let queried = CellSize {
+            width: 9,
+            height: 18,
+        };
+        let retina = CellSize {
+            width: 20,
+            height: 40,
+        };
+        let mut cells = CellWatch::new(size(1000, 800));
+        assert_eq!(cells.cell(size(1000, 800), queried), queried);
+        assert_eq!(cells.cell(size(0, 0), queried), queried);
+        assert_eq!(cells.cell(None, queried), queried);
+        assert_eq!(cells.cell(size(2000, 1600), queried), retina);
+        assert_eq!(cells.cell(size(2000, 1600), retina), retina);
+    }
+
+    #[test]
     fn missing_or_zero_cell_sizes_use_the_existing_default() {
         let (protocol, terminal) = interpret(
             vec![Response::Kitty, Response::CellSize(Some((0, 0)))],
