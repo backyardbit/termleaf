@@ -38,6 +38,7 @@ pub const PARTIAL_REPAINT_INTERVAL: Duration = Duration::from_millis(100);
 pub const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 const UNRENDERED_VIEW_WAIT: Duration = Duration::from_millis(100);
 const PAGE_ORIGIN: &str = "\x1b[1;1H";
+const CELL_SIZE_QUERY: &str = "\x1b[16t";
 
 pub enum Event {
     Key(Key),
@@ -77,6 +78,7 @@ pub struct App {
     follow: Follow,
     viewer: Viewer,
     cells: CellWatch,
+    requery: Option<(Duration, Instant)>,
     search: Search,
     document_generation: Generation,
     serial: Generation,
@@ -115,6 +117,7 @@ pub struct Parts {
     pub pages: Vec<PageInfo>,
     pub cell: CellSize,
     pub pane: Pane,
+    pub requery_every: Option<Duration>,
     pub renderer: Renderer,
     pub painter: Painter,
     pub partial_repaint_interval: Duration,
@@ -129,6 +132,7 @@ impl App {
             follow: parts.follow,
             viewer: Viewer::new(parts.pages, parts.cell, parts.pane),
             cells: CellWatch::new(crossterm::terminal::window_size().ok()),
+            requery: parts.requery_every.map(|every| (every, Instant::now())),
             search: Search::default(),
             document_generation: 0,
             serial: 0,
@@ -178,6 +182,7 @@ impl App {
                 now,
             );
             self.prepare_frame(now);
+            self.requery_cell_at(now);
             self.inverse.expire(now);
             self.flush(terminal)?;
             terminal.draw(|frame| self.draw(frame))?;
@@ -205,6 +210,7 @@ impl App {
             self.resize_settles_at,
             self.zooming_until,
             self.paint_due,
+            self.requery_due(),
             self.inverse.notice_ends(),
         ]
         .into_iter()
@@ -261,6 +267,19 @@ impl App {
             self.on_screen = None;
             self.submitted = None;
             self.first_valid_job = self.next_job;
+        }
+    }
+
+    fn requery_due(&self) -> Option<Instant> {
+        self.requery.map(|(every, at)| at + every)
+    }
+
+    fn requery_cell_at(&mut self, now: Instant) {
+        if let Some((every, at)) = self.requery
+            && now >= at + every
+        {
+            self.outgoing.push_str(CELL_SIZE_QUERY);
+            self.requery = Some((every, now));
         }
     }
 
@@ -719,6 +738,7 @@ mod tests {
             pages,
             cell: CELL,
             pane,
+            requery_every: None,
             renderer,
             painter,
             partial_repaint_interval,
