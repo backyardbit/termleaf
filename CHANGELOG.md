@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.3.1
+
+- Fix pages drawn at the wrong scale, with seams between tiles, after the cell pixel size changes but the columns and rows stay the same, as when moving a window between displays with different DPI. termleaf re-measures the cell size on SIGWINCH and, inside zellij, on a periodic CSI 16t poll, then repaints Kitty, Sixel and iTerm2 graphics at the new size (#44).
+
 ## v0.3.0
 
 - Search native PDF text with `/` and Enter. `n` and `N` move between matches, counts work, and Escape cancels the prompt or dismisses results (#42).
