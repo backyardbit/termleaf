@@ -151,7 +151,7 @@ impl Session {
             .stdin(stdio(&slave)?)
             .stdout(stdio(&slave)?)
             .stderr(stdio(&slave)?);
-        // SAFETY: the hook only calls the async-signal-safe setsid and ioctl between fork and exec.
+        // SAFETY: the hook only calls login_tty, which uses setsid, ioctl and dup2, between fork and exec.
         unsafe {
             command.pre_exec(take_the_pty);
         }
@@ -247,12 +247,8 @@ impl Drop for Session {
 }
 
 fn take_the_pty() -> std::io::Result<()> {
-    // SAFETY: setsid takes no arguments and only changes this forked child's session.
-    if unsafe { libc::setsid() } < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: descriptor 0 is the pty slave and TIOCSCTTY takes an int argument.
-    if unsafe { libc::ioctl(0, libc::TIOCSCTTY, 0) } < 0 {
+    // SAFETY: descriptor 0 is the pty slave, which login_tty makes this forked child's controlling terminal in a new session.
+    if unsafe { libc::login_tty(0) } < 0 {
         return Err(std::io::Error::last_os_error());
     }
     Ok(())
