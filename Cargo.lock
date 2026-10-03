@@ -2756,6 +2756,7 @@ version = "0.1.0"
 dependencies = [
  "icy_sixel",
  "image",
+ "libc",
  "ra-ap-rustc_lexer",
  "serde_json",
  "unicode-ident",

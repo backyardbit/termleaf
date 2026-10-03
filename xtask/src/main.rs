@@ -1,3 +1,4 @@
+mod dpi;
 mod e2e;
 mod follow;
 mod herdr;
@@ -62,9 +63,10 @@ fn main() -> ExitCode {
         Some("kitty") => jumps::run(&workspace_root(), jumps::Backend::Kitty),
         Some("wezterm") => jumps::run(&workspace_root(), jumps::Backend::Wezterm),
         Some("follow") => follow::run(&workspace_root()),
+        Some("dpi") => dpi::run(&workspace_root()),
         _ => {
             eprintln!(
-                "usage: cargo xtask <lint|check|e2e|xterm|tmux|herdr|plain|zellij|screen|kitty|wezterm|follow>"
+                "usage: cargo xtask <lint|check|e2e|xterm|tmux|herdr|plain|zellij|screen|kitty|wezterm|follow|dpi>"
             );
             eprintln!("  lint   run the anti-slop source checks");
             eprintln!("  check  run fmt, clippy, tests and lint");
@@ -97,6 +99,9 @@ fn main() -> ExitCode {
             );
             eprintln!(
                 "  follow move termleaf with vim and the follow snippet, nvim and hx with no config, termleaf --follow, F, :follow, :nofollow and --no-follow in a headless tmux (needs tmux, vim, nvim and hx)"
+            );
+            eprintln!(
+                "  dpi    change only the pixel size of termleaf's pty, alone and in zellij, and check the Sixel frame follows (needs zellij)"
             );
             ExitCode::FAILURE
         }
