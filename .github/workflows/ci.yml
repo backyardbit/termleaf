@@ -116,6 +116,8 @@ jobs:
         run: cargo xtask plain
       - name: Alt+click, Ctrl+click and e jump nvim, vim and hx in zellij
         run: cargo xtask zellij
+      - name: A new pixel size with the same cols and rows repaints the Sixel frame at that size, alone and in zellij
+        run: cargo xtask dpi
       - name: Alt+click, Ctrl+click and e jump nvim, vim and hx in GNU screen
         run: cargo xtask screen
       - name: Alt+click, Ctrl+click and e jump nvim, vim and hx between kitty windows

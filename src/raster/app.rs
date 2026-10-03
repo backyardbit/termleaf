@@ -13,6 +13,7 @@ use ratatui::widgets::Widget;
 use ratatui::{DefaultTerminal, Frame};
 
 use crate::follow::{Follow, Request};
+use crate::graphics::CellWatch;
 use crate::inverse::{Editors, Inverse};
 use crate::keys::{Command, Key, KeyParser};
 use crate::layout::{CellSize, Pane, View};
@@ -37,6 +38,7 @@ pub const PARTIAL_REPAINT_INTERVAL: Duration = Duration::from_millis(100);
 pub const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 const UNRENDERED_VIEW_WAIT: Duration = Duration::from_millis(100);
 const PAGE_ORIGIN: &str = "\x1b[1;1H";
+const CELL_SIZE_QUERY: &str = "\x1b[16t";
 
 pub enum Event {
     Key(Key),
@@ -75,6 +77,8 @@ pub struct App {
     inverse: Inverse,
     follow: Follow,
     viewer: Viewer,
+    cells: CellWatch,
+    requery: Option<(Duration, Instant)>,
     search: Search,
     document_generation: Generation,
     serial: Generation,
@@ -113,6 +117,7 @@ pub struct Parts {
     pub pages: Vec<PageInfo>,
     pub cell: CellSize,
     pub pane: Pane,
+    pub requery_every: Option<Duration>,
     pub renderer: Renderer,
     pub painter: Painter,
     pub partial_repaint_interval: Duration,
@@ -126,6 +131,8 @@ impl App {
             inverse: Inverse::new(&parts.path, parts.editors),
             follow: parts.follow,
             viewer: Viewer::new(parts.pages, parts.cell, parts.pane),
+            cells: CellWatch::new(crossterm::terminal::window_size().ok()),
+            requery: parts.requery_every.map(|every| (every, Instant::now())),
             search: Search::default(),
             document_generation: 0,
             serial: 0,
@@ -165,11 +172,17 @@ impl App {
         loop {
             let size = terminal.size()?;
             let now = Instant::now();
+            let cell = self.cells.cell(
+                crossterm::terminal::window_size().ok(),
+                self.viewer.view().layout.cell(),
+            );
             self.fit_to_at(
+                cell,
                 pane_of(page_area(Rect::new(0, 0, size.width, size.height))),
                 now,
             );
             self.prepare_frame(now);
+            self.requery_cell_at(now);
             self.inverse.expire(now);
             self.flush(terminal)?;
             terminal.draw(|frame| self.draw(frame))?;
@@ -197,6 +210,7 @@ impl App {
             self.resize_settles_at,
             self.zooming_until,
             self.paint_due,
+            self.requery_due(),
             self.inverse.notice_ends(),
         ]
         .into_iter()
@@ -245,14 +259,27 @@ impl App {
         Flow::Continue
     }
 
-    fn fit_to_at(&mut self, pane: Pane, now: Instant) {
-        if self.viewer.view().pane != pane {
-            let cell = self.viewer.view().layout.cell();
+    fn fit_to_at(&mut self, cell: CellSize, pane: Pane, now: Instant) {
+        let view = self.viewer.view();
+        if view.pane != pane || view.layout.cell() != cell {
             self.viewer.resized(cell, pane);
             self.resize_settles_at = Some(now + RESIZE_SETTLE);
             self.on_screen = None;
             self.submitted = None;
             self.first_valid_job = self.next_job;
+        }
+    }
+
+    fn requery_due(&self) -> Option<Instant> {
+        self.requery.map(|(every, at)| at + every)
+    }
+
+    fn requery_cell_at(&mut self, now: Instant) {
+        if let Some((every, at)) = self.requery
+            && now >= at + every
+        {
+            self.outgoing.push_str(CELL_SIZE_QUERY);
+            self.requery = Some((every, now));
         }
     }
 
@@ -711,6 +738,7 @@ mod tests {
             pages,
             cell: CELL,
             pane,
+            requery_every: None,
             renderer,
             painter,
             partial_repaint_interval,
@@ -1043,6 +1071,7 @@ mod tests {
         app.outgoing.clear();
         let resized_at = Instant::now();
         app.fit_to_at(
+            CELL,
             Pane {
                 columns: 84,
                 rows: 34,
@@ -1054,6 +1083,45 @@ mod tests {
         settle(&mut app, &inbox);
         assert_eq!(frames_written(&app), 1);
         assert!(app.outgoing.contains("\"1;1;840;680"));
+    }
+
+    #[test]
+    fn a_new_cell_size_repaints_the_same_pane_at_that_size_and_drops_older_paintings() {
+        let (mut app, inbox) = headless_app(fixture("three-pages.pdf"), PANE);
+        settle(&mut app, &inbox);
+        app.apply_at(
+            Command::Scroll {
+                columns: 0,
+                rows: 1,
+            },
+            Instant::now(),
+        );
+        app.prepare_frame(settled());
+        let painting = next_painting(&mut app, &inbox);
+        app.outgoing.clear();
+        let retina = CellSize {
+            width: 20,
+            height: 40,
+        };
+        app.fit_to_at(retina, PANE, Instant::now());
+        app.handle(Event::Painted(painting));
+        assert!(app.outgoing.is_empty());
+        settle(&mut app, &inbox);
+        assert_eq!(frames_written(&app), 1);
+        assert!(app.outgoing.contains("\"1;1;1600;960"));
+    }
+
+    #[test]
+    fn the_cell_size_is_asked_for_once_per_requery_interval() {
+        let (mut app, _inbox) = headless_app(fixture("three-pages.pdf"), PANE);
+        let start = Instant::now();
+        let second = Duration::from_secs(1);
+        app.requery = Some((2 * second, start));
+        app.requery_cell_at(start + second);
+        app.requery_cell_at(start + 2 * second);
+        app.requery_cell_at(start + 3 * second);
+        assert_eq!(app.outgoing.matches(CELL_SIZE_QUERY).count(), 1);
+        assert_eq!(app.requery_due(), Some(start + 4 * second));
     }
 
     #[test]
@@ -1071,6 +1139,7 @@ mod tests {
         app.prepare_frame(settled());
         let painting = next_painting(&mut app, &inbox);
         app.fit_to_at(
+            CELL,
             Pane {
                 columns: 84,
                 rows: 34,

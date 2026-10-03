@@ -29,6 +29,8 @@ use crate::raster::painter::{Encode, Painter};
 use crate::renderer::{Renderer, Response};
 use crate::watch::watch;
 
+const ZELLIJ_REQUERY: Duration = Duration::from_secs(2);
+
 pub fn run(
     path: &Path,
     options: Options,
@@ -167,6 +169,7 @@ fn show(
             height: u32::from(font.height.max(1)),
         },
         pane: pane_of(page_area(terminal.get_frame().area())),
+        requery_every: std::env::var_os("ZELLIJ").map(|_| ZELLIJ_REQUERY),
         renderer,
         painter,
         partial_repaint_interval: partial_repaint_interval(raster),

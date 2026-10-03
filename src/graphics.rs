@@ -6,9 +6,12 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
+use crossterm::terminal::WindowSize;
 use ratatui_image::FontSize;
 use ratatui_image::picker::cap_parser::{QueryStdioOptions, Response};
 use ratatui_image::picker::{Capability, ProtocolType};
+
+use crate::layout::CellSize;
 
 pub const NEEDS_IMAGES: &str = "termleaf needs a terminal that supports Kitty graphics, Sixel or iTerm2 images \
      (for example Kitty, Ghostty, herdr, WezTerm, iTerm2, Konsole, foot, or xterm -ti vt340)";
@@ -98,14 +101,41 @@ pub fn detect(choice: Choice) -> Result<(Protocol, TerminalInfo)> {
         options,
     )
     .context("querying the terminal")?;
-    let fallback = crossterm::terminal::window_size().ok().and_then(|size| {
-        let width = size.width.checked_div(size.columns)?;
-        let height = size.height.checked_div(size.rows)?;
-        (width > 0 && height > 0).then(|| FontSize::new(width, height))
-    });
+    let fallback = crossterm::terminal::window_size()
+        .ok()
+        .and_then(|size| cell_of(&size))
+        .map(|(width, height)| FontSize::new(width, height));
     let (found, terminal) = interpret(replies, hints, fallback);
     let protocol = decide(found, choice, Hints::from_env())?;
     Ok((protocol, terminal))
+}
+
+pub struct CellWatch {
+    seen: Option<(u16, u16)>,
+}
+
+impl CellWatch {
+    pub fn new(size: Option<WindowSize>) -> Self {
+        Self {
+            seen: size.as_ref().and_then(cell_of),
+        }
+    }
+
+    pub fn cell(&mut self, size: Option<WindowSize>, current: CellSize) -> CellSize {
+        match size.as_ref().and_then(cell_of) {
+            Some(cell) if self.seen.replace(cell) != Some(cell) => CellSize {
+                width: u32::from(cell.0),
+                height: u32::from(cell.1),
+            },
+            _ => current,
+        }
+    }
+}
+
+fn cell_of(size: &WindowSize) -> Option<(u16, u16)> {
+    let width = size.width.checked_div(size.columns)?;
+    let height = size.height.checked_div(size.rows)?;
+    (width > 0 && height > 0).then_some((width, height))
 }
 
 struct QueryHints {
@@ -301,6 +331,32 @@ mod tests {
             (terminal.font_size().width, terminal.font_size().height),
             (cell.width, cell.height)
         );
+    }
+
+    #[test]
+    fn the_cell_size_changes_only_when_the_reported_pixels_per_cell_change() {
+        let size = |width, height| {
+            Some(WindowSize {
+                rows: 40,
+                columns: 100,
+                width,
+                height,
+            })
+        };
+        let queried = CellSize {
+            width: 9,
+            height: 18,
+        };
+        let retina = CellSize {
+            width: 20,
+            height: 40,
+        };
+        let mut cells = CellWatch::new(size(1000, 800));
+        assert_eq!(cells.cell(size(1000, 800), queried), queried);
+        assert_eq!(cells.cell(size(0, 0), queried), queried);
+        assert_eq!(cells.cell(None, queried), queried);
+        assert_eq!(cells.cell(size(2000, 1600), queried), retina);
+        assert_eq!(cells.cell(size(2000, 1600), retina), retina);
     }
 
     #[test]
