@@ -151,11 +151,20 @@
 
         <div class="tabs">
           <div class="tab-list" role="tablist" aria-label="Install method">
-            <button class="tab" role="tab" id="tab-sh" aria-controls="panel-sh" aria-selected="true">Shell installer</button>
+            <button class="tab" role="tab" id="tab-brew" aria-controls="panel-brew" aria-selected="true">Homebrew</button>
+            <button class="tab" role="tab" id="tab-sh" aria-controls="panel-sh" aria-selected="false">Shell installer</button>
             <button class="tab" role="tab" id="tab-cargo" aria-controls="panel-cargo" aria-selected="false">Cargo</button>
           </div>
 
-          <div class="tab-panel" role="tabpanel" id="panel-sh" aria-labelledby="tab-sh">
+          <div class="tab-panel" role="tabpanel" id="panel-brew" aria-labelledby="tab-brew">
+            <p class="panel-note">Installs a prebuilt binary from the backyardbit tap.</p>
+            <div class="codeblock">
+              <pre><code><span class="prompt">$ </span>brew install backyardbit/tap/termleaf</code></pre>
+              <button class="copy" type="button" data-copy="brew install backyardbit/tap/termleaf">Copy</button>
+            </div>
+          </div>
+
+          <div class="tab-panel" role="tabpanel" id="panel-sh" aria-labelledby="tab-sh" hidden>
             <p class="panel-note">Installs a prebuilt binary from the latest release.</p>
             <div class="codeblock">
               <pre><code><span class="prompt">$ </span><span class="nw">curl</span> <span class="nw">--proto</span> <span class="nw">'=https'</span> <span class="nw">--tlsv1.2</span> <span class="nw">-LsSf</span> <span class="url">https://github.com/<wbr>backyardbit/<wbr>termleaf/<wbr>releases/<wbr>latest/<wbr>download/<wbr>termleaf-installer.sh</span> <span class="nw">| sh</span></code></pre>
