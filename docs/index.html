@@ -146,7 +146,7 @@
       <div class="container narrow">
         <div class="section-head">
           <h2>Install</h2>
-          <p>termleaf runs on macOS and Linux. Download the <a href="https://github.com/backyardbit/termleaf/releases/latest">latest release</a>.</p>
+          <p>termleaf runs on macOS and Linux. <span id="release">Download the <a href="https://github.com/backyardbit/termleaf/releases/latest">latest release</a>.</span></p>
         </div>
 
         <div class="tabs">
@@ -305,5 +305,17 @@
   </footer>
 
   <script src="assets/site.js"></script>
+  <script>
+    fetch("https://api.github.com/repos/backyardbit/termleaf/releases/latest")
+      .then((response) => (response.ok ? response.json() : Promise.reject()))
+      .then(({ tag_name, html_url }) => {
+        if (!/^v\d+\.\d+\.\d+$/.test(tag_name) || !String(html_url).startsWith("https://github.com/backyardbit/termleaf/releases/")) return;
+        const link = document.createElement("a");
+        link.setAttribute("href", html_url);
+        link.textContent = tag_name;
+        document.getElementById("release").replaceChildren("The latest release is ", link, ".");
+      })
+      .catch(() => {});
+  </script>
 </body>
 </html>
