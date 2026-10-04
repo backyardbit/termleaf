@@ -41,7 +41,7 @@
   <main id="main">
     <section class="hero">
       <div class="container hero-copy">
-        <p class="eyebrow"><span class="dot" aria-hidden="true"></span> v0.2.1 &middot; macOS and Linux</p>
+        <p class="eyebrow"><span class="dot" aria-hidden="true"></span> macOS and Linux</p>
         <h1>A PDF viewer for your terminal that reloads on every build.</h1>
         <p class="lead">Run it in a pane next to your editor while you write LaTeX.</p>
         <div class="cta-row">
@@ -146,16 +146,25 @@
       <div class="container narrow">
         <div class="section-head">
           <h2>Install</h2>
-          <p>termleaf runs on macOS and Linux. The latest release is <a href="https://github.com/backyardbit/termleaf/releases/latest">v0.2.1</a>.</p>
+          <p>termleaf runs on macOS and Linux. <span id="release">Download the <a href="https://github.com/backyardbit/termleaf/releases/latest">latest release</a>.</span></p>
         </div>
 
         <div class="tabs">
           <div class="tab-list" role="tablist" aria-label="Install method">
-            <button class="tab" role="tab" id="tab-sh" aria-controls="panel-sh" aria-selected="true">Shell installer</button>
+            <button class="tab" role="tab" id="tab-brew" aria-controls="panel-brew" aria-selected="true">Homebrew</button>
+            <button class="tab" role="tab" id="tab-sh" aria-controls="panel-sh" aria-selected="false">Shell installer</button>
             <button class="tab" role="tab" id="tab-cargo" aria-controls="panel-cargo" aria-selected="false">Cargo</button>
           </div>
 
-          <div class="tab-panel" role="tabpanel" id="panel-sh" aria-labelledby="tab-sh">
+          <div class="tab-panel" role="tabpanel" id="panel-brew" aria-labelledby="tab-brew">
+            <p class="panel-note">Installs a prebuilt binary from the backyardbit tap.</p>
+            <div class="codeblock">
+              <pre><code><span class="prompt">$ </span>brew install backyardbit/tap/termleaf</code></pre>
+              <button class="copy" type="button" data-copy="brew install backyardbit/tap/termleaf">Copy</button>
+            </div>
+          </div>
+
+          <div class="tab-panel" role="tabpanel" id="panel-sh" aria-labelledby="tab-sh" hidden>
             <p class="panel-note">Installs a prebuilt binary from the latest release.</p>
             <div class="codeblock">
               <pre><code><span class="prompt">$ </span><span class="nw">curl</span> <span class="nw">--proto</span> <span class="nw">'=https'</span> <span class="nw">--tlsv1.2</span> <span class="nw">-LsSf</span> <span class="url">https://github.com/<wbr>backyardbit/<wbr>termleaf/<wbr>releases/<wbr>latest/<wbr>download/<wbr>termleaf-installer.sh</span> <span class="nw">| sh</span></code></pre>
@@ -296,5 +305,17 @@
   </footer>
 
   <script src="assets/site.js"></script>
+  <script>
+    fetch("https://api.github.com/repos/backyardbit/termleaf/releases/latest")
+      .then((response) => (response.ok ? response.json() : Promise.reject()))
+      .then(({ tag_name, html_url }) => {
+        if (!/^v\d+\.\d+\.\d+$/.test(tag_name) || !String(html_url).startsWith("https://github.com/backyardbit/termleaf/releases/")) return;
+        const link = document.createElement("a");
+        link.setAttribute("href", html_url);
+        link.textContent = tag_name;
+        document.getElementById("release").replaceChildren("The latest release is ", link, ".");
+      })
+      .catch(() => {});
+  </script>
 </body>
 </html>

@@ -25,6 +25,12 @@ termleaf runs on macOS and Linux.
 
 ## Install
 
+With Homebrew on macOS or Linux:
+
+```sh
+brew install backyardbit/tap/termleaf
+```
+
 With the shell installer on macOS or Linux:
 
 ```sh
