@@ -1,0 +1,27 @@
+name: publish-homebrew
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+jobs:
+  publish:
+    if: ${{ !fromJson(inputs.plan).announcement_is_prerelease || fromJson(inputs.plan).publish_prereleases }}
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ fromJson(inputs.plan).announcement_tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          repository: backyardbit/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+      - uses: Homebrew/actions/setup-homebrew@dc7099b3e807f1e2ecc61f3ecabc840eedd5586a
+      - run: curl -fsSL "https://github.com/backyardbit/termleaf/releases/download/${TAG}/sha256.sum" -o "$RUNNER_TEMP/sha256.sum"
+      - run: python3 scripts/bump-formula.py "$TAG" tap/Formula/termleaf.rb "$RUNNER_TEMP/sha256.sum"
