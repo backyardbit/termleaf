@@ -57,9 +57,10 @@ impl Renderer {
         path: PathBuf,
         respond: impl Fn(Response) + Send + 'static,
         deliver: impl Fn(RenderKey, RgbImage) + Send + 'static,
+        wanted: impl Fn(&RenderKey) -> bool + Send + 'static,
     ) -> Self {
         let (requests, inbox) = mpsc::channel();
-        thread::spawn(move || serve(&path, &inbox, &respond, &deliver));
+        thread::spawn(move || serve(&path, &inbox, &respond, &deliver, &wanted));
         Self { requests }
     }
 
@@ -136,6 +137,7 @@ fn serve(
     inbox: &Receiver<Vec<Request>>,
     respond: &impl Fn(Response),
     deliver: &impl Fn(RenderKey, RgbImage),
+    wanted: &impl Fn(&RenderKey) -> bool,
 ) {
     let mut loaded: Option<LoadedPdf> = None;
     let mut pending: Vec<Request> = Vec::new();
@@ -180,7 +182,7 @@ fn serve(
                 let Some(current) = &mut loaded else {
                     continue;
                 };
-                if current.rendered_generation != key.generation {
+                if current.rendered_generation != key.generation || !wanted(&key) {
                     continue;
                 }
                 if let Ok(mut image) = current.pdf.render(key.page, key.scale, key.region) {
@@ -313,6 +315,7 @@ mod tests {
             move |key, image| {
                 tiles.send((key, image)).unwrap();
             },
+            |_| true,
         );
         renderer.load(0);
         next_response(&responses);
@@ -399,6 +402,7 @@ mod tests {
                 let _ = sender.send(response);
             },
             |_, _| {},
+            |_| true,
         );
 
         renderer.load(0);
@@ -425,6 +429,7 @@ mod tests {
                 let _ = sender.send(response);
             },
             |_, _| {},
+            |_| true,
         );
 
         renderer.load(0);
@@ -454,6 +459,7 @@ mod tests {
                 let _ = sender.send(response);
             },
             |_, _| {},
+            |_| true,
         );
 
         renderer.load(0);
@@ -479,6 +485,7 @@ mod tests {
                 let _ = sender.send(response);
             },
             |_, _| {},
+            |_| true,
         );
 
         renderer.load(0);

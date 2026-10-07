@@ -108,6 +108,7 @@ fn show(
             move |key, image| {
                 let _ = tiles.send(Event::Tile(key, image));
             },
+            |_| true,
         )
     };
     renderer.load(0);

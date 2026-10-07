@@ -80,7 +80,11 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
             move |response| {
                 let _ = events.send(Event::Renderer(response));
             },
-            send_to(Arc::clone(&jobs)),
+            send_to(Arc::clone(&jobs), wanted.clone()),
+            {
+                let wanted = wanted.clone();
+                move |key: &RenderKey| wanted.contains(key)
+            },
         )
     };
     renderer.load(0);
@@ -190,8 +194,12 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
 
 fn send_to(
     jobs: Arc<Mutex<SyncSender<Job>>>,
+    wanted: Wanted,
 ) -> impl Fn(RenderKey, image::RgbImage) + Send + 'static {
     move |key, image| {
+        if !wanted.contains(&key) {
+            return;
+        }
         let queue = jobs.lock().map(|queue| queue.clone());
         if let Ok(queue) = queue {
             let _ = queue.send(Job { key, image });
@@ -779,6 +787,8 @@ impl App {
         let wanted = tile_keys(self.generation, &view);
         self.wanted
             .set(prefetch.iter().chain(&wanted).copied().collect());
+        self.in_flight
+            .retain(|key| wanted.contains(key) || prefetch.contains(key));
         let drawn = self.requested_view.as_ref() == Some(&view);
         self.requested_view = Some(view.clone());
         let view_ready = drawn && wanted.iter().all(|key| self.cached(*key).is_some());
@@ -1023,7 +1033,11 @@ mod tests {
                 move |response| {
                     let _ = events.send(Event::Renderer(response));
                 },
-                send_to(Arc::clone(&jobs)),
+                send_to(Arc::clone(&jobs), wanted.clone()),
+                {
+                    let wanted = wanted.clone();
+                    move |key: &RenderKey| wanted.contains(key)
+                },
             )
         };
         let encoders = Encoders {
