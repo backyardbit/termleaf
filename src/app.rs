@@ -1668,6 +1668,84 @@ mod tests {
         assert!(!app.outgoing.contains("a=T"));
     }
 
+    const HERDR_PANE_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+
+    #[derive(Default)]
+    struct TerminalImages {
+        held: Vec<(String, usize)>,
+        most: usize,
+    }
+
+    impl TerminalImages {
+        fn read(&mut self, app: &mut App) {
+            for command in app.outgoing.split("\x1b_Gq=2,a=").skip(1) {
+                let control = command.split([';', '\x1b']).next().unwrap_or_default();
+                let field = |name: &str| {
+                    control
+                        .split(',')
+                        .find_map(|pair| pair.strip_prefix(name)?.strip_prefix('='))
+                        .unwrap_or_default()
+                        .to_owned()
+                };
+                let id = field("i");
+                self.held.retain(|(held, _)| *held != id);
+                if control.starts_with('T') {
+                    let pixels: usize =
+                        field("s").parse::<usize>().unwrap() * field("v").parse::<usize>().unwrap();
+                    self.held.push((id, pixels * 4));
+                }
+                self.most = self
+                    .most
+                    .max(self.held.iter().map(|(_, bytes)| bytes).sum());
+            }
+            app.outgoing.clear();
+        }
+    }
+
+    fn settle_tiles(app: &mut App, inbox: &Receiver<Event>, terminal: &mut TerminalImages) {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            app.request_tiles_at(Instant::now() + RESIZE_SETTLE);
+            terminal.read(app);
+            let view = app.viewer.view().clone();
+            if app.in_flight.is_empty()
+                && tile_keys(app.generation, &view)
+                    .iter()
+                    .all(|key| app.cached(*key).is_some())
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the view never settled; in flight: {:?}",
+                app.in_flight
+            );
+            if let Ok(event) = inbox.recv_timeout(Duration::from_millis(200)) {
+                app.handle(event);
+            }
+        }
+    }
+
+    #[test]
+    fn scrolling_away_and_back_keeps_the_images_within_what_a_herdr_pane_holds() {
+        let (mut app, inbox) = headless_app(Pane {
+            columns: 300,
+            rows: 100,
+        });
+        let mut terminal = TerminalImages::default();
+        settle_tiles(&mut app, &inbox, &mut terminal);
+        for key in ['j', 'j', 'g', 'g'] {
+            app.handle(Event::Key(Key::Char(key)));
+            settle_tiles(&mut app, &inbox, &mut terminal);
+        }
+        assert_eq!(app.viewer.page(), 0);
+        assert!(
+            terminal.most <= HERDR_PANE_IMAGE_BYTES,
+            "the terminal was asked to hold {} MiB of images",
+            terminal.most / 1024 / 1024
+        );
+    }
+
     fn thesis() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/synctex/thesis.pdf")
     }
