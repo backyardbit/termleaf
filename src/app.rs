@@ -40,7 +40,7 @@ use crate::watch::watch;
 const RELOAD_SETTLE: Duration = Duration::from_millis(100);
 const RELOAD_RETRY: Duration = Duration::from_millis(250);
 const MAX_RELOAD_RETRIES: u32 = 3;
-const TILE_BYTE_BUDGET: usize = 192 * 1024 * 1024;
+const TILE_BYTE_BUDGET: usize = 64 * 1024 * 1024;
 const SHELF_BYTES: usize = 48 * 1024 * 1024;
 const IDLE_WAIT: Duration = Duration::from_secs(3600);
 const RESIZE_SETTLE: Duration = Duration::from_millis(300);
@@ -694,6 +694,7 @@ impl App {
     }
 
     fn store(&mut self, tile: &Encoded) {
+        self.evict(tile.bytes);
         let id = self.next_id;
         self.next_id = id.next();
         kitty::transmit(id, &tile.image, &mut self.outgoing);
@@ -702,15 +703,15 @@ impl App {
             id,
             bytes: tile.bytes,
         });
-        self.evict();
     }
 
-    fn evict(&mut self) {
+    fn evict(&mut self, incoming: usize) {
         let protected = self.visible_keys();
-        let mut total: usize = self.tiles.iter().map(|tile| tile.bytes).sum();
+        let mut total = incoming + self.tiles.iter().map(|tile| tile.bytes).sum::<usize>();
         let mut index = 0;
         while total > TILE_BYTE_BUDGET && index < self.tiles.len() {
-            if protected.contains(&self.tiles[index].key) {
+            let key = self.tiles[index].key;
+            if protected.contains(&key) || self.wanted.contains(&key) {
                 index += 1;
                 continue;
             }
@@ -771,7 +772,7 @@ impl App {
             return;
         }
         let prefetch = if self.may_transmit(now) {
-            self.neighbour_keys(&view)
+            self.neighbour_keys_that_fit(&view)
         } else {
             Vec::new()
         };
@@ -827,6 +828,31 @@ impl App {
             keys.extend(tile_keys(self.generation, &neighbour));
         }
         keys
+    }
+
+    fn neighbour_keys_that_fit(&self, view: &View) -> Vec<RenderKey> {
+        let cell = view.layout.cell();
+        let mut window: Vec<RenderKey> = Vec::new();
+        for key in self.visible_keys() {
+            if !window.contains(&key) {
+                window.push(key);
+            }
+        }
+        let visible = window.len();
+        let mut total = window.iter().fold(0, |total: usize, key| {
+            total.saturating_add(tile_bytes(*key, cell))
+        });
+        for key in self.neighbour_keys(view) {
+            if window.contains(&key) {
+                continue;
+            }
+            total = total.saturating_add(tile_bytes(key, cell));
+            if total > TILE_BYTE_BUDGET {
+                break;
+            }
+            window.push(key);
+        }
+        window.split_off(visible)
     }
 
     fn only_scrolled_from_shown(&self, view: &View) -> bool {
@@ -939,6 +965,16 @@ impl App {
 enum Flow {
     Continue,
     Quit,
+}
+
+fn tile_bytes(key: RenderKey, cell: CellSize) -> usize {
+    let width = u64::from(key.region.width.div_ceil(cell.width)) * u64::from(cell.width);
+    let height = u64::from(key.region.height.div_ceil(cell.height)) * u64::from(cell.height);
+    width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .and_then(|bytes| usize::try_from(bytes).ok())
+        .unwrap_or(usize::MAX)
 }
 
 fn tile_keys(generation: Generation, view: &View) -> Vec<RenderKey> {
