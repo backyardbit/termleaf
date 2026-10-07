@@ -1344,6 +1344,60 @@ mod tests {
     }
 
     #[test]
+    fn paging_down_prefetches_the_next_page_top() {
+        let (mut app, _inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 24,
+        });
+        let now = Instant::now() + RESIZE_SETTLE;
+        app.request_tiles_at(now);
+        app.handle(Event::Key(Key::Char('j')));
+        app.request_tiles_at(now);
+        let view = app.viewer.view();
+        let next = View {
+            top: view.layout.page_top(app.viewer.page() + 1),
+            ..view.clone()
+        }
+        .clamped();
+        assert!(next.top >= view.top + view.pane.rows);
+        for placement in next.placements() {
+            if u32::from(placement.area.height) * 4 < view.pane.rows {
+                continue;
+            }
+            let key = tile_key(app.generation, &next, placement.tile);
+            assert!(app.in_flight.contains(&key), "{key:?} was not prefetched");
+        }
+    }
+
+    #[test]
+    fn a_prefetched_tile_is_sent_only_once_the_view_is_complete_and_the_writer_drained() {
+        let (mut app, _inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 24,
+        });
+        let now = Instant::now() + RESIZE_SETTLE;
+        app.handle(Event::Key(Key::Char('j')));
+        app.request_tiles_at(now);
+        let shown = tile_keys(app.generation, app.viewer.view());
+        let prefetched = app
+            .in_flight
+            .iter()
+            .copied()
+            .find(|key| !shown.contains(key))
+            .expect("a prefetched tile");
+        app.handle(Event::Encoded(0, encoded_tile(&app, prefetched)));
+        assert_eq!(app.cached(prefetched), None);
+        for key in &shown {
+            app.handle(Event::Encoded(0, encoded_tile(&app, *key)));
+        }
+        app.request_tiles_at(now);
+        assert_eq!(app.cached(prefetched), None);
+        app.outgoing.clear();
+        app.request_tiles_at(now);
+        assert!(app.cached(prefetched).is_some());
+    }
+
+    #[test]
     fn a_zoom_still_waits_for_its_tiles_before_it_is_shown() {
         let (mut app, inbox) = headless_app(Pane {
             columns: 80,
