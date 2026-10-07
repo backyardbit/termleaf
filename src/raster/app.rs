@@ -721,6 +721,7 @@ mod tests {
                 move |key, image| {
                     let _ = tiles.send(Event::Tile(key, image));
                 },
+                |_| true,
             )
         };
         let painter = Painter::spawn(Box::new(|frame, _| sixel::encode(frame)), move |painting| {
