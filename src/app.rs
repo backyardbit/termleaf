@@ -40,7 +40,7 @@ use crate::watch::watch;
 const RELOAD_SETTLE: Duration = Duration::from_millis(100);
 const RELOAD_RETRY: Duration = Duration::from_millis(250);
 const MAX_RELOAD_RETRIES: u32 = 3;
-const TILE_BYTE_BUDGET: usize = 192 * 1024 * 1024;
+const TILE_BYTE_BUDGET: usize = 64 * 1024 * 1024;
 const SHELF_BYTES: usize = 48 * 1024 * 1024;
 const IDLE_WAIT: Duration = Duration::from_secs(3600);
 const RESIZE_SETTLE: Duration = Duration::from_millis(300);
@@ -694,6 +694,7 @@ impl App {
     }
 
     fn store(&mut self, tile: &Encoded) {
+        self.evict(tile.bytes);
         let id = self.next_id;
         self.next_id = id.next();
         kitty::transmit(id, &tile.image, &mut self.outgoing);
@@ -702,15 +703,15 @@ impl App {
             id,
             bytes: tile.bytes,
         });
-        self.evict();
     }
 
-    fn evict(&mut self) {
+    fn evict(&mut self, incoming: usize) {
         let protected = self.visible_keys();
-        let mut total: usize = self.tiles.iter().map(|tile| tile.bytes).sum();
+        let mut total = incoming + self.tiles.iter().map(|tile| tile.bytes).sum::<usize>();
         let mut index = 0;
         while total > TILE_BYTE_BUDGET && index < self.tiles.len() {
-            if protected.contains(&self.tiles[index].key) {
+            let key = self.tiles[index].key;
+            if protected.contains(&key) || self.wanted.contains(&key) {
                 index += 1;
                 continue;
             }
@@ -771,7 +772,7 @@ impl App {
             return;
         }
         let prefetch = if self.may_transmit(now) {
-            self.neighbour_keys(&view)
+            self.neighbour_keys_that_fit(&view)
         } else {
             Vec::new()
         };
@@ -827,6 +828,31 @@ impl App {
             keys.extend(tile_keys(self.generation, &neighbour));
         }
         keys
+    }
+
+    fn neighbour_keys_that_fit(&self, view: &View) -> Vec<RenderKey> {
+        let cell = view.layout.cell();
+        let mut window: Vec<RenderKey> = Vec::new();
+        for key in self.visible_keys() {
+            if !window.contains(&key) {
+                window.push(key);
+            }
+        }
+        let visible = window.len();
+        let mut total = window.iter().fold(0, |total: usize, key| {
+            total.saturating_add(tile_bytes(*key, cell))
+        });
+        for key in self.neighbour_keys(view) {
+            if window.contains(&key) {
+                continue;
+            }
+            total = total.saturating_add(tile_bytes(key, cell));
+            if total > TILE_BYTE_BUDGET {
+                break;
+            }
+            window.push(key);
+        }
+        window.split_off(visible)
     }
 
     fn only_scrolled_from_shown(&self, view: &View) -> bool {
@@ -939,6 +965,16 @@ impl App {
 enum Flow {
     Continue,
     Quit,
+}
+
+fn tile_bytes(key: RenderKey, cell: CellSize) -> usize {
+    let width = u64::from(key.region.width.div_ceil(cell.width)) * u64::from(cell.width);
+    let height = u64::from(key.region.height.div_ceil(cell.height)) * u64::from(cell.height);
+    width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .and_then(|bytes| usize::try_from(bytes).ok())
+        .unwrap_or(usize::MAX)
 }
 
 fn tile_keys(generation: Generation, view: &View) -> Vec<RenderKey> {
@@ -1666,6 +1702,84 @@ mod tests {
         assert_eq!(app.cached(old[1]), None);
         assert!(!app.shelf.holds(old[1]));
         assert!(!app.outgoing.contains("a=T"));
+    }
+
+    const HERDR_PANE_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+
+    #[derive(Default)]
+    struct TerminalImages {
+        held: Vec<(String, usize)>,
+        most: usize,
+    }
+
+    impl TerminalImages {
+        fn read(&mut self, app: &mut App) {
+            for command in app.outgoing.split("\x1b_Gq=2,a=").skip(1) {
+                let control = command.split([';', '\x1b']).next().unwrap_or_default();
+                let field = |name: &str| {
+                    control
+                        .split(',')
+                        .find_map(|pair| pair.strip_prefix(name)?.strip_prefix('='))
+                        .unwrap_or_default()
+                        .to_owned()
+                };
+                let id = field("i");
+                self.held.retain(|(held, _)| *held != id);
+                if control.starts_with('T') {
+                    let pixels: usize =
+                        field("s").parse::<usize>().unwrap() * field("v").parse::<usize>().unwrap();
+                    self.held.push((id, pixels * 4));
+                }
+                self.most = self
+                    .most
+                    .max(self.held.iter().map(|(_, bytes)| bytes).sum());
+            }
+            app.outgoing.clear();
+        }
+    }
+
+    fn settle_tiles(app: &mut App, inbox: &Receiver<Event>, terminal: &mut TerminalImages) {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            app.request_tiles_at(Instant::now() + RESIZE_SETTLE);
+            terminal.read(app);
+            let view = app.viewer.view().clone();
+            if app.in_flight.is_empty()
+                && tile_keys(app.generation, &view)
+                    .iter()
+                    .all(|key| app.cached(*key).is_some())
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the view never settled; in flight: {:?}",
+                app.in_flight
+            );
+            if let Ok(event) = inbox.recv_timeout(Duration::from_millis(200)) {
+                app.handle(event);
+            }
+        }
+    }
+
+    #[test]
+    fn scrolling_away_and_back_keeps_the_images_within_what_a_herdr_pane_holds() {
+        let (mut app, inbox) = headless_app(Pane {
+            columns: 300,
+            rows: 100,
+        });
+        let mut terminal = TerminalImages::default();
+        settle_tiles(&mut app, &inbox, &mut terminal);
+        for key in ['j', 'j', 'g', 'g'] {
+            app.handle(Event::Key(Key::Char(key)));
+            settle_tiles(&mut app, &inbox, &mut terminal);
+        }
+        assert_eq!(app.viewer.page(), 0);
+        assert!(
+            terminal.most <= HERDR_PANE_IMAGE_BYTES,
+            "the terminal was asked to hold {} MiB of images",
+            terminal.most / 1024 / 1024
+        );
     }
 
     fn thesis() -> PathBuf {
