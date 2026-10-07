@@ -1282,6 +1282,54 @@ mod tests {
     }
 
     #[test]
+    fn renders_for_a_view_left_behind_are_no_longer_in_flight() {
+        let (mut app, _inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 24,
+        });
+        let now = Instant::now() + RESIZE_SETTLE;
+        app.request_tiles_at(now);
+        let first = tile_keys(app.generation, app.viewer.view());
+        app.viewer.apply(Command::Last);
+        app.request_tiles_at(now);
+        let left_behind: Vec<RenderKey> = first
+            .into_iter()
+            .filter(|key| !app.wanted.contains(key))
+            .collect();
+        assert!(!left_behind.is_empty());
+        for key in left_behind {
+            assert!(!app.in_flight.contains(&key), "{key:?} is still in flight");
+        }
+    }
+
+    #[test]
+    fn a_render_that_is_no_longer_wanted_is_never_encoded() {
+        let (app, inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 24,
+        });
+        let keys = tile_keys(app.generation, app.viewer.view());
+        let (stale, fresh) = (keys[0], keys[1]);
+        app.wanted.set(vec![fresh]);
+        app.renderer.render(stale);
+        app.renderer.render(fresh);
+        let mut encoded = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !encoded.contains(&fresh) && Instant::now() < deadline {
+            if let Ok(Event::Encoded(_, tile)) = inbox.recv_timeout(Duration::from_millis(100)) {
+                encoded.push(tile.key);
+            }
+        }
+        while let Ok(event) = inbox.recv_timeout(Duration::from_millis(300)) {
+            if let Event::Encoded(_, tile) = event {
+                encoded.push(tile.key);
+            }
+        }
+        assert!(encoded.contains(&fresh));
+        assert!(!encoded.contains(&stale));
+    }
+
+    #[test]
     fn a_zoom_still_waits_for_its_tiles_before_it_is_shown() {
         let (mut app, inbox) = headless_app(Pane {
             columns: 80,
