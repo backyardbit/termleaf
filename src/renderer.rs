@@ -191,6 +191,8 @@ fn serve(
                         .tint(key.page, key.scale, key.region, &mut image);
                     deliver(key, image);
                 }
+                pending.extend(inbox.try_iter().flatten());
+                pending.retain(|request| *request != Request::Render(key));
             }
         }
     }

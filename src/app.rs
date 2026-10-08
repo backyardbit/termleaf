@@ -45,6 +45,12 @@ const SHELF_BYTES: usize = 48 * 1024 * 1024;
 const IDLE_WAIT: Duration = Duration::from_secs(3600);
 const RESIZE_SETTLE: Duration = Duration::from_millis(300);
 const ZOOM_SETTLE: Duration = Duration::from_millis(150);
+const PREFETCH_TILES: usize = 16;
+const HOLD_WINDOW: Duration = Duration::from_millis(150);
+const SLOW_WRITE: Duration = Duration::from_millis(4);
+const SLOW_BYTES_PER_SECOND: f64 = 32_000_000.0;
+const LANDING: Duration = Duration::from_millis(16);
+const SLOW_PIPE_MEMORY: Duration = Duration::from_secs(1);
 
 pub struct Options {
     pub pinch: bool,
@@ -176,6 +182,11 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
         reload_retries: 0,
         tiles: Vec::new(),
         in_flight: Vec::new(),
+        resident: Vec::new(),
+        travel: Travel::default(),
+        moved_at: None,
+        pipe_slow_until: None,
+        landing: false,
         shown: None,
         zooming_until: None,
         stretched: Vec::new(),
@@ -364,6 +375,23 @@ struct Shown {
     view: View,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Travel {
+    down: bool,
+    paging: bool,
+    holding: bool,
+}
+
+impl Default for Travel {
+    fn default() -> Self {
+        Self {
+            down: true,
+            paging: false,
+            holding: false,
+        }
+    }
+}
+
 struct App {
     file_name: String,
     viewer: Viewer,
@@ -390,6 +418,11 @@ struct App {
     reload_retries: u32,
     tiles: Vec<CachedTile>,
     in_flight: Vec<RenderKey>,
+    resident: Vec<RenderKey>,
+    travel: Travel,
+    moved_at: Option<Instant>,
+    pipe_slow_until: Option<Instant>,
+    landing: bool,
     shown: Option<Shown>,
     zooming_until: Option<Instant>,
     stretched: Vec<(ImageId, Stretched)>,
@@ -450,6 +483,8 @@ impl App {
             self.resize_settles_at,
             self.zooming_until,
             self.inverse.notice_ends(),
+            self.settles_at().filter(|at| *at > now),
+            self.lands_at().filter(|at| self.landing && *at > now),
         ]
         .into_iter()
         .flatten()
@@ -694,7 +729,9 @@ impl App {
         if tile.key.generation != self.generation || self.cached(tile.key).is_some() {
             return;
         }
-        if self.wanted.contains(&tile.key) {
+        if self.wanted.contains(&tile.key)
+            && tile_keys(self.generation, self.viewer.view()).contains(&tile.key)
+        {
             self.store(&tile);
         } else {
             self.shelf.park(tile);
@@ -714,19 +751,25 @@ impl App {
     }
 
     fn evict(&mut self, incoming: usize) {
+        let current = tile_keys(self.generation, self.viewer.view());
         let protected = self.visible_keys();
         let mut total = incoming + self.tiles.iter().map(|tile| tile.bytes).sum::<usize>();
-        let mut index = 0;
-        while total > TILE_BYTE_BUDGET && index < self.tiles.len() {
-            let key = self.tiles[index].key;
-            if protected.contains(&key) || self.wanted.contains(&key) {
-                index += 1;
-                continue;
+        for keep_protected in [true, false] {
+            let mut index = 0;
+            while total > TILE_BYTE_BUDGET && index < self.tiles.len() {
+                let key = self.tiles[index].key;
+                if current.contains(&key)
+                    || (keep_protected
+                        && (protected.contains(&key) || self.resident.contains(&key)))
+                {
+                    index += 1;
+                    continue;
+                }
+                let tile = self.tiles.remove(index);
+                self.stretch_grids.remove(&tile.id);
+                total -= tile.bytes;
+                self.outgoing.push_str(&kitty::delete(tile.id));
             }
-            let tile = self.tiles.remove(index);
-            self.stretch_grids.remove(&tile.id);
-            total -= tile.bytes;
-            self.outgoing.push_str(&kitty::delete(tile.id));
         }
     }
 
@@ -751,11 +794,21 @@ impl App {
         if self.outgoing.is_empty() {
             return Ok(());
         }
+        let writing = Instant::now();
         let backend = terminal.backend_mut();
         backend.write_all(self.outgoing.as_bytes())?;
         backend.flush()?;
+        self.timed_write(writing, self.outgoing.len());
         self.outgoing.clear();
         Ok(())
+    }
+
+    fn timed_write(&mut self, started: Instant, bytes: usize) {
+        let now = Instant::now();
+        let took = now.saturating_duration_since(started);
+        if took > SLOW_WRITE && bytes as f64 / took.as_secs_f64() < SLOW_BYTES_PER_SECOND {
+            self.pipe_slow_until = Some(now + SLOW_PIPE_MEMORY);
+        }
     }
 
     fn visible_keys(&self) -> Vec<RenderKey> {
@@ -779,11 +832,30 @@ impl App {
         if self.zooming(now) && stretching {
             return;
         }
-        let prefetch = if self.may_transmit(now) {
-            self.neighbour_keys_that_fit(&view)
+        if let Some(previous) = &self.requested_view
+            && previous.layout == view.layout
+            && previous.pane == view.pane
+            && previous.top != view.top
+        {
+            self.travel = Travel {
+                down: view.top > previous.top,
+                paging: view.top.abs_diff(previous.top) * 2 >= view.pane.rows,
+                holding: self
+                    .moved_at
+                    .is_some_and(|at| now.saturating_duration_since(at) < HOLD_WINDOW),
+            };
+            self.moved_at = Some(now);
+        }
+        let settled = self.settles_at().is_none_or(|at| now >= at);
+        if settled {
+            self.travel.holding = false;
+        }
+        let (prefetch, resident) = if self.may_transmit(now) {
+            self.prefetch_keys(&view)
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
+        self.resident = resident;
         let wanted = tile_keys(self.generation, &view);
         self.wanted
             .set(prefetch.iter().chain(&wanted).copied().collect());
@@ -792,21 +864,47 @@ impl App {
         let drawn = self.requested_view.as_ref() == Some(&view);
         self.requested_view = Some(view.clone());
         let view_ready = drawn && wanted.iter().all(|key| self.cached(*key).is_some());
-        let mut deferred = false;
-        for key in prefetch.iter().chain(&wanted) {
-            let ready = if wanted.contains(key) {
-                drawn
-            } else {
-                view_ready
-            };
-            if !ready && self.shelf.holds(*key) {
-                deferred = true;
-            } else {
+        let mut bump = !drawn;
+        for key in prefetch.iter().rev() {
+            if !self.shelf.holds(*key)
+                && self.cached(*key).is_none()
+                && !self.in_flight.contains(key)
+            {
                 self.request(*key);
+                bump = true;
             }
         }
-        self.shelf_waits =
-            deferred && (!drawn || wanted.iter().all(|key| self.cached(*key).is_some()));
+        if bump {
+            for key in &wanted {
+                if self.in_flight.contains(key) {
+                    self.renderer.render(*key);
+                }
+            }
+        }
+        let landed = !self.pipe_slow(now) || self.lands_at().is_none_or(|at| now >= at);
+        let cheapest = wanted
+            .iter()
+            .filter(|key| self.shelf.holds(**key))
+            .min_by_key(|key| u64::from(key.region.width) * u64::from(key.region.height))
+            .copied();
+        let scrolling = !self.travel.paging && self.only_scrolled_from_shown(&view);
+        let mut deferred = false;
+        self.landing = false;
+        for key in &wanted {
+            if self.shelf.holds(*key)
+                && (cheapest != Some(*key) || (!scrolling && (!drawn || !landed)))
+            {
+                deferred = landed;
+                self.landing |= !landed;
+                continue;
+            }
+            self.request(*key);
+        }
+        let pipe_idle = settled && self.outgoing.is_empty() && !self.pipe_slow(now);
+        if view_ready && pipe_idle {
+            self.send_one_prefetched();
+        }
+        self.shelf_waits = deferred || (view_ready && pipe_idle && self.prefetched_waiting());
         if self.only_scrolled_from_shown(&view) {
             self.shown = Some(Shown {
                 generation: self.generation,
@@ -822,47 +920,147 @@ impl App {
         self.forget_tiles(|key| key.scale != scale || key.generation != generation);
     }
 
-    fn neighbour_keys(&self, view: &View) -> Vec<RenderKey> {
-        let mut keys = Vec::new();
-        for neighbour in [
+    fn pane_step(view: &View, down: bool) -> View {
+        let top = if down {
+            view.top.saturating_add(view.pane.rows)
+        } else {
+            view.top.saturating_sub(view.pane.rows)
+        };
+        View {
+            top,
+            ..view.clone()
+        }
+        .clamped()
+    }
+
+    fn page_top_view(view: &View, page: Option<usize>) -> Option<View> {
+        let page = page.filter(|page| *page < view.layout.page_count())?;
+        Some(
             View {
-                top: view.top.saturating_add(view.pane.rows),
+                top: view.layout.page_top(page),
                 ..view.clone()
             }
             .clamped(),
-            View {
-                top: view.top.saturating_sub(view.pane.rows),
-                ..view.clone()
-            },
-        ] {
-            keys.extend(tile_keys(self.generation, &neighbour));
-        }
-        keys
+        )
     }
 
-    fn neighbour_keys_that_fit(&self, view: &View) -> Vec<RenderKey> {
-        let cell = view.layout.cell();
-        let mut window: Vec<RenderKey> = Vec::new();
-        for key in self.visible_keys() {
-            if !window.contains(&key) {
-                window.push(key);
+    fn prefetch_targets(&self, view: &View) -> Vec<View> {
+        let page = view.current_page();
+        let down = self.travel.down;
+        let step = |steps: usize, forward: bool| {
+            if forward {
+                page.checked_add(steps)
+            } else {
+                page.checked_sub(steps)
+            }
+        };
+        let ahead = |steps| Self::page_top_view(view, step(steps, down));
+        let behind = |steps| Self::page_top_view(view, step(steps, !down));
+        let pane_ahead = Some(Self::pane_step(view, down));
+        let pane_behind = Some(Self::pane_step(view, !down));
+        let targets = if self.travel.holding && self.pipe_slow(Instant::now()) {
+            Vec::new()
+        } else if self.travel.holding && self.travel.paging {
+            vec![ahead(1)]
+        } else if self.travel.holding {
+            vec![pane_ahead]
+        } else if self.travel.paging {
+            vec![
+                ahead(1),
+                ahead(2),
+                behind(1),
+                pane_ahead,
+                ahead(3),
+                pane_behind,
+            ]
+        } else {
+            vec![pane_ahead, pane_behind, ahead(1), behind(1)]
+        };
+        targets.into_iter().flatten().collect()
+    }
+
+    fn prefetch_keys(&self, view: &View) -> (Vec<RenderKey>, Vec<RenderKey>) {
+        let visible = self.visible_keys();
+        let mut major: Vec<RenderKey> = Vec::new();
+        let mut minor: Vec<RenderKey> = Vec::new();
+        for target in self.prefetch_targets(view) {
+            for placement in target.placements() {
+                let key = tile_key(self.generation, &target, placement.tile);
+                if visible.contains(&key) || major.contains(&key) {
+                    continue;
+                }
+                if u32::from(placement.area.height) * 4 < target.pane.rows {
+                    if !minor.contains(&key) {
+                        minor.push(key);
+                    }
+                } else {
+                    minor.retain(|other| *other != key);
+                    major.push(key);
+                }
             }
         }
-        let visible = window.len();
-        let mut total = window.iter().fold(0, |total: usize, key| {
+        let cell = view.layout.cell();
+        let largest = major
+            .iter()
+            .map(|key| tile_bytes(*key, cell))
+            .max()
+            .unwrap_or(0);
+        let (mut major, mut heavy): (Vec<RenderKey>, Vec<RenderKey>) = major
+            .into_iter()
+            .partition(|key| tile_bytes(*key, cell).saturating_mul(8) <= largest);
+        major.append(&mut heavy);
+        major.append(&mut minor);
+        major.truncate(PREFETCH_TILES);
+        let mut seen: Vec<RenderKey> = Vec::new();
+        for key in visible {
+            if !seen.contains(&key) {
+                seen.push(key);
+            }
+        }
+        let mut total = seen.iter().fold(0, |total: usize, key| {
             total.saturating_add(tile_bytes(*key, cell))
         });
-        for key in self.neighbour_keys(view) {
-            if window.contains(&key) {
-                continue;
-            }
-            total = total.saturating_add(tile_bytes(key, cell));
+        let mut resident = Vec::new();
+        for key in &major {
+            total = total.saturating_add(tile_bytes(*key, cell));
             if total > TILE_BYTE_BUDGET {
                 break;
             }
-            window.push(key);
+            resident.push(*key);
         }
-        window.split_off(visible)
+        (major, resident)
+    }
+
+    fn pipe_slow(&self, now: Instant) -> bool {
+        self.pipe_slow_until.is_some_and(|until| now < until)
+    }
+
+    fn lands_at(&self) -> Option<Instant> {
+        self.moved_at.map(|at| at + LANDING)
+    }
+
+    fn settles_at(&self) -> Option<Instant> {
+        self.moved_at.map(|at| at + HOLD_WINDOW)
+    }
+
+    fn prefetched_waiting(&self) -> bool {
+        self.resident
+            .iter()
+            .any(|key| self.cached(*key).is_none() && self.shelf.holds(*key))
+    }
+
+    fn send_one_prefetched(&mut self) {
+        let Some(key) = self
+            .resident
+            .iter()
+            .copied()
+            .find(|key| self.cached(*key).is_none() && self.shelf.holds(*key))
+        else {
+            return;
+        };
+        if let Some(tile) = self.shelf.take(key) {
+            self.store(&tile);
+        }
     }
 
     fn only_scrolled_from_shown(&self, view: &View) -> bool {
@@ -1078,6 +1276,11 @@ mod tests {
             reload_retries: 0,
             tiles: Vec::new(),
             in_flight: Vec::new(),
+            resident: Vec::new(),
+            travel: Travel::default(),
+            moved_at: None,
+            pipe_slow_until: None,
+            landing: false,
             shown: None,
             zooming_until: None,
             stretched: Vec::new(),
@@ -1341,6 +1544,60 @@ mod tests {
         }
         assert!(encoded.contains(&fresh));
         assert!(!encoded.contains(&stale));
+    }
+
+    #[test]
+    fn paging_down_prefetches_the_next_page_top() {
+        let (mut app, _inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 24,
+        });
+        let now = Instant::now() + RESIZE_SETTLE;
+        app.request_tiles_at(now);
+        app.handle(Event::Key(Key::Char('j')));
+        app.request_tiles_at(now);
+        let view = app.viewer.view();
+        let next = View {
+            top: view.layout.page_top(app.viewer.page() + 1),
+            ..view.clone()
+        }
+        .clamped();
+        assert!(next.top >= view.top + view.pane.rows);
+        for placement in next.placements() {
+            if u32::from(placement.area.height) * 4 < view.pane.rows {
+                continue;
+            }
+            let key = tile_key(app.generation, &next, placement.tile);
+            assert!(app.in_flight.contains(&key), "{key:?} was not prefetched");
+        }
+    }
+
+    #[test]
+    fn a_prefetched_tile_is_sent_only_once_the_view_is_complete_and_the_writer_drained() {
+        let (mut app, _inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 24,
+        });
+        let now = Instant::now() + RESIZE_SETTLE;
+        app.handle(Event::Key(Key::Char('j')));
+        app.request_tiles_at(now);
+        let shown = tile_keys(app.generation, app.viewer.view());
+        let prefetched = app
+            .in_flight
+            .iter()
+            .copied()
+            .find(|key| !shown.contains(key))
+            .expect("a prefetched tile");
+        app.handle(Event::Encoded(0, encoded_tile(&app, prefetched)));
+        assert_eq!(app.cached(prefetched), None);
+        for key in &shown {
+            app.handle(Event::Encoded(0, encoded_tile(&app, *key)));
+        }
+        app.request_tiles_at(now);
+        assert_eq!(app.cached(prefetched), None);
+        app.outgoing.clear();
+        app.request_tiles_at(now + Duration::from_secs(1));
+        assert!(app.cached(prefetched).is_some());
     }
 
     #[test]
@@ -1672,6 +1929,41 @@ mod tests {
     }
 
     #[test]
+    fn a_wheel_step_sends_one_shelved_tile_per_frame_smallest_first() {
+        let (mut app, inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        settle(&mut app, &inbox);
+        app.viewer.apply(Command::Scroll {
+            columns: 0,
+            rows: 10,
+        });
+        app.request_tiles_at(Instant::now());
+        let below = View {
+            top: app.viewer.view().top + 10,
+            ..app.viewer.view().clone()
+        };
+        let mut uncovered: Vec<RenderKey> = tile_keys(app.generation, &below)
+            .into_iter()
+            .filter(|key| app.cached(*key).is_none())
+            .collect();
+        uncovered.sort_by_key(|key| key.region.width * key.region.height);
+        for key in &uncovered {
+            app.handle(Event::Encoded(0, encoded_tile(&app, *key)));
+        }
+        app.viewer.apply(Command::Scroll {
+            columns: 0,
+            rows: 10,
+        });
+        app.request_tiles_at(Instant::now());
+        assert!(app.cached(uncovered[0]).is_some());
+        assert_eq!(app.cached(uncovered[1]), None);
+        app.request_tiles_at(Instant::now());
+        assert!(app.cached(uncovered[1]).is_some());
+    }
+
+    #[test]
     fn a_tile_that_arrives_after_scrolling_away_is_sent_on_return_without_rendering_again() {
         let (mut app, _inbox) = headless_app(Pane {
             columns: 80,
@@ -1700,7 +1992,8 @@ mod tests {
         let view = app.viewer.view().clone();
         let shown = tile_keys(app.generation, &view);
         let prefetched = app
-            .neighbour_keys(&view)
+            .prefetch_keys(&view)
+            .1
             .into_iter()
             .find(|key| !shown.contains(key))
             .expect("a tile below the view");
@@ -1717,6 +2010,7 @@ mod tests {
         for key in &shown[1..] {
             app.handle(Event::Encoded(0, encoded_tile(&app, *key)));
         }
+        app.outgoing.clear();
         app.request_tiles_at(now);
         assert!(app.cached(prefetched).is_some());
         assert!(!app.in_flight.contains(&prefetched));
