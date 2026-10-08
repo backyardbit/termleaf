@@ -891,7 +891,8 @@ impl App {
         let mut deferred = false;
         self.landing = false;
         for key in &wanted {
-            if self.shelf.holds(*key) && !scrolling && (!drawn || !landed || cheapest != Some(*key))
+            if self.shelf.holds(*key)
+                && (cheapest != Some(*key) || (!scrolling && (!drawn || !landed)))
             {
                 deferred = landed;
                 self.landing |= !landed;
