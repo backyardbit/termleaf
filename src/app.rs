@@ -1928,6 +1928,41 @@ mod tests {
     }
 
     #[test]
+    fn a_wheel_step_sends_one_shelved_tile_per_frame_smallest_first() {
+        let (mut app, inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        settle(&mut app, &inbox);
+        app.viewer.apply(Command::Scroll {
+            columns: 0,
+            rows: 10,
+        });
+        app.request_tiles_at(Instant::now());
+        let below = View {
+            top: app.viewer.view().top + 10,
+            ..app.viewer.view().clone()
+        };
+        let mut uncovered: Vec<RenderKey> = tile_keys(app.generation, &below)
+            .into_iter()
+            .filter(|key| app.cached(*key).is_none())
+            .collect();
+        uncovered.sort_by_key(|key| key.region.width * key.region.height);
+        for key in &uncovered {
+            app.handle(Event::Encoded(0, encoded_tile(&app, *key)));
+        }
+        app.viewer.apply(Command::Scroll {
+            columns: 0,
+            rows: 10,
+        });
+        app.request_tiles_at(Instant::now());
+        assert!(app.cached(uncovered[0]).is_some());
+        assert_eq!(app.cached(uncovered[1]), None);
+        app.request_tiles_at(Instant::now());
+        assert!(app.cached(uncovered[1]).is_some());
+    }
+
+    #[test]
     fn a_tile_that_arrives_after_scrolling_away_is_sent_on_return_without_rendering_again() {
         let (mut app, _inbox) = headless_app(Pane {
             columns: 80,
