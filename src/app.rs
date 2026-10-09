@@ -27,7 +27,7 @@ use crate::graphics::{self, CellWatch, Choice, Protocol, TerminalInfo};
 use crate::inverse::Inverse;
 use crate::keys::{Command, Key, KeyParser, ScreenCell};
 use crate::kitty::{self, CellGrid, ImageId, Payload, Placeholders, Placement};
-use crate::layout::{CellSize, Pane, RenderedTile, Stretched, StretchedGrid, View};
+use crate::layout::{CellSize, Pane, RenderedTile, Stretched, StretchedGrid, TILE_ROWS, View};
 use crate::mouse::{Gestures, MouseInput, Wheel};
 use crate::pinch::{self, PinchGate, PinchInput};
 use crate::raster;
@@ -1010,7 +1010,7 @@ impl App {
             .partition(|key| tile_bytes(*key, cell).saturating_mul(8) <= largest);
         major.append(&mut heavy);
         major.append(&mut minor);
-        major.truncate(PREFETCH_TILES);
+        major.truncate(PREFETCH_TILES * (TILE_ROWS / view.layout.tile_rows()) as usize);
         let mut seen: Vec<RenderKey> = Vec::new();
         for key in visible {
             if !seen.contains(&key) {

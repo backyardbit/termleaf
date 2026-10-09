@@ -34,7 +34,7 @@ impl Viewer {
         let scale = fit_width(&sizes, cell, pane);
         Self {
             view: View {
-                layout: Layout::new(sizes, scale, cell),
+                layout: Layout::new(sizes, scale, cell).for_pane(pane),
                 pane,
                 top: 0,
                 left: 0,
@@ -122,7 +122,7 @@ impl Viewer {
         let pane = self.view.pane;
         let scale = self.scale_for(self.zoom, cell, pane);
         self.view = View {
-            layout: Layout::new(sizes(&self.pages), scale, cell),
+            layout: Layout::new(sizes(&self.pages), scale, cell).for_pane(pane),
             ..self.view.clone()
         };
         let point = self.view.layout.point_of(anchor);
@@ -297,7 +297,7 @@ impl Viewer {
             screen_column,
             screen_row,
         ));
-        let layout = Layout::new(sizes, scale, cell);
+        let layout = Layout::new(sizes, scale, cell).for_pane(pane);
         let point = layout.point_of(anchor);
         let view = View {
             layout,
