@@ -325,6 +325,7 @@ fn sizes(pages: &[PageInfo]) -> Vec<PageSize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::Tile;
     use crate::pdf::{Link, LinkTarget, PointRect};
 
     const CELL: CellSize = CellSize {
@@ -356,6 +357,24 @@ mod tests {
 
     fn cell(column: u16, row: u16) -> ScreenCell {
         ScreenCell { column, row }
+    }
+
+    #[test]
+    fn tiles_are_half_the_pane_tall_between_8_and_48_rows() {
+        let pane = |rows| Pane { columns: 80, rows };
+        let first = Tile {
+            page: 0,
+            column: 0,
+            row: 0,
+        };
+        let tile_rows =
+            |viewer: &Viewer| viewer.view().layout.tile_region(first).height / CELL.height;
+        let mut viewer = Viewer::new(document(1), CELL, pane(29));
+        assert_eq!(tile_rows(&viewer), 15);
+        viewer.resized(CELL, pane(10));
+        assert_eq!(tile_rows(&viewer), 8);
+        viewer.resized(CELL, pane(200));
+        assert_eq!(tile_rows(&viewer), 48);
     }
 
     #[test]

@@ -1944,9 +1944,10 @@ mod tests {
             top: app.viewer.view().top + 10,
             ..app.viewer.view().clone()
         };
+        let shown = tile_keys(app.generation, app.viewer.view());
         let mut uncovered: Vec<RenderKey> = tile_keys(app.generation, &below)
             .into_iter()
-            .filter(|key| app.cached(*key).is_none())
+            .filter(|key| app.cached(*key).is_none() && !shown.contains(key))
             .collect();
         uncovered.sort_by_key(|key| key.region.width * key.region.height);
         for key in &uncovered {
