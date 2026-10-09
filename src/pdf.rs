@@ -1,12 +1,17 @@
 use anyhow::{Context, Result, bail, ensure};
 use image::RgbImage;
 use mupdf::{
-    Colorspace, DestinationKind, Device, DisplayList, Document, Matrix, Page, Pixmap, Rect,
+    ColorParams, Colorspace, DestinationKind, Device, DisplayList, Document, Image, Matrix,
+    NativeDevice, Page, Pixmap, Rect,
 };
+use std::cell::RefCell;
+use std::num::NonZero;
+use std::rc::Rc;
 
 const END_OF_FILE_MARKER: &[u8] = b"%%EOF";
 const TRAILER_WINDOW: usize = 1024;
 const WHITE: i32 = 255;
+const IMAGE_SCALER_REACH: f32 = 5.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PixelSize {
@@ -100,6 +105,113 @@ pub struct Pdf {
 struct RecordedPage {
     index: usize,
     list: DisplayList,
+    images: Vec<PageImage>,
+}
+
+struct PageImage {
+    image: Image,
+    area: Option<Rect>,
+    decoded: Option<Pixmap>,
+}
+
+impl PageImage {
+    fn touches(&self, transform: &Matrix, region: &Rect) -> bool {
+        let Some(area) = self.area else {
+            return true;
+        };
+        let area = area.transform(transform);
+        let source_pixel = (area.width() / self.image.width() as f32)
+            .max(area.height() / self.image.height() as f32)
+            .max(1.0);
+        let reach = IMAGE_SCALER_REACH * source_pixel;
+        let reached = Rect::new(
+            area.x0 - reach,
+            area.y0 - reach,
+            area.x1 + reach,
+            area.y1 + reach,
+        );
+        !reached.intersect(region).is_empty()
+    }
+}
+
+#[derive(Default)]
+struct PageImages {
+    found: Vec<PageImage>,
+    pattern_depth: usize,
+}
+
+impl PageImages {
+    fn found(&mut self, image: &Image, ctm: Matrix) {
+        let area = (self.pattern_depth == 0).then(|| Rect::new(0.0, 0.0, 1.0, 1.0).transform(&ctm));
+        self.found.push(PageImage {
+            image: image.clone(),
+            area,
+            decoded: None,
+        });
+    }
+}
+
+impl NativeDevice for PageImages {
+    fn fill_image(&mut self, image: &Image, ctm: Matrix, _: f32, _: ColorParams) {
+        self.found(image, ctm);
+    }
+
+    fn fill_image_mask(
+        &mut self,
+        image: &Image,
+        ctm: Matrix,
+        _: &Colorspace,
+        _: &[f32],
+        _: f32,
+        _: ColorParams,
+    ) {
+        self.found(image, ctm);
+    }
+
+    fn clip_image_mask(&mut self, image: &Image, ctm: Matrix, _: Rect) {
+        self.found(image, ctm);
+    }
+
+    fn begin_tile(
+        &mut self,
+        _: Rect,
+        _: Rect,
+        _: f32,
+        _: f32,
+        _: Matrix,
+        _: Option<NonZero<i32>>,
+        _: Option<NonZero<i32>>,
+    ) -> Option<NonZero<i32>> {
+        self.pattern_depth += 1;
+        None
+    }
+
+    fn end_tile(&mut self) {
+        self.pattern_depth = self.pattern_depth.saturating_sub(1);
+    }
+}
+
+fn page_images(list: &DisplayList) -> Result<Vec<PageImage>> {
+    let images = Rc::new(RefCell::new(PageImages::default()));
+    {
+        let device = Device::from_native(Rc::clone(&images))?;
+        list.run(&device, &Matrix::IDENTITY, list.bounds())?;
+    }
+    Ok(images.take().found)
+}
+
+fn decode_whole_images_in(
+    images: &mut [PageImage],
+    transform: &Matrix,
+    region: &Rect,
+) -> Result<()> {
+    for image in images
+        .iter_mut()
+        .filter(|image| image.decoded.is_none() && image.touches(transform, region))
+    {
+        image.decoded = Some(image.image.to_pixmap()?);
+    }
+    Ok(())
 }
 
 impl Pdf {
@@ -178,8 +290,8 @@ impl Pdf {
         scale: Scale,
         region: PixelRegion,
     ) -> Result<RgbImage> {
-        let list = self.recording(page_index)?;
-        let bounds = list.bounds();
+        let recorded = self.recording(page_index)?;
+        let bounds = recorded.list.bounds();
         let mut transform = Matrix::new_translate(-bounds.x0, -bounds.y0);
         let pixels_per_point = scale_factor(scale);
         transform.concat(Matrix::new_scale(pixels_per_point, pixels_per_point));
@@ -192,29 +304,30 @@ impl Pdf {
             false,
         )?;
         pixmap.clear_with(WHITE)?;
+        let area = Rect::from(pixmap.rect());
+        decode_whole_images_in(&mut recorded.images, &transform, &area)?;
         {
             let device = Device::from_pixmap(&pixmap)?;
-            list.run(&device, &transform, Rect::from(pixmap.rect()))?;
+            recorded.list.run(&device, &transform, area)?;
         }
         rgb_image(&pixmap)
     }
 
-    fn recording(&mut self, page_index: usize) -> Result<&DisplayList> {
+    fn recording(&mut self, page_index: usize) -> Result<&mut RecordedPage> {
         let stale = self
             .recorded
             .as_ref()
             .is_none_or(|recorded| recorded.index != page_index);
         if stale {
             let list = self.load(page_index)?.to_display_list(true)?;
+            let images = page_images(&list)?;
             self.recorded = Some(RecordedPage {
                 index: page_index,
                 list,
+                images,
             });
         }
-        self.recorded
-            .as_ref()
-            .map(|recorded| &recorded.list)
-            .context("no page is recorded")
+        self.recorded.as_mut().context("no page is recorded")
     }
 
     fn load(&self, page_index: usize) -> Result<Page> {
@@ -467,5 +580,46 @@ mod tests {
     #[test]
     fn rejects_an_empty_file() {
         assert!(Pdf::from_bytes(&[]).is_err());
+    }
+
+    #[test]
+    fn an_image_split_across_tiles_lands_where_the_whole_page_puts_it() {
+        let scale = Scale::from_pixels_per_point(1.0);
+        let whole = open("image.pdf")
+            .render(
+                0,
+                scale,
+                PixelRegion {
+                    x: 0,
+                    y: 0,
+                    width: 200,
+                    height: 160,
+                },
+            )
+            .unwrap();
+        let mut tiled = open("image.pdf");
+        for (x, width) in [(0, 80), (80, 120)] {
+            let tile = tiled
+                .render(
+                    0,
+                    scale,
+                    PixelRegion {
+                        x,
+                        y: 0,
+                        width,
+                        height: 160,
+                    },
+                )
+                .unwrap();
+            let expected = image::imageops::crop_imm(&whole, x, 0, width, 160).to_image();
+            let worst = tile
+                .as_raw()
+                .iter()
+                .zip(expected.as_raw())
+                .map(|(a, b)| a.abs_diff(*b))
+                .max()
+                .unwrap();
+            assert!(worst <= 2, "tile at x {x} is off by {worst} levels");
+        }
     }
 }
