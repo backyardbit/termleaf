@@ -468,4 +468,45 @@ mod tests {
     fn rejects_an_empty_file() {
         assert!(Pdf::from_bytes(&[]).is_err());
     }
+
+    #[test]
+    fn an_image_split_across_tiles_lands_where_the_whole_page_puts_it() {
+        let scale = Scale::from_pixels_per_point(1.0);
+        let whole = open("image.pdf")
+            .render(
+                0,
+                scale,
+                PixelRegion {
+                    x: 0,
+                    y: 0,
+                    width: 200,
+                    height: 160,
+                },
+            )
+            .unwrap();
+        let mut tiled = open("image.pdf");
+        for (x, width) in [(0, 80), (80, 120)] {
+            let tile = tiled
+                .render(
+                    0,
+                    scale,
+                    PixelRegion {
+                        x,
+                        y: 0,
+                        width,
+                        height: 160,
+                    },
+                )
+                .unwrap();
+            let expected = image::imageops::crop_imm(&whole, x, 0, width, 160).to_image();
+            let worst = tile
+                .as_raw()
+                .iter()
+                .zip(expected.as_raw())
+                .map(|(a, b)| a.abs_diff(*b))
+                .max()
+                .unwrap();
+            assert!(worst <= 2, "tile at x {x} is off by {worst} levels");
+        }
+    }
 }
