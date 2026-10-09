@@ -5,6 +5,7 @@ use crate::pdf::{PageSize, PixelRegion, PixelSize, Scale, nearest_whole};
 pub const PAGE_GAP_ROWS: u32 = 1;
 pub const TILE_COLUMNS: u32 = 64;
 pub const TILE_ROWS: u32 = 48;
+const MIN_TILE_ROWS: u32 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CellSize {
@@ -74,6 +75,7 @@ pub struct Layout {
     cell: CellSize,
     tops: Vec<u32>,
     width: u32,
+    tile_rows: u32,
 }
 
 impl Layout {
@@ -88,6 +90,7 @@ impl Layout {
             cell,
             tops: Vec::new(),
             width: 0,
+            tile_rows: TILE_ROWS,
         };
         let mut top = 0;
         for page in 0..layout.sizes.len() {
@@ -97,6 +100,15 @@ impl Layout {
             layout.width = layout.width.max(columns);
         }
         layout
+    }
+
+    pub fn for_pane(mut self, pane: Pane) -> Self {
+        self.tile_rows = pane.rows.div_ceil(2).clamp(MIN_TILE_ROWS, TILE_ROWS);
+        self
+    }
+
+    pub fn tile_rows(&self) -> u32 {
+        self.tile_rows
     }
 
     pub fn scale(&self) -> Scale {
@@ -180,7 +192,7 @@ impl Layout {
     pub fn tile_region(&self, tile: Tile) -> PixelRegion {
         let page = self.page_pixels(tile.page);
         let tile_width = TILE_COLUMNS * self.cell.width;
-        let tile_height = TILE_ROWS * self.cell.height;
+        let tile_height = self.tile_rows * self.cell.height;
         let x = tile.column * tile_width;
         let y = tile.row * tile_height;
         PixelRegion {
@@ -382,9 +394,10 @@ impl View {
             }
             let page_left = self.layout.page_left(page);
             let (columns, rows) = self.layout.page_cells(page);
-            for tile_row in 0..rows.div_ceil(TILE_ROWS) {
-                let tile_top = page_top + tile_row * TILE_ROWS;
-                let tile_rows = tile_top..(tile_top + TILE_ROWS).min(page_top + rows);
+            let tile_height = self.layout.tile_rows;
+            for tile_row in 0..rows.div_ceil(tile_height) {
+                let tile_top = page_top + tile_row * tile_height;
+                let tile_rows = tile_top..(tile_top + tile_height).min(page_top + rows);
                 let Some(visible_rows) = overlap(&tile_rows, &view_rows) else {
                     continue;
                 };
