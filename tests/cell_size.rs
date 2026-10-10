@@ -32,7 +32,7 @@ fn become_session_leader_on(slave: RawFd) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: slave is the pty descriptor inherited by this child and TIOCSCTTY takes an integer argument.
-    if unsafe { libc::ioctl(slave, libc::TIOCSCTTY, 0) } < 0 {
+    if unsafe { libc::ioctl(slave, libc::TIOCSCTTY as _, 0) } < 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())
