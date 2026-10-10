@@ -106,6 +106,8 @@ jobs:
           wezterm --version
       - uses: Swatinem/rust-cache@v2
       - run: xvfb-run --auto-servernum --server-args="-screen 0 1400x900x24" cargo xtask e2e
+      - name: The same e2e with herdr's client attaching 5 s after the first pane exists
+        run: PATH="$PWD/xtask/delayed-attach:$PATH" xvfb-run --auto-servernum --server-args="-screen 0 1400x900x24" cargo xtask e2e
       - name: Sixel in xterm -ti vt340
         run: xvfb-run --auto-servernum --server-args="-screen 0 1400x900x24" cargo xtask xterm
       - name: Alt+click, Ctrl+click and e jump nvim, vim and hx in tmux

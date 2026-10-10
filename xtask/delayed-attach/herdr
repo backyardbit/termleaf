@@ -1,0 +1,15 @@
+#!/bin/sh
+here=$(cd "$(dirname "$0")" && pwd)
+PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -vx "$here" | paste -sd: -)
+export PATH
+if [ "$#" -eq 2 ] && [ "$1" = --session ]; then
+  setsid herdr --session "$2" server >/dev/null 2>&1 </dev/null &
+  tries=0
+  until herdr --session "$2" workspace create >/dev/null 2>&1; do
+    tries=$((tries + 1))
+    [ "$tries" -ge 100 ] && break
+    sleep 0.1
+  done
+  sleep "${HERDR_ATTACH_DELAY:-5}"
+fi
+exec herdr "$@"
