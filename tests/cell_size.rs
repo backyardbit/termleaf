@@ -10,6 +10,10 @@ use std::time::{Duration, Instant};
 const QUERY: &[u8] = b"\x1b_Gi=31,";
 const KITTY_WITHOUT_CELL_SIZE: &[u8] = b"\x1b_Gi=31;OK\x1b\\\x1b_Gi=32;OK\x1b\\\x1b[?62;22c\x1b[0n";
 const TRANSMIT: &[u8] = b"\x1b_Gq=2,a=T,";
+#[cfg(target_os = "macos")]
+const TIOCSCTTY: libc::c_ulong = libc::TIOCSCTTY as libc::c_ulong;
+#[cfg(not(target_os = "macos"))]
+const TIOCSCTTY: libc::Ioctl = libc::TIOCSCTTY;
 
 fn window(xpixel: u16, ypixel: u16) -> libc::winsize {
     libc::winsize {
@@ -32,7 +36,7 @@ fn become_session_leader_on(slave: RawFd) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: slave is the pty descriptor inherited by this child and TIOCSCTTY takes an integer argument.
-    if unsafe { libc::ioctl(slave, libc::TIOCSCTTY as _, 0) } < 0 {
+    if unsafe { libc::ioctl(slave, TIOCSCTTY, 0) } < 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())
