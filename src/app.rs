@@ -23,7 +23,9 @@ use ratatui_image::picker::Capability;
 use crate::editor::{self, Jumper};
 use crate::encoder::{self, Encoded, Encoder, Job, Wanted};
 use crate::follow::{self, Follow, Listener, Request};
-use crate::graphics::{self, CellWatch, Choice, Protocol, TerminalInfo};
+use crate::graphics::{
+    self, CELL_SIZE_NEEDED, CellWatch, Choice, NO_CELL_SIZE, Protocol, TerminalInfo,
+};
 use crate::inverse::Inverse;
 use crate::keys::{Command, Key, KeyParser, ScreenCell};
 use crate::kitty::{self, CellGrid, ImageId, Payload, Placeholders, Placement};
@@ -43,6 +45,8 @@ const MAX_RELOAD_RETRIES: u32 = 3;
 const TILE_BYTE_BUDGET: usize = 64 * 1024 * 1024;
 const SHELF_BYTES: usize = 48 * 1024 * 1024;
 const IDLE_WAIT: Duration = Duration::from_secs(3600);
+const CELL_WAIT: Duration = Duration::from_secs(10);
+const CELL_POLL: Duration = Duration::from_millis(50);
 const RESIZE_SETTLE: Duration = Duration::from_millis(300);
 const ZOOM_SETTLE: Duration = Duration::from_millis(150);
 const PREFETCH_TILES: usize = 16;
@@ -161,7 +165,13 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
             }
         }),
         viewer: Viewer::new(pages, cell, pane),
-        cells: CellWatch::new(crossterm::terminal::window_size().ok()),
+        cells: CellWatch::new(
+            crossterm::terminal::window_size()
+                .ok()
+                .filter(|_| picker.cell_reported()),
+        ),
+        cell_due: (!picker.cell_reported() && options.graphics == Choice::Auto)
+            .then(|| Instant::now() + CELL_WAIT),
         search: Search::default(),
         document_generation: 0,
         serial: 0,
@@ -396,6 +406,7 @@ struct App {
     file_name: String,
     viewer: Viewer,
     cells: CellWatch,
+    cell_due: Option<Instant>,
     search: Search,
     document_generation: Generation,
     serial: Generation,
@@ -444,19 +455,35 @@ impl App {
                 crossterm::terminal::window_size().ok(),
                 self.viewer.view().layout.cell(),
             );
+            if let Some(due) = self.cell_due {
+                if self.cells.known() {
+                    self.cell_due = None;
+                } else if now >= due {
+                    bail!(
+                        "{NO_CELL_SIZE} within {} s of starting, and {CELL_SIZE_NEEDED}",
+                        CELL_WAIT.as_secs()
+                    );
+                }
+            }
             self.fit_to_at(
                 cell,
                 pane_of(page_area(Rect::new(0, 0, size.width, size.height))),
                 now,
             );
-            self.prepare_frame(now);
+            if self.cell_due.is_none() {
+                self.prepare_frame(now);
+            }
             self.inverse.expire(now);
-            if self.may_transmit(now) {
+            if self.cell_due.is_none() && self.may_transmit(now) {
                 self.resize_settles_at = None;
                 self.flush(terminal)?;
             }
             terminal.draw(|frame| self.draw(frame))?;
-            let first = match inbox.recv_timeout(self.idle_wait(Instant::now())) {
+            let wait = match self.cell_due {
+                Some(_) => CELL_POLL,
+                None => self.idle_wait(Instant::now()),
+            };
+            let first = match inbox.recv_timeout(wait) {
                 Ok(event) => event,
                 Err(RecvTimeoutError::Timeout) => {
                     if self.reload_at.is_some_and(|at| at <= Instant::now()) {
@@ -1151,6 +1178,12 @@ impl App {
     }
 
     fn status(&self) -> String {
+        if self.cell_due.is_some() {
+            return format!(
+                "{} · waiting for the terminal to report its cell pixel size",
+                self.file_name
+            );
+        }
         if let Some(query) = self.keys.search_line() {
             return format!("/{query}");
         }
@@ -1254,6 +1287,7 @@ mod tests {
             file_name: "doc.pdf".to_owned(),
             viewer: Viewer::new(pages, CELL, pane),
             cells: CellWatch::new(None),
+            cell_due: None,
             search: Search::default(),
             document_generation: 0,
             serial: 0,
