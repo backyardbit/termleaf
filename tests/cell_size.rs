@@ -105,10 +105,14 @@ fn kitty_waits_for_a_cell_size_that_arrives_after_startup() {
     let output = Arc::clone(&shown);
     thread::spawn(move || {
         let mut answered = false;
+        let mut drawn = false;
         let mut buffer = [0; 65536];
         while let Ok(read) = reader.read(&mut buffer) {
             if read == 0 {
                 break;
+            }
+            if drawn {
+                continue;
             }
             let mut output = output.lock().unwrap();
             output.extend_from_slice(&buffer[..read]);
@@ -117,8 +121,8 @@ fn kitty_waits_for_a_cell_size_that_arrives_after_startup() {
                 let _ = seen.send(false);
             }
             if find(&output, TRANSMIT) {
+                drawn = true;
                 let _ = seen.send(true);
-                break;
             }
         }
     });
