@@ -13,8 +13,13 @@ use ratatui_image::picker::{Capability, ProtocolType};
 
 use crate::layout::CellSize;
 
-pub const NEEDS_IMAGES: &str = "termleaf needs a terminal that supports Kitty graphics, Sixel or iTerm2 images \
-     (for example Kitty, Ghostty, herdr, WezTerm, iTerm2, Konsole, foot, or xterm -ti vt340)";
+pub const NEEDS_IMAGES: &str = "this terminal doesn't support Kitty graphics, Sixel or iTerm2 images, \
+     and termleaf needs one of them (for example Kitty, Ghostty, herdr, WezTerm, iTerm2, Konsole, foot, or xterm -ti vt340)";
+
+pub const NO_CELL_SIZE: &str =
+    "the terminal reported no cell pixel size (no reply to CSI 16t and a 0x0 pixel window size)";
+
+pub const CELL_SIZE_NEEDED: &str = "termleaf needs it to size page images";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protocol {
@@ -57,6 +62,7 @@ impl fmt::Display for Raster {
 
 pub struct TerminalInfo {
     font_size: FontSize,
+    cell_reported: bool,
     capabilities: Vec<Capability>,
     tmux: bool,
 }
@@ -64,6 +70,10 @@ pub struct TerminalInfo {
 impl TerminalInfo {
     pub fn font_size(&self) -> FontSize {
         self.font_size
+    }
+
+    pub fn cell_reported(&self) -> bool {
+        self.cell_reported
     }
 
     pub fn capabilities(&self) -> &[Capability] {
@@ -106,7 +116,7 @@ pub fn detect(choice: Choice) -> Result<(Protocol, TerminalInfo)> {
         .and_then(|size| cell_of(&size))
         .map(|(width, height)| FontSize::new(width, height));
     let (found, terminal) = interpret(replies, hints, fallback);
-    let protocol = decide(found, choice, Hints::from_env())?;
+    let protocol = decide(found, choice, Hints::from_env(), terminal.cell_reported)?;
     Ok((protocol, terminal))
 }
 
@@ -119,6 +129,10 @@ impl CellWatch {
         Self {
             seen: size.as_ref().and_then(cell_of),
         }
+    }
+
+    pub fn known(&self) -> bool {
+        self.seen.is_some()
     }
 
     pub fn cell(&mut self, size: Option<WindowSize>, current: CellSize) -> CellSize {
@@ -216,13 +230,11 @@ fn interpret(
         capabilities.extend(capability);
     }
     let font_size = font_size.or(fallback);
-    if font_size.is_none() {
-        found = ProtocolType::Halfblocks;
-    }
     (
         found,
         TerminalInfo {
             font_size: font_size.unwrap_or(FontSize::new(10, 20)),
+            cell_reported: font_size.is_some(),
             capabilities,
             tmux: hints.tmux,
         },
@@ -257,10 +269,18 @@ impl Hints {
     }
 }
 
-fn decide(found: ProtocolType, choice: Choice, hints: Hints) -> Result<Protocol> {
+fn decide(
+    found: ProtocolType,
+    choice: Choice,
+    hints: Hints,
+    cell_reported: bool,
+) -> Result<Protocol> {
     match (choice, found) {
         (Choice::Force(protocol), _) => Ok(protocol),
         (Choice::Auto, ProtocolType::Kitty) => Ok(Protocol::Kitty),
+        (Choice::Auto, ProtocolType::Sixel | ProtocolType::Iterm2) if !cell_reported => {
+            bail!("{NO_CELL_SIZE}, and {CELL_SIZE_NEEDED}")
+        }
         (Choice::Auto, ProtocolType::Sixel) => Ok(Protocol::Raster(Raster::Sixel)),
         (Choice::Auto, ProtocolType::Iterm2) => Ok(Protocol::Raster(Raster::Iterm2)),
         (Choice::Auto, ProtocolType::Halfblocks) if hints.konsole => {
@@ -268,7 +288,7 @@ fn decide(found: ProtocolType, choice: Choice, hints: Hints) -> Result<Protocol>
         }
         (Choice::Auto, ProtocolType::Halfblocks) => {
             bail!(
-                "{NEEDS_IMAGES}; if this terminal does support one of them, \
+                "{NEEDS_IMAGES}; if it does support one of them, \
                  run termleaf with --graphics kitty, sixel or iterm2"
             )
         }
@@ -360,13 +380,14 @@ mod tests {
     }
 
     #[test]
-    fn missing_or_zero_cell_sizes_use_the_existing_default() {
+    fn missing_or_zero_cell_sizes_keep_kitty_and_use_the_existing_default() {
         let (protocol, terminal) = interpret(
             vec![Response::Kitty, Response::CellSize(Some((0, 0)))],
             no_hints(),
             None,
         );
-        assert_eq!(protocol, ProtocolType::Halfblocks);
+        assert_eq!(protocol, ProtocolType::Kitty);
+        assert!(!terminal.cell_reported());
         assert_eq!(
             (terminal.font_size().width, terminal.font_size().height),
             (10, 20)
@@ -395,7 +416,7 @@ mod tests {
     #[test]
     fn a_kitty_terminal_keeps_the_kitty_path() {
         assert_eq!(
-            decide(ProtocolType::Kitty, Choice::Auto, ELSEWHERE).unwrap(),
+            decide(ProtocolType::Kitty, Choice::Auto, ELSEWHERE, true).unwrap(),
             Protocol::Kitty
         );
     }
@@ -403,11 +424,11 @@ mod tests {
     #[test]
     fn sixel_and_iterm2_terminals_take_the_raster_path() {
         assert_eq!(
-            decide(ProtocolType::Sixel, Choice::Auto, ELSEWHERE).unwrap(),
+            decide(ProtocolType::Sixel, Choice::Auto, ELSEWHERE, true).unwrap(),
             SIXEL
         );
         assert_eq!(
-            decide(ProtocolType::Iterm2, Choice::Auto, ELSEWHERE).unwrap(),
+            decide(ProtocolType::Iterm2, Choice::Auto, ELSEWHERE, true).unwrap(),
             ITERM2
         );
     }
@@ -418,17 +439,18 @@ mod tests {
             decide(
                 ProtocolType::Halfblocks,
                 Choice::Force(Protocol::Kitty),
-                KONSOLE
+                KONSOLE,
+                true
             )
             .unwrap(),
             Protocol::Kitty
         );
         assert_eq!(
-            decide(ProtocolType::Kitty, Choice::Force(SIXEL), ELSEWHERE).unwrap(),
+            decide(ProtocolType::Kitty, Choice::Force(SIXEL), ELSEWHERE, true).unwrap(),
             SIXEL
         );
         assert_eq!(
-            decide(ProtocolType::Sixel, Choice::Force(ITERM2), ELSEWHERE).unwrap(),
+            decide(ProtocolType::Sixel, Choice::Force(ITERM2), ELSEWHERE, true).unwrap(),
             ITERM2
         );
     }
@@ -436,20 +458,34 @@ mod tests {
     #[test]
     fn a_terminal_without_image_support_is_pointed_at_the_flag() {
         assert_eq!(
-            decide(ProtocolType::Halfblocks, Choice::Auto, ELSEWHERE)
+            decide(ProtocolType::Halfblocks, Choice::Auto, ELSEWHERE, true)
                 .unwrap_err()
                 .to_string(),
-            "termleaf needs a terminal that supports Kitty graphics, Sixel or iTerm2 images \
-             (for example Kitty, Ghostty, herdr, WezTerm, iTerm2, Konsole, foot, or xterm -ti vt340); \
-             if this terminal does support one of them, \
+            "this terminal doesn't support Kitty graphics, Sixel or iTerm2 images, \
+             and termleaf needs one of them (for example Kitty, Ghostty, herdr, WezTerm, iTerm2, Konsole, foot, or xterm -ti vt340); \
+             if it does support one of them, \
              run termleaf with --graphics kitty, sixel or iterm2"
+        );
+    }
+
+    #[test]
+    fn a_raster_terminal_without_a_cell_size_says_so() {
+        assert_eq!(
+            decide(ProtocolType::Sixel, Choice::Auto, ELSEWHERE, false)
+                .unwrap_err()
+                .to_string(),
+            format!("{NO_CELL_SIZE}, and {CELL_SIZE_NEEDED}")
+        );
+        assert_eq!(
+            decide(ProtocolType::Kitty, Choice::Auto, ELSEWHERE, false).unwrap(),
+            Protocol::Kitty
         );
     }
 
     #[test]
     fn konsole_gets_iterm2_images_when_nothing_else_was_found() {
         assert_eq!(
-            decide(ProtocolType::Halfblocks, Choice::Auto, KONSOLE).unwrap(),
+            decide(ProtocolType::Halfblocks, Choice::Auto, KONSOLE, true).unwrap(),
             ITERM2
         );
     }
@@ -457,11 +493,11 @@ mod tests {
     #[test]
     fn the_konsole_hint_never_overrides_what_the_terminal_reports() {
         assert_eq!(
-            decide(ProtocolType::Kitty, Choice::Auto, KONSOLE).unwrap(),
+            decide(ProtocolType::Kitty, Choice::Auto, KONSOLE, true).unwrap(),
             Protocol::Kitty
         );
         assert_eq!(
-            decide(ProtocolType::Sixel, Choice::Auto, KONSOLE).unwrap(),
+            decide(ProtocolType::Sixel, Choice::Auto, KONSOLE, true).unwrap(),
             SIXEL
         );
     }
