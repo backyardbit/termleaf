@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.3.2
+
+- Fix pages left blank after scrolling quickly under herdr. termleaf now keeps its Kitty images within herdr's 64 MiB per-pane limit (#48).
+- Stop rendering tiles that have scrolled out of view, which cuts CPU use while scrolling by up to half (#49).
+- Prepare the top of the next page in the direction you are scrolling, and send it only when the terminal is idle, so short bursts of `j` and `k` show less blank page (#50).
+- Size image tiles to half the pane height instead of a fixed 48 rows. Holding `j` leaves less of the page blank, and the first content shows sooner, most of all in short panes and with large cells. Memory use drops too (#51).
+- Fix figures that shifted by a pixel or two where two tiles meet. Images are now drawn from one whole decode, so a tiled page matches the whole page (#52).
+- Fix termleaf exiting with "needs a terminal that supports Kitty graphics" when started in a brand-new pane, as in herdr, before the terminal reports its cell size. It now waits for the size and then draws, and the error messages say which one is missing (#55).
+
 ## v0.3.1
 
 - Fix pages drawn at the wrong scale, with seams between tiles, after the cell pixel size changes but the columns and rows stay the same, as when moving a window between displays with different DPI. termleaf re-measures the cell size on SIGWINCH and, inside zellij, on a periodic CSI 16t poll, then repaints Kitty, Sixel and iTerm2 graphics at the new size (#44).
