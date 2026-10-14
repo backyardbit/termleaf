@@ -722,6 +722,7 @@ mod tests {
                     let _ = tiles.send(Event::Tile(key, image));
                 },
                 |_| true,
+                crate::layout::Density::Full,
             )
         };
         let painter = Painter::spawn(Box::new(|frame, _| sixel::encode(frame)), move |painting| {

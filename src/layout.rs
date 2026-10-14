@@ -7,6 +7,44 @@ pub const TILE_COLUMNS: u32 = 64;
 pub const TILE_ROWS: u32 = 48;
 const MIN_TILE_ROWS: u32 = 8;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Density {
+    Full,
+    ThreeQuarters,
+}
+
+impl Density {
+    pub fn shrink(self, value: u32) -> u32 {
+        match self {
+            Self::Full => value,
+            Self::ThreeQuarters => value * 3 / 4,
+        }
+    }
+
+    pub fn shrink_up(self, value: u32) -> u32 {
+        match self {
+            Self::Full => value,
+            Self::ThreeQuarters => (value * 3).div_ceil(4),
+        }
+    }
+
+    pub fn scale(self, scale: Scale) -> Scale {
+        match self {
+            Self::Full => scale,
+            Self::ThreeQuarters => Scale::from_pixels_per_point(scale.pixels_per_point() * 0.75),
+        }
+    }
+
+    pub fn region(self, region: PixelRegion) -> PixelRegion {
+        PixelRegion {
+            x: self.shrink(region.x),
+            y: self.shrink(region.y),
+            width: self.shrink_up(region.width),
+            height: self.shrink_up(region.height),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CellSize {
     pub width: u32,

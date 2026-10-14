@@ -27,7 +27,9 @@ use crate::graphics::{self, CellWatch, Choice, Protocol, TerminalInfo};
 use crate::inverse::Inverse;
 use crate::keys::{Command, Key, KeyParser, ScreenCell};
 use crate::kitty::{self, CellGrid, ImageId, Payload, Placeholders, Placement};
-use crate::layout::{CellSize, Pane, RenderedTile, Stretched, StretchedGrid, TILE_ROWS, View};
+use crate::layout::{
+    CellSize, Density, Pane, RenderedTile, Stretched, StretchedGrid, TILE_ROWS, View,
+};
 use crate::mouse::{Gestures, MouseInput, Wheel};
 use crate::pinch::{self, PinchGate, PinchInput};
 use crate::raster;
@@ -91,6 +93,7 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
                 let wanted = wanted.clone();
                 move |key: &RenderKey| wanted.contains(key)
             },
+            Density::ThreeQuarters,
         )
     };
     renderer.load(0);
@@ -1175,8 +1178,12 @@ enum Flow {
 }
 
 fn tile_bytes(key: RenderKey, cell: CellSize) -> usize {
-    let width = u64::from(key.region.width.div_ceil(cell.width)) * u64::from(cell.width);
-    let height = u64::from(key.region.height.div_ceil(cell.height)) * u64::from(cell.height);
+    let width = u64::from(
+        Density::ThreeQuarters.shrink_up(key.region.width.div_ceil(cell.width) * cell.width),
+    );
+    let height = u64::from(
+        Density::ThreeQuarters.shrink_up(key.region.height.div_ceil(cell.height) * cell.height),
+    );
     width
         .checked_mul(height)
         .and_then(|pixels| pixels.checked_mul(4))
@@ -1235,6 +1242,7 @@ mod tests {
                     let wanted = wanted.clone();
                     move |key: &RenderKey| wanted.contains(key)
                 },
+                Density::ThreeQuarters,
             )
         };
         let encoders = Encoders {

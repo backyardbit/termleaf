@@ -109,6 +109,7 @@ fn show(
                 let _ = tiles.send(Event::Tile(key, image));
             },
             |_| true,
+            crate::layout::Density::Full,
         )
     };
     renderer.load(0);
