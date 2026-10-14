@@ -7,6 +7,7 @@ use image::RgbImage;
 
 use crate::search::{Highlights, Hit, MAX_HITS, Ticket};
 
+use crate::layout::Density;
 use crate::pdf::{PageInfo, Pdf, PixelRegion, Scale};
 
 pub type Generation = u64;
@@ -58,9 +59,10 @@ impl Renderer {
         respond: impl Fn(Response) + Send + 'static,
         deliver: impl Fn(RenderKey, RgbImage) + Send + 'static,
         wanted: impl Fn(&RenderKey) -> bool + Send + 'static,
+        density: Density,
     ) -> Self {
         let (requests, inbox) = mpsc::channel();
-        thread::spawn(move || serve(&path, &inbox, &respond, &deliver, &wanted));
+        thread::spawn(move || serve(&path, &inbox, &respond, &deliver, &wanted, density));
         Self { requests }
     }
 
@@ -138,6 +140,7 @@ fn serve(
     respond: &impl Fn(Response),
     deliver: &impl Fn(RenderKey, RgbImage),
     wanted: &impl Fn(&RenderKey) -> bool,
+    density: Density,
 ) {
     let mut loaded: Option<LoadedPdf> = None;
     let mut pending: Vec<Request> = Vec::new();
@@ -185,10 +188,9 @@ fn serve(
                 if current.rendered_generation != key.generation || !wanted(&key) {
                     continue;
                 }
-                if let Ok(mut image) = current.pdf.render(key.page, key.scale, key.region) {
-                    current
-                        .highlights
-                        .tint(key.page, key.scale, key.region, &mut image);
+                let (scale, region) = (density.scale(key.scale), density.region(key.region));
+                if let Ok(mut image) = current.pdf.render(key.page, scale, region) {
+                    current.highlights.tint(key.page, scale, region, &mut image);
                     deliver(key, image);
                 }
                 pending.extend(inbox.try_iter().flatten());
@@ -318,6 +320,7 @@ mod tests {
                 tiles.send((key, image)).unwrap();
             },
             |_| true,
+            Density::Full,
         );
         renderer.load(0);
         next_response(&responses);
@@ -405,6 +408,7 @@ mod tests {
             },
             |_, _| {},
             |_| true,
+            Density::Full,
         );
 
         renderer.load(0);
@@ -432,6 +436,7 @@ mod tests {
             },
             |_, _| {},
             |_| true,
+            Density::Full,
         );
 
         renderer.load(0);
@@ -462,6 +467,7 @@ mod tests {
             },
             |_, _| {},
             |_| true,
+            Density::Full,
         );
 
         renderer.load(0);
@@ -488,6 +494,7 @@ mod tests {
             },
             |_, _| {},
             |_| true,
+            Density::Full,
         );
 
         renderer.load(0);

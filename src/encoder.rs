@@ -5,7 +5,7 @@ use std::thread;
 use image::{RgbImage, Rgba, RgbaImage};
 
 use crate::kitty::{self, CellGrid, EncodedImage, Payload};
-use crate::layout::CellSize;
+use crate::layout::{CellSize, Density};
 use crate::renderer::RenderKey;
 
 pub const QUEUED_TILES: usize = 2;
@@ -105,12 +105,39 @@ fn serve(
 }
 
 pub fn encode(job: Job, cell: CellSize, payload: Payload) -> Encoded {
+    if job.image.width() < job.key.region.width {
+        return encode_stretched(job, cell, payload, Density::ThreeQuarters);
+    }
     let padded = pad_to_cells(job.image, cell);
     let grid = grid_of(&padded, cell);
     Encoded {
         key: job.key,
         bytes: padded.as_raw().len(),
         image: kitty::encode(&padded, grid, payload),
+    }
+}
+
+fn encode_stretched(job: Job, cell: CellSize, payload: Payload, density: Density) -> Encoded {
+    let columns = job.key.region.width.div_ceil(cell.width);
+    let rows = job.key.region.height.div_ceil(cell.height);
+    let mut small = RgbaImage::new(
+        density.shrink_up(columns * cell.width),
+        density.shrink_up(rows * cell.height),
+    );
+    for (small_row, row) in small.rows_mut().zip(job.image.rows()) {
+        for (small_pixel, pixel) in small_row.zip(row) {
+            let [red, green, blue] = pixel.0;
+            *small_pixel = Rgba([red, green, blue, u8::MAX]);
+        }
+    }
+    let grid = CellGrid {
+        columns: u16::try_from(columns).unwrap_or(u16::MAX),
+        rows: u16::try_from(rows).unwrap_or(u16::MAX),
+    };
+    Encoded {
+        key: job.key,
+        bytes: small.as_raw().len(),
+        image: kitty::encode(&small, grid, payload),
     }
 }
 
