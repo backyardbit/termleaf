@@ -900,7 +900,11 @@ impl App {
             }
             self.request(*key);
         }
-        let pipe_idle = settled && self.outgoing.is_empty() && !self.pipe_slow(now);
+        // Prototype: a slow pipe (herdr, ~25-56 MB/s) would otherwise keep warmed tiles on the shelf forever;
+        // while the reader pauses the pipe has time to spare, so send them anyway.
+        let pipe_idle = settled
+            && self.outgoing.is_empty()
+            && (!self.pipe_slow(now) || crate::resident::density().is_some());
         if view_ready && pipe_idle {
             self.send_one_prefetched();
         }
