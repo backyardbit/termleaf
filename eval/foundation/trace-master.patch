@@ -1,0 +1,589 @@
+diff --git a/src/app.rs b/src/app.rs
+index 5100026..8bcd99e 100644
+--- a/src/app.rs
++++ b/src/app.rs
+@@ -75,6 +75,8 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
+     if !path.is_file() {
+         bail!("no such file: {}", path.display());
+     }
++    crate::trace::name_thread("ui");
++    let open_span = crate::trace::span("open");
+     let (events, inbox) = mpsc::channel();
+     let (jobs, queued) = encoder::queue();
+     let jobs = Arc::new(Mutex::new(jobs));
+@@ -98,6 +100,7 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
+         Event::Renderer(Response::Loaded { pages, .. }) => pages,
+         _ => bail!("{} is not a readable PDF", path.display()),
+     };
++    drop(open_span);
+ 
+     let _watcher = {
+         let events = events.clone();
+@@ -200,6 +203,7 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
+     let _ = app.flush(&mut terminal);
+     let _ = execute!(std::io::stdout(), DisableFocusChange, DisableMouseCapture);
+     crate::terminal::restore(terminal);
++    crate::trace::flush();
+     result
+ }
+ 
+@@ -209,10 +213,12 @@ fn send_to(
+ ) -> impl Fn(RenderKey, image::RgbImage) + Send + 'static {
+     move |key, image| {
+         if !wanted.contains(&key) {
++            crate::trace::instant("dropped_after_render", &format!("\"page\":{}", key.page));
+             return;
+         }
+         let queue = jobs.lock().map(|queue| queue.clone());
+         if let Ok(queue) = queue {
++            let _wait = crate::trace::span("queue_send");
+             let _ = queue.send(Job { key, image });
+         }
+     }
+@@ -269,16 +275,35 @@ fn spawn_input(events: Sender<Event>) {
+         let _ = closed.send(Event::TerminalClosed);
+     });
+     thread::spawn(move || {
++        crate::trace::name_thread("input");
+         while let Ok(terminal_event) = event::read() {
+-            if let Some(event) = translate_event(terminal_event)
+-                && events.send(event).is_err()
+-            {
+-                return;
++            if let Some(event) = translate_event(terminal_event) {
++                if matches!(event, Event::Key(_) | Event::Mouse(_)) {
++                    crate::trace::input();
++                }
++                if events.send(event).is_err() {
++                    return;
++                }
+             }
+         }
+     });
+ }
+ 
++fn event_kind(event: &Event) -> &'static str {
++    match event {
++        Event::Key(_) => "key",
++        Event::Mouse(_) => "mouse",
++        Event::Pinch(_) => "pinch",
++        Event::Focus(_) => "focus",
++        Event::TerminalClosed => "closed",
++        Event::Resized => "resized",
++        Event::FileChanged => "file",
++        Event::Renderer(_) => "renderer",
++        Event::Encoded(..) => "encoded",
++        Event::Follow(_) => "follow",
++    }
++}
++
+ fn translate_event(terminal_event: TerminalEvent) -> Option<Event> {
+     match terminal_event {
+         TerminalEvent::Key(key) => translate_key(key).map(Event::Key),
+@@ -449,14 +474,32 @@ impl App {
+                 pane_of(page_area(Rect::new(0, 0, size.width, size.height))),
+                 now,
+             );
+-            self.prepare_frame(now);
++            {
++                let _span = crate::trace::span("prepare_frame");
++                self.prepare_frame(now);
++            }
+             self.inverse.expire(now);
+             if self.may_transmit(now) {
+                 self.resize_settles_at = None;
++                let mut span = crate::trace::span("flush_tx");
++                span.arg("bytes", self.outgoing.len());
+                 self.flush(terminal)?;
+             }
+-            terminal.draw(|frame| self.draw(frame))?;
+-            let first = match inbox.recv_timeout(self.idle_wait(Instant::now())) {
++            let (holes, cells) = self.holes();
++            {
++                let _span = crate::trace::span("draw");
++                terminal.draw(|frame| self.draw(frame))?;
++            }
++            if let Some(mark) = crate::trace::frame_mark(holes, cells) {
++                use std::io::Write as _;
++                let backend = terminal.backend_mut();
++                backend.write_all(mark.as_bytes())?;
++                backend.flush()?;
++            }
++            let wait = crate::trace::span("wait");
++            let received = inbox.recv_timeout(self.idle_wait(Instant::now()));
++            drop(wait);
++            let first = match received {
+                 Ok(event) => event,
+                 Err(RecvTimeoutError::Timeout) => {
+                     if self.reload_at.is_some_and(|at| at <= Instant::now()) {
+@@ -467,6 +510,11 @@ impl App {
+                 Err(RecvTimeoutError::Disconnected) => bail!("all event sources stopped"),
+             };
+             for event in std::iter::once(first).chain(inbox.try_iter()) {
++                let mut span = crate::trace::span("handle");
++                span.arg("kind", event_kind(&event));
++                if matches!(event, Event::Key(_) | Event::Mouse(_)) {
++                    crate::trace::handled();
++                }
+                 if self.handle(event) == Flow::Quit {
+                     return Ok(());
+                 }
+@@ -474,6 +522,31 @@ impl App {
+         }
+     }
+ 
++    fn holes(&self) -> (usize, usize) {
++        let Some(shown) = &self.shown else {
++            return (0, 0);
++        };
++        if !self.stretched.is_empty() {
++            return (0, 0);
++        }
++        let pane = Rect::new(
++            0,
++            0,
++            u16::try_from(shown.view.pane.columns).unwrap_or(u16::MAX),
++            u16::try_from(shown.view.pane.rows).unwrap_or(u16::MAX),
++        );
++        let mut missing = 0;
++        let mut total = 0;
++        for placement in shown.view.placements() {
++            let cells = usize::try_from(placement.area.intersection(pane).area()).unwrap_or(0);
++            total += cells;
++            if self.cached(tile_key(shown.generation, &shown.view, placement.tile)).is_none() {
++                missing += cells;
++            }
++        }
++        (missing, total)
++    }
++
+     fn idle_wait(&self, now: Instant) -> Duration {
+         if self.shelf_waits {
+             return Duration::ZERO;
+@@ -726,6 +799,7 @@ impl App {
+             self.encoder.claimed();
+         }
+         self.in_flight.retain(|pending| *pending != tile.key);
++        crate::trace::instant("encoded_arrival", &format!("\"page\":{},\"wanted\":{}", tile.key.page, self.wanted.contains(&tile.key)));
+         if tile.key.generation != self.generation || self.cached(tile.key).is_some() {
+             return;
+         }
+@@ -742,7 +816,11 @@ impl App {
+         self.evict(tile.bytes);
+         let id = self.next_id;
+         self.next_id = id.next();
++        let mut span = crate::trace::span("transmit_queue");
++        span.arg("bytes", tile.image.encoded_bytes());
++        span.arg("page", tile.key.page);
+         kitty::transmit(id, &tile.image, &mut self.outgoing);
++        drop(span);
+         self.tiles.push(CachedTile {
+             key: tile.key,
+             id,
+@@ -1076,9 +1154,11 @@ impl App {
+             return;
+         }
+         if let Some(tile) = self.shelf.take(key) {
++            crate::trace::instant("shelf_take", &format!("\"page\":{}", key.page));
+             self.store(&tile);
+             return;
+         }
++        crate::trace::instant("render_request", &format!("\"page\":{},\"wanted\":{}", key.page, self.wanted.contains(&key)));
+         self.in_flight.retain(|pending| pending.scale == key.scale);
+         self.in_flight.push(key);
+         self.renderer.render(key);
+diff --git a/src/encoder.rs b/src/encoder.rs
+index dab1588..b65f9d1 100644
+--- a/src/encoder.rs
++++ b/src/encoder.rs
+@@ -74,6 +74,7 @@ fn serve(
+     payload: Payload,
+     deliver: &impl Fn(Encoded),
+ ) {
++    crate::trace::name_thread("encoder");
+     let mut waiting: Vec<Job> = Vec::with_capacity(QUEUED_TILES);
+     let mut free_slots = 0;
+     loop {
+@@ -84,6 +85,7 @@ fn serve(
+             }
+         }
+         if free_slots == 0 {
++            let _span = crate::trace::span("wait_claim");
+             if claimed.recv().is_err() {
+                 return;
+             }
+@@ -105,7 +107,11 @@ fn serve(
+ }
+ 
+ pub fn encode(job: Job, cell: CellSize, payload: Payload) -> Encoded {
++    let mut span = crate::trace::span("encode");
++    span.arg("page", job.key.page);
++    let pad = crate::trace::span("pad");
+     let padded = pad_to_cells(job.image, cell);
++    drop(pad);
+     let grid = grid_of(&padded, cell);
+     Encoded {
+         key: job.key,
+diff --git a/src/kitty.rs b/src/kitty.rs
+index 4f1f68a..5ea4ba7 100644
+--- a/src/kitty.rs
++++ b/src/kitty.rs
+@@ -78,12 +78,15 @@ pub fn encode(image: &RgbaImage, grid: CellGrid, payload: Payload) -> EncodedIma
+     let bytes: &[u8] = match payload {
+         Payload::Raw => image.as_raw(),
+         Payload::Zlib => {
++            let zlib_span = crate::trace::span("zlib");
+             compressed = zlib(image.as_raw());
++            drop(zlib_span);
+             &compressed
+         }
+     };
+     let chunks: Vec<&[u8]> = bytes.chunks(RAW_CHUNK).collect();
+     let mut sequence = String::with_capacity(bytes.len() / 3 * 4 + chunks.len() * 16 + 16);
++    let base64_span = crate::trace::span("base64");
+     for (index, chunk) in chunks.iter().enumerate() {
+         if index > 0 {
+             sequence.push_str("\x1b_Gq=2,");
+@@ -98,7 +101,10 @@ pub fn encode(image: &RgbaImage, grid: CellGrid, payload: Payload) -> EncodedIma
+         height: image.height(),
+         grid,
+         payload,
+-        chunks: sequence,
++        chunks: {
++            drop(base64_span);
++            sequence
++        },
+     }
+ }
+ 
+diff --git a/src/main.rs b/src/main.rs
+index f19cfd8..52f66f7 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -16,6 +16,7 @@ mod search;
+ mod shelf;
+ mod synctex;
+ mod terminal;
++mod trace;
+ mod viewer;
+ mod watch;
+ 
+@@ -140,7 +141,9 @@ fn main() -> ExitCode {
+             return ExitCode::FAILURE;
+         }
+     };
+-    match app::run(path, options) {
++    let outcome = app::run(path, options);
++    trace::flush();
++    match outcome {
+         Ok(()) => ExitCode::SUCCESS,
+         Err(error) => {
+             use std::io::Write;
+diff --git a/src/pdf.rs b/src/pdf.rs
+index b641c0e..c46ebbc 100644
+--- a/src/pdf.rs
++++ b/src/pdf.rs
+@@ -228,6 +228,7 @@ impl Pdf {
+     }
+ 
+     pub fn pages(&self) -> Vec<PageInfo> {
++        let _span = crate::trace::span("page_infos");
+         (0..self.page_count)
+             .map(|index| {
+                 self.load(index)
+@@ -307,9 +308,11 @@ impl Pdf {
+         let area = Rect::from(pixmap.rect());
+         decode_whole_images_in(&mut recorded.images, &transform, &area)?;
+         {
++            let _span = crate::trace::span("rasterize");
+             let device = Device::from_pixmap(&pixmap)?;
+             recorded.list.run(&device, &transform, area)?;
+         }
++        let _span = crate::trace::span("copy_rgb");
+         rgb_image(&pixmap)
+     }
+ 
+@@ -319,8 +322,11 @@ impl Pdf {
+             .as_ref()
+             .is_none_or(|recorded| recorded.index != page_index);
+         if stale {
++            let mut span = crate::trace::span("record");
++            span.arg("page", page_index);
+             let list = self.load(page_index)?.to_display_list(true)?;
+             let images = page_images(&list)?;
++            drop(span);
+             self.recorded = Some(RecordedPage {
+                 index: page_index,
+                 list,
+diff --git a/src/raster/app.rs b/src/raster/app.rs
+index 79a0278..3c524d1 100644
+--- a/src/raster/app.rs
++++ b/src/raster/app.rs
+@@ -184,9 +184,25 @@ impl App {
+             self.prepare_frame(now);
+             self.requery_cell_at(now);
+             self.inverse.expire(now);
+-            self.flush(terminal)?;
+-            terminal.draw(|frame| self.draw(frame))?;
+-            let first = match inbox.recv_timeout(self.idle_wait(Instant::now())) {
++            {
++                let mut span = crate::trace::span("flush_frame");
++                span.arg("bytes", self.outgoing.len());
++                self.flush(terminal)?;
++            }
++            {
++                let _span = crate::trace::span("draw");
++                terminal.draw(|frame| self.draw(frame))?;
++            }
++            if let Some(mark) = crate::trace::frame_mark(0, 0) {
++                use std::io::Write as _;
++                let backend = terminal.backend_mut();
++                backend.write_all(mark.as_bytes())?;
++                backend.flush()?;
++            }
++            let wait = crate::trace::span("wait");
++            let received = inbox.recv_timeout(self.idle_wait(Instant::now()));
++            drop(wait);
++            let first = match received {
+                 Ok(event) => event,
+                 Err(RecvTimeoutError::Timeout) => {
+                     if self.reload_at.is_some_and(|at| at <= Instant::now()) {
+@@ -197,6 +213,10 @@ impl App {
+                 Err(RecvTimeoutError::Disconnected) => bail!("all event sources stopped"),
+             };
+             for event in std::iter::once(first).chain(inbox.try_iter()) {
++                let _span = crate::trace::span("handle");
++                if matches!(event, Event::Key(_) | Event::Mouse(_)) {
++                    crate::trace::handled();
++                }
+                 if self.handle(event) == Flow::Quit {
+                     return Ok(());
+                 }
+diff --git a/src/raster/painter.rs b/src/raster/painter.rs
+index 6fea008..081a9c2 100644
+--- a/src/raster/painter.rs
++++ b/src/raster/painter.rs
+@@ -45,6 +45,7 @@ impl Painter {
+         let mailbox = Arc::new(Mailbox::default());
+         let inbox = Arc::clone(&mailbox);
+         thread::spawn(move || {
++            crate::trace::name_thread("painter");
+             while let Some(Job {
+                 id,
+                 view,
+@@ -52,9 +53,17 @@ impl Painter {
+                 tiles,
+             }) = inbox.take()
+             {
++                let compose_span = crate::trace::span("compose");
+                 let frame = compose(&view, generation, &tiles);
+                 drop(tiles);
+-                if let Ok(bytes) = encode(frame, view.pane) {
++                drop(compose_span);
++                let mut encode_span = crate::trace::span("raster_encode");
++                let encoded = encode(frame, view.pane);
++                if let Ok(bytes) = &encoded {
++                    encode_span.arg("bytes", bytes.len());
++                }
++                drop(encode_span);
++                if let Ok(bytes) = encoded {
+                     deliver(Painting {
+                         id,
+                         view,
+diff --git a/src/renderer.rs b/src/renderer.rs
+index a294667..6fcd237 100644
+--- a/src/renderer.rs
++++ b/src/renderer.rs
+@@ -139,6 +139,7 @@ fn serve(
+     deliver: &impl Fn(RenderKey, RgbImage),
+     wanted: &impl Fn(&RenderKey) -> bool,
+ ) {
++    crate::trace::name_thread("render");
+     let mut loaded: Option<LoadedPdf> = None;
+     let mut pending: Vec<Request> = Vec::new();
+     let mut searching: Option<Scan> = None;
+@@ -157,6 +158,7 @@ fn serve(
+         }
+         match next_request(&mut pending) {
+             Request::Load(generation) => {
++                let _span = crate::trace::span("load");
+                 respond(load(path, generation, &mut loaded));
+             }
+             Request::Search(ticket) => {
+@@ -182,10 +184,20 @@ fn serve(
+                 let Some(current) = &mut loaded else {
+                     continue;
+                 };
+-                if current.rendered_generation != key.generation || !wanted(&key) {
++                if current.rendered_generation != key.generation {
+                     continue;
+                 }
+-                if let Ok(mut image) = current.pdf.render(key.page, key.scale, key.region) {
++                if !wanted(&key) {
++                    crate::trace::instant("render_skipped", &format!("\"page\":{}", key.page));
++                    continue;
++                }
++                let mut span = crate::trace::span("render");
++                span.arg("page", key.page);
++                span.arg("w", key.region.width);
++                span.arg("h", key.region.height);
++                let rendered = current.pdf.render(key.page, key.scale, key.region);
++                drop(span);
++                if let Ok(mut image) = rendered {
+                     current
+                         .highlights
+                         .tint(key.page, key.scale, key.region, &mut image);
+diff --git a/src/trace.rs b/src/trace.rs
+new file mode 100644
+index 0000000..a9690c3
+--- /dev/null
++++ b/src/trace.rs
+@@ -0,0 +1,148 @@
++use std::fmt::Write as _;
++use std::fs::File;
++use std::io::{BufWriter, Write};
++use std::sync::atomic::{AtomicU64, Ordering};
++use std::sync::{Mutex, OnceLock};
++use std::time::Instant;
++
++static SINK: OnceLock<Option<Mutex<BufWriter<File>>>> = OnceLock::new();
++static START: OnceLock<Instant> = OnceLock::new();
++static NEXT_TID: AtomicU64 = AtomicU64::new(1);
++static INPUTS: AtomicU64 = AtomicU64::new(0);
++static FRAMES: AtomicU64 = AtomicU64::new(0);
++static HANDLED: AtomicU64 = AtomicU64::new(0);
++
++thread_local! {
++    static TID: u64 = NEXT_TID.fetch_add(1, Ordering::Relaxed);
++}
++
++fn sink() -> Option<&'static Mutex<BufWriter<File>>> {
++    SINK.get_or_init(|| {
++        START.get_or_init(Instant::now);
++        let path = std::env::var_os("TERMLEAF_TRACE")?;
++        let file = File::create(path).ok()?;
++        let mut writer = BufWriter::with_capacity(1 << 22, file);
++        let _ = writer.write_all(b"[\n");
++        Some(Mutex::new(writer))
++    })
++    .as_ref()
++}
++
++pub fn enabled() -> bool {
++    sink().is_some()
++}
++
++pub fn marks() -> bool {
++    std::env::var_os("TERMLEAF_FRAME_MARKS").is_some()
++}
++
++fn now_us() -> f64 {
++    START.get_or_init(Instant::now).elapsed().as_secs_f64() * 1e6
++}
++
++fn tid() -> u64 {
++    TID.with(|tid| *tid)
++}
++
++fn emit(line: &str) {
++    if let Some(sink) = sink()
++        && let Ok(mut writer) = sink.lock()
++    {
++        let _ = writer.write_all(line.as_bytes());
++    }
++}
++
++pub fn name_thread(name: &str) {
++    if enabled() {
++        emit(&format!(
++            "{{\"ph\":\"M\",\"name\":\"thread_name\",\"pid\":1,\"tid\":{},\"args\":{{\"name\":\"{name}\"}}}},\n",
++            tid()
++        ));
++    }
++}
++
++pub struct Span {
++    name: &'static str,
++    start: f64,
++    args: String,
++    live: bool,
++}
++
++pub fn span(name: &'static str) -> Span {
++    let live = enabled();
++    Span {
++        name,
++        start: if live { now_us() } else { 0.0 },
++        args: String::new(),
++        live,
++    }
++}
++
++impl Span {
++    pub fn arg(&mut self, key: &str, value: impl std::fmt::Display) {
++        if self.live {
++            if !self.args.is_empty() {
++                self.args.push(',');
++            }
++            let _ = write!(self.args, "\"{key}\":\"{value}\"");
++        }
++    }
++}
++
++impl Drop for Span {
++    fn drop(&mut self) {
++        if self.live {
++            let end = now_us();
++            emit(&format!(
++                "{{\"ph\":\"X\",\"name\":\"{}\",\"pid\":1,\"tid\":{},\"ts\":{:.1},\"dur\":{:.1},\"args\":{{{}}}}},\n",
++                self.name,
++                tid(),
++                self.start,
++                end - self.start,
++                self.args
++            ));
++        }
++    }
++}
++
++pub fn instant(name: &str, args: &str) {
++    if enabled() {
++        emit(&format!(
++            "{{\"ph\":\"i\",\"s\":\"t\",\"name\":\"{name}\",\"pid\":1,\"tid\":{},\"ts\":{:.1},\"args\":{{{args}}}}},\n",
++            tid(),
++            now_us()
++        ));
++    }
++}
++
++pub fn input() -> u64 {
++    let seq = INPUTS.fetch_add(1, Ordering::Relaxed) + 1;
++    instant("input", &format!("\"seq\":{seq}"));
++    seq
++}
++
++pub fn handled() {
++    HANDLED.fetch_add(1, Ordering::Relaxed);
++}
++
++pub fn inputs() -> u64 {
++    HANDLED.load(Ordering::Relaxed)
++}
++
++pub fn frame_mark(holes: usize, tiles: usize) -> Option<String> {
++    let frame = FRAMES.fetch_add(1, Ordering::Relaxed) + 1;
++    let handled = inputs();
++    instant(
++        "frame",
++        &format!("\"frame\":{frame},\"inputs\":{handled},\"holes\":{holes},\"tiles\":{tiles}"),
++    );
++    marks().then(|| format!("\x1b]7777;f;{frame};{handled};{holes};{tiles}\x07"))
++}
++
++pub fn flush() {
++    if let Some(sink) = sink()
++        && let Ok(mut writer) = sink.lock()
++    {
++        let _ = writer.flush();
++    }
++}

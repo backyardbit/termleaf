@@ -1,0 +1,64 @@
+name: foundation-eval (scratch, throwaway)
+
+on:
+  push:
+    branches: [scratch/foundation-eval]
+  workflow_dispatch:
+    inputs:
+      reps:
+        description: A/B reps per build per PDF
+        default: "10"
+
+jobs:
+  eval:
+    runs-on: macos-14
+    timeout-minutes: 90
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      REPS: ${{ inputs.reps || '10' }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Ghostty (cask, no quarantine) and herdr 0.9.4 (release binary, sha256-pinned)
+        run: |
+          brew install --cask --no-quarantine ghostty || brew install --cask ghostty
+          xattr -dr com.apple.quarantine /Applications/Ghostty.app 2>/dev/null || true
+          /Applications/Ghostty.app/Contents/MacOS/ghostty +version | head -1
+          mkdir -p "$HOME/bin"
+          curl -fsSL -o "$HOME/bin/herdr" https://github.com/herdrdev/herdr/releases/download/v0.9.4/herdr-macos-aarch64
+          echo "ea20bfff9cb8c83a996081c926e6ff9370de8e543baa859bca48d19175d895ff  $HOME/bin/herdr" | shasum -a 256 -c
+          chmod +x "$HOME/bin/herdr"; echo "$HOME/bin" >> "$GITHUB_PATH"
+          "$HOME/bin/herdr" --version
+      - name: PDFs
+        working-directory: eval/foundation
+        run: |
+          mkdir -p pdfs
+          curl -fL --retry 3 -o pdfs/progit-2.1.450.pdf https://github.com/progit/progit2/releases/download/2.1.450/progit.pdf
+          curl -fL --retry 3 -o pdfs/pgfplots-manual.pdf https://mirrors.ctan.org/graphics/pgf/contrib/pgfplots/doc/pgfplots.pdf
+          (cd pdfs && shasum -a 256 -c ../SHA256SUMS) || echo "WARNING: PDF checksum mismatch; A/B stay comparable within this run"
+      - name: Build A = cf54baf + trace.patch, B = master 70bbc34 + trace-master.patch
+        run: |
+          git worktree add --detach ../a cf54baf1e145ca170609f555f174954c02b1c235
+          git worktree add --detach ../b 70bbc34eea9ea4d5f95f95f2666f0e0876e44c01
+          git -C ../a apply "$PWD/eval/foundation/trace.patch"
+          git -C ../b apply "$PWD/eval/foundation/trace-master.patch"
+          (cd ../a && cargo build --release --locked)
+          (cd ../b && cargo build --release --locked)
+          mkdir -p eval/foundation/bin
+          cp ../a/target/release/termleaf eval/foundation/bin/termleaf-a
+          cp ../b/target/release/termleaf eval/foundation/bin/termleaf-b
+          shasum -a 256 eval/foundation/bin/*
+      - name: Run (Ghostty if it can open a window, otherwise herdr relay with a non-drawing host)
+        working-directory: eval/foundation
+        run: ./ci.sh
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: foundation-results
+          path: |
+            eval/foundation/results
+            eval/foundation/runs
+          if-no-files-found: warn
