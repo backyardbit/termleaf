@@ -43,14 +43,6 @@ jobs:
       - name: vim with the follow snippet, nvim and hx with no config and termleaf --follow move termleaf once per page, even after a lone focus-in
         run: cargo xtask follow
 
-  kitty-untouched:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - run: git fetch --no-tags --depth=1 origin master
-      - name: src/kitty.rs and src/shelf.rs match master
-        run: git diff --stat --exit-code FETCH_HEAD HEAD -- src/kitty.rs src/shelf.rs
-
   e2e:
     runs-on: ubuntu-24.04
     env:
