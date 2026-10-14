@@ -1,5 +1,7 @@
 use std::fs;
 use std::io::Write;
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
 use std::thread;
@@ -365,7 +367,36 @@ impl Session {
                 .ok()
                 .and_then(|json| first_pane_id(&json))
         })?;
+        poll(
+            STARTUP_TIMEOUT,
+            "herdr to give the pane a pixel size",
+            || {
+                session
+                    .pane_pixels()
+                    .filter(|&(width, height)| width > 0 && height > 0)
+            },
+        )?;
         Ok(session)
+    }
+
+    fn pane_pixels(&self) -> Option<(u16, u16)> {
+        let info = self
+            .herdr(&["pane", "process-info", "--pane", &self.pane])
+            .ok()?;
+        let tty = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOCTTY)
+            .open(format!("/proc/{}/fd/0", shell_pid(&info)?))
+            .ok()?;
+        let mut size = libc::winsize {
+            ws_row: 0,
+            ws_col: 0,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        // SAFETY: tty is an open descriptor for the whole call and size is a live winsize for TIOCGWINSZ to fill.
+        let read = unsafe { libc::ioctl(tty.as_raw_fd(), libc::TIOCGWINSZ, &raw mut size) };
+        (read == 0).then_some((size.ws_xpixel, size.ws_ypixel))
     }
 
     fn herdr(&self, args: &[&str]) -> Outcome<String> {
@@ -478,6 +509,14 @@ pub fn first_pane_id(pane_list_json: &str) -> Option<String> {
         .pointer("/result/panes/0/pane_id")?
         .as_str()
         .map(str::to_owned)
+}
+
+pub fn shell_pid(process_info_json: &str) -> Option<u32> {
+    let response: Value = serde_json::from_str(process_info_json).ok()?;
+    let pid = response
+        .pointer("/result/process_info/shell_pid")?
+        .as_u64()?;
+    u32::try_from(pid).ok()
 }
 
 pub fn status_line(screen: &str) -> Option<&str> {
@@ -705,6 +744,13 @@ mod tests {
     fn no_pane_in_an_error_response() {
         let json = r#"{"id":"cli:request","error":{"code":"server_not_running"}}"#;
         assert_eq!(first_pane_id(json), None);
+    }
+
+    #[test]
+    fn finds_the_shell_pid_in_pane_process_info() {
+        let json = r#"{"id":"cli:pane:process_info","result":{"process_info":{"foreground_process_group_id":4242,"pane_id":"w1:p1","shell_pid":4242},"type":"pane_process_info"}}"#;
+        assert_eq!(shell_pid(json), Some(4242));
+        assert_eq!(shell_pid(r#"{"error":{"code":"pane_not_found"}}"#), None);
     }
 
     #[test]
