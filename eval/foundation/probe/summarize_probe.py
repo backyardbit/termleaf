@@ -41,6 +41,6 @@ errs = sorted({e for rs in rows.values() for r in rs for e in r.get("error_sampl
 if errs:
     print("\nKitty error replies seen (first few): " + "; ".join(errs[:6]))
 print("\nretina = pages rendered at 2596 px wide (2 pages = 76.3 MB raw RGBA, above herdr's 64 MiB per-pane cap);"
-      " d075 = 0.75x (1947 px wide, 42.9 MB raw), scaled up to the pane by the terminal.")
+      " d075 = 0.75x (1947 px wide, 42.9 MB raw), scaled up to the pane by the terminal. -bands = same pages split into <=16 MiB images (herdr t=t file limit).")
 if not rows:
     print("\n(no probe results found)")

@@ -172,7 +172,7 @@ def run(args):
     lay = Layout(pages, cols, rows, xpx, ypx)
     old = termios.tcgetattr(fi)
     term = Term(fi, fo)
-    res = dict(label=args.label, scenario=args.scenario, density=args.density, seconds=args.seconds,
+    res = dict(images=len(pngs), label=args.label, scenario=args.scenario, density=args.density, seconds=args.seconds,
                pane=dict(cols=cols, rows=rows, xpx=xpx, ypx=ypx), pages=[dict(w=w, h=h, png_bytes=len(d)) for (_, w, h), d in zip(pages, pngs)],
                raw_rgba_bytes_total=sum(w * h * 4 for _, w, h in pages), env={k: os.environ.get(k) for k in ("TERM", "TERM_PROGRAM", "HERDR_ENV", "HERDR_PANE_ID")})
     try:
@@ -201,7 +201,7 @@ def run(args):
         else:
             plan = {}
             for k in range(0, n, 2):  # 30 Hz presses
-                plan[k] = 0.0 if (k // 2) % 2 == 0 else lay.disp_h[0]
+                plan[k] = 0.0 if (k // 2) % 2 == 0 else sum(lay.disp_h[:len(pages) // 2])
         start = time.monotonic() + 0.1
         for k in range(n):
             tk = start + k * FRAME
@@ -215,8 +215,10 @@ def run(args):
                 continue
             out = []
             if args.scenario == "held_j_upload":
-                idx = 0 if plan[k] == 0.0 else 1
-                out.append(upload_cmd(pages[idx][0], pngs[idx]))
+                half = len(pages) // 2
+                sel = range(0, half) if plan[k] == 0.0 else range(half, len(pages))
+                for idx in sel:
+                    out.append(upload_cmd(pages[idx][0], pngs[idx]))
             pl = lay.placements(plan[k])
             want = {p[0] for p in pl}
             for img in cur - want:
@@ -282,7 +284,7 @@ def run(args):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--pages", nargs=2, required=True)
+    ap.add_argument("--pages", nargs="+", required=True, help="2 pages, or each page as equal-count bands stacked top to bottom (page 1 bands first)")
     ap.add_argument("--scenario", choices=["trackpad", "held_j", "held_j_upload"], required=True)
     ap.add_argument("--seconds", type=float, default=3.0)
     ap.add_argument("--density", default="")
