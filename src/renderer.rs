@@ -185,10 +185,22 @@ fn serve(
                 if current.rendered_generation != key.generation || !wanted(&key) {
                     continue;
                 }
-                if let Ok(mut image) = current.pdf.render(key.page, key.scale, key.region) {
+                let (scale, region) = match crate::resident::density() {
+                    Some(density) => (
+                        crate::pdf::Scale::from_pixels_per_point(key.scale.pixels_per_point() * density),
+                        crate::pdf::PixelRegion {
+                            x: crate::resident::shrink(key.region.x, density),
+                            y: crate::resident::shrink(key.region.y, density),
+                            width: crate::resident::shrink_up(key.region.width, density),
+                            height: crate::resident::shrink_up(key.region.height, density),
+                        },
+                    ),
+                    None => (key.scale, key.region),
+                };
+                if let Ok(mut image) = current.pdf.render(key.page, scale, region) {
                     current
                         .highlights
-                        .tint(key.page, key.scale, key.region, &mut image);
+                        .tint(key.page, scale, region, &mut image);
                     deliver(key, image);
                 }
                 pending.extend(inbox.try_iter().flatten());

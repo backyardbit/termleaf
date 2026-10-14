@@ -958,7 +958,10 @@ impl App {
         let behind = |steps| Self::page_top_view(view, step(steps, !down));
         let pane_ahead = Some(Self::pane_step(view, down));
         let pane_behind = Some(Self::pane_step(view, !down));
-        let targets = if self.travel.holding && self.pipe_slow(Instant::now()) {
+        let resident = crate::resident::density().is_some();
+        let targets = if resident && self.travel.paging {
+            vec![ahead(1), ahead(2), ahead(3), behind(1)]
+        } else if self.travel.holding && self.pipe_slow(Instant::now()) {
             Vec::new()
         } else if self.travel.holding && self.travel.paging {
             vec![ahead(1)]
@@ -1010,7 +1013,8 @@ impl App {
             .partition(|key| tile_bytes(*key, cell).saturating_mul(8) <= largest);
         major.append(&mut heavy);
         major.append(&mut minor);
-        major.truncate(PREFETCH_TILES * (TILE_ROWS / view.layout.tile_rows()) as usize);
+        let limit = PREFETCH_TILES * (TILE_ROWS / view.layout.tile_rows()) as usize;
+        major.truncate(if crate::resident::density().is_some() { limit * 3 } else { limit });
         let mut seen: Vec<RenderKey> = Vec::new();
         for key in visible {
             if !seen.contains(&key) {
@@ -1176,8 +1180,12 @@ enum Flow {
 }
 
 fn tile_bytes(key: RenderKey, cell: CellSize) -> usize {
-    let width = u64::from(key.region.width.div_ceil(cell.width)) * u64::from(cell.width);
-    let height = u64::from(key.region.height.div_ceil(cell.height)) * u64::from(cell.height);
+    let mut width = u64::from(key.region.width.div_ceil(cell.width)) * u64::from(cell.width);
+    let mut height = u64::from(key.region.height.div_ceil(cell.height)) * u64::from(cell.height);
+    if let Some(density) = crate::resident::density() {
+        width = u64::from(crate::resident::shrink_up(u32::try_from(width).unwrap_or(u32::MAX), density));
+        height = u64::from(crate::resident::shrink_up(u32::try_from(height).unwrap_or(u32::MAX), density));
+    }
     width
         .checked_mul(height)
         .and_then(|pixels| pixels.checked_mul(4))

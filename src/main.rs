@@ -12,6 +12,7 @@ mod pdf;
 mod pinch;
 mod raster;
 mod renderer;
+mod resident;
 mod search;
 mod shelf;
 mod synctex;
