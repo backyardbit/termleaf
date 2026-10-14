@@ -900,7 +900,7 @@ impl App {
             }
             self.request(*key);
         }
-        let pipe_idle = settled && self.outgoing.is_empty() && !self.pipe_slow(now);
+        let pipe_idle = settled && self.outgoing.is_empty();
         if view_ready && pipe_idle {
             self.send_one_prefetched();
         }
@@ -964,17 +964,16 @@ impl App {
             vec![ahead(1)]
         } else if self.travel.holding {
             vec![pane_ahead]
-        } else if self.travel.paging {
+        } else {
             vec![
                 ahead(1),
+                pane_ahead,
                 ahead(2),
                 behind(1),
-                pane_ahead,
-                ahead(3),
                 pane_behind,
+                ahead(3),
+                ahead(4),
             ]
-        } else {
-            vec![pane_ahead, pane_behind, ahead(1), behind(1)]
         };
         targets.into_iter().flatten().collect()
     }
@@ -1596,6 +1595,32 @@ mod tests {
         app.request_tiles_at(now);
         assert_eq!(app.cached(prefetched), None);
         app.outgoing.clear();
+        app.request_tiles_at(now + Duration::from_secs(1));
+        assert!(app.cached(prefetched).is_some());
+    }
+
+    #[test]
+    fn a_prefetched_tile_is_sent_during_a_pause_even_when_the_pipe_is_slow() {
+        let (mut app, _inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 24,
+        });
+        let now = Instant::now() + RESIZE_SETTLE;
+        app.handle(Event::Key(Key::Char('j')));
+        app.request_tiles_at(now);
+        let shown = tile_keys(app.generation, app.viewer.view());
+        let prefetched = app
+            .in_flight
+            .iter()
+            .copied()
+            .find(|key| !shown.contains(key))
+            .expect("a prefetched tile");
+        app.handle(Event::Encoded(0, encoded_tile(&app, prefetched)));
+        for key in &shown {
+            app.handle(Event::Encoded(0, encoded_tile(&app, *key)));
+        }
+        app.outgoing.clear();
+        app.pipe_slow_until = Some(now + Duration::from_secs(60));
         app.request_tiles_at(now + Duration::from_secs(1));
         assert!(app.cached(prefetched).is_some());
     }
