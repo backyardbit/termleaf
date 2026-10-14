@@ -900,7 +900,7 @@ impl App {
             }
             self.request(*key);
         }
-        let pipe_idle = settled && self.outgoing.is_empty() && !self.pipe_slow(now);
+        let pipe_idle = settled && self.outgoing.is_empty();
         if view_ready && pipe_idle {
             self.send_one_prefetched();
         }
@@ -964,17 +964,16 @@ impl App {
             vec![ahead(1)]
         } else if self.travel.holding {
             vec![pane_ahead]
-        } else if self.travel.paging {
+        } else {
             vec![
                 ahead(1),
+                pane_ahead,
                 ahead(2),
                 behind(1),
-                pane_ahead,
-                ahead(3),
                 pane_behind,
+                ahead(3),
+                ahead(4),
             ]
-        } else {
-            vec![pane_ahead, pane_behind, ahead(1), behind(1)]
         };
         targets.into_iter().flatten().collect()
     }
