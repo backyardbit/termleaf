@@ -1877,7 +1877,10 @@ mod tests {
             .collect();
         assert!(!sent.is_empty());
         for [width, height, columns, rows] in sent {
-            assert_eq!((width, height), (columns * 20, rows * 40));
+            assert_eq!(
+                (width, height),
+                ((columns * 20 * 3).div_ceil(4), (rows * 40 * 3).div_ceil(4))
+            );
         }
         let sent_ids: Vec<ImageId> = std::iter::successors(Some(first_sent), |id| Some(id.next()))
             .take_while(|id| *id != app.next_id)
