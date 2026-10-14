@@ -959,8 +959,17 @@ impl App {
         let pane_ahead = Some(Self::pane_step(view, down));
         let pane_behind = Some(Self::pane_step(view, !down));
         let resident = crate::resident::density().is_some();
-        let targets = if resident && self.travel.paging {
-            vec![ahead(1), ahead(2), ahead(3), behind(1)]
+        let targets = if resident && !self.travel.holding {
+            // Warm while the reader pauses: the next pages and the pane steps both ways.
+            vec![
+                ahead(1),
+                pane_ahead,
+                ahead(2),
+                behind(1),
+                pane_behind,
+                ahead(3),
+                ahead(4),
+            ]
         } else if self.travel.holding && self.pipe_slow(Instant::now()) {
             Vec::new()
         } else if self.travel.holding && self.travel.paging {
