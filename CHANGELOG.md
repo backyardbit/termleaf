@@ -9,7 +9,7 @@
 - Fix figures that shifted by a pixel or two where two tiles meet. Images are now drawn from one whole decode, so a tiled page matches the whole page (#52).
 - Fix termleaf exiting with "needs a terminal that supports Kitty graphics" when started in a brand-new pane, as in herdr, before the terminal reports its cell size. It now waits for the size and then draws, and the error messages say which one is missing (#55).
 - Send the pages ahead of where you are reading while you pause, even when the terminal is slow to take images, as herdr always is. Reading at a normal pace no longer shows blank pages (#56).
-- Draw Kitty images at three-quarter density and let the terminal scale them up. Scrolling stays smoother and more pages fit in herdr's 64 MiB limit, at the cost of slightly softer text (#57).
+- Draw Kitty images at three-quarter density and let the terminal scale them up. Scrolling stays smoother, at the cost of slightly softer text (#57).
 
 ## v0.3.1
 
