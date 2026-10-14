@@ -22,10 +22,10 @@ jobs:
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-      - name: Ghostty (cask, no quarantine) and herdr 0.9.4 (release binary, sha256-pinned)
+      - name: Ghostty (cask, quarantine cleared) and herdr 0.9.4 (release binary, sha256-pinned)
         run: |
-          brew install --cask --no-quarantine ghostty || brew install --cask ghostty
-          xattr -dr com.apple.quarantine /Applications/Ghostty.app 2>/dev/null || true
+          brew install --cask ghostty
+          xattr -dr com.apple.quarantine /Applications/Ghostty.app
           /Applications/Ghostty.app/Contents/MacOS/ghostty +version | head -1
           mkdir -p "$HOME/bin"
           curl -fsSL -o "$HOME/bin/herdr" https://github.com/herdrdev/herdr/releases/download/v0.9.4/herdr-macos-aarch64
@@ -54,11 +54,16 @@ jobs:
       - name: Run (Ghostty if it can open a window, otherwise herdr relay with a non-drawing host)
         working-directory: eval/foundation
         run: ./ci.sh
+      - name: Pack results into one tarball (plain relative paths; avoids path-traversal errors on download)
+        if: always()
+        working-directory: eval/foundation
+        run: |
+          mkdir -p results runs
+          tar czf "$RUNNER_TEMP/foundation-results.tgz" results runs
+          tar tzf "$RUNNER_TEMP/foundation-results.tgz" | awk '/^\// || /(^|\/)\.\.(\/|$)/ {bad=1; print "unsafe path: " $0} END {exit bad}'
       - if: always()
         uses: actions/upload-artifact@v4
         with:
           name: foundation-results
-          path: |
-            eval/foundation/results
-            eval/foundation/runs
+          path: ${{ runner.temp }}/foundation-results.tgz
           if-no-files-found: warn
