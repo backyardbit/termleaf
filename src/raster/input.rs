@@ -2,11 +2,10 @@ use std::sync::mpsc::Sender;
 use std::thread;
 
 use crossterm::event::{
-    self, Event as TerminalEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton,
-    MouseEvent, MouseEventKind,
+    self, Event as TerminalEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
-use crate::keys::{Key, ScreenCell};
+use crate::keys::ScreenCell;
 use crate::mouse::{MouseInput, Wheel};
 use crate::raster::app::Event;
 
@@ -28,26 +27,12 @@ pub fn spawn_input(events: Sender<Event>) {
 
 fn translate_event(terminal_event: TerminalEvent) -> Option<Event> {
     match terminal_event {
-        TerminalEvent::Key(key) => translate_key(key).map(Event::Key),
+        TerminalEvent::Key(key) => crate::keys::decode(key).map(Event::Key),
         TerminalEvent::Mouse(mouse) => translate_mouse(mouse).map(Event::Mouse),
         TerminalEvent::Resize(..) => Some(Event::Resized),
         TerminalEvent::FocusGained => Some(Event::Focus(true)),
         TerminalEvent::FocusLost => Some(Event::Focus(false)),
         TerminalEvent::Paste(_) => None,
-    }
-}
-
-fn translate_key(key: KeyEvent) -> Option<Key> {
-    if key.kind != KeyEventKind::Press {
-        return None;
-    }
-    match key.code {
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Some(Key::Interrupt),
-        KeyCode::Char(character) => Some(Key::Char(character)),
-        KeyCode::Enter => Some(Key::Enter),
-        KeyCode::Esc => Some(Key::Escape),
-        KeyCode::Backspace => Some(Key::Backspace),
-        _ => None,
     }
 }
 

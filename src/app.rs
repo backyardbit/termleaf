@@ -8,8 +8,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use crossterm::event::{
     self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
-    Event as TerminalEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
-    MouseEventKind,
+    Event as TerminalEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use crossterm::execute;
 use ratatui::DefaultTerminal;
@@ -294,26 +293,12 @@ fn spawn_input(events: Sender<Event>) {
 
 fn translate_event(terminal_event: TerminalEvent) -> Option<Event> {
     match terminal_event {
-        TerminalEvent::Key(key) => translate_key(key).map(Event::Key),
+        TerminalEvent::Key(key) => crate::keys::decode(key).map(Event::Key),
         TerminalEvent::Mouse(mouse) => translate_mouse(mouse).map(Event::Mouse),
         TerminalEvent::Resize(..) => Some(Event::Resized),
         TerminalEvent::FocusGained => Some(Event::Focus(true)),
         TerminalEvent::FocusLost => Some(Event::Focus(false)),
         TerminalEvent::Paste(_) => None,
-    }
-}
-
-fn translate_key(key: KeyEvent) -> Option<Key> {
-    if key.kind != KeyEventKind::Press {
-        return None;
-    }
-    match key.code {
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Some(Key::Interrupt),
-        KeyCode::Char(character) => Some(Key::Char(character)),
-        KeyCode::Enter => Some(Key::Enter),
-        KeyCode::Esc => Some(Key::Escape),
-        KeyCode::Backspace => Some(Key::Backspace),
-        _ => None,
     }
 }
 
@@ -2378,11 +2363,5 @@ mod tests {
     #[test]
     fn tiles_stay_raw_when_the_terminal_did_not_confirm_compression() {
         assert_eq!(compression_if(&[Capability::Kitty]), Payload::Raw);
-    }
-
-    #[test]
-    fn control_c_interrupts() {
-        let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
-        assert_eq!(translate_key(key), Some(Key::Interrupt));
     }
 }
