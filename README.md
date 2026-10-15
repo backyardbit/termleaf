@@ -56,6 +56,10 @@ The file must exist when termleaf starts. If a later build leaves the PDF broken
 | Key | Action |
 | --- | --- |
 | `j` / `k` | next / previous page (takes a count, e.g. `5j`) |
+| `Ctrl-D` / `Ctrl-U` | scroll down / up half a pane (takes a count) |
+| `PgDn` / `PgUp` | scroll down / up a whole pane (takes a count) |
+| `↓` / `↑` | scroll down / up three rows (takes a count) |
+| `h` / `l`, `←` / `→` | pan left / right (takes a count) |
 | `gg` / `G` | first / last page |
 | `<n>G`, `<n>gg`, `:<n>` | go to page *n* |
 | `:$` | last page |

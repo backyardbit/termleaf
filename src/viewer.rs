@@ -78,6 +78,9 @@ impl Viewer {
                 self.jump(|viewer| viewer.go_to_page(number.saturating_sub(1).min(last)));
             }
             Command::Scroll { columns, rows } => self.scroll(columns, rows),
+            Command::ScrollHalfPanes(halves) => {
+                self.scroll(0, self.half_pane_rows().saturating_mul(halves))
+            }
             Command::Zoom { steps, anchor } => {
                 self.magnify(ZOOM_STEP.powi(steps), anchor);
             }
@@ -258,6 +261,12 @@ impl Viewer {
         self.view.top = self.view.layout.page_top(page);
         self.view = self.view.clone().clamped();
         self.origin = self.view.origin();
+    }
+
+    fn half_pane_rows(&self) -> i32 {
+        i32::try_from(self.view.pane.rows / 2)
+            .unwrap_or(i32::MAX)
+            .max(1)
     }
 
     fn scroll(&mut self, columns: i32, rows: i32) {
@@ -497,6 +506,31 @@ mod tests {
             rows: -9,
         });
         assert_eq!(viewer.view().top, 0);
+    }
+
+    #[test]
+    fn half_pane_scrolls_move_by_half_the_pane_height() {
+        let mut viewer = viewer(3);
+        viewer.apply(Command::ScrollHalfPanes(1));
+        assert_eq!(viewer.view().top, 12);
+        viewer.apply(Command::ScrollHalfPanes(2));
+        assert_eq!(viewer.view().top, 36);
+        viewer.apply(Command::ScrollHalfPanes(-1));
+        assert_eq!(viewer.view().top, 24);
+    }
+
+    #[test]
+    fn half_pane_scrolls_move_at_least_one_row_in_a_tiny_pane() {
+        let mut viewer = Viewer::new(
+            document(3),
+            CELL,
+            Pane {
+                columns: 80,
+                rows: 1,
+            },
+        );
+        viewer.apply(Command::ScrollHalfPanes(1));
+        assert_eq!(viewer.view().top, 1);
     }
 
     #[test]
