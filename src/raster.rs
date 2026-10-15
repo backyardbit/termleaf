@@ -113,8 +113,8 @@ fn show(
         )
     };
     renderer.load(0);
-    let pages = match inbox.recv().context("the render thread stopped")? {
-        Event::Renderer(Response::Loaded { pages, .. }) => pages,
+    let (pages, outline) = match inbox.recv().context("the render thread stopped")? {
+        Event::Renderer(Response::Loaded { pages, outline, .. }) => (pages, outline),
         _ => bail!("{} is not a readable PDF", path.display()),
     };
     let _watcher = {
@@ -166,6 +166,7 @@ fn show(
         path: path.to_path_buf(),
         editors: Box::new(crate::editor::Jumper::default()),
         pages,
+        outline,
         cell: CellSize {
             width: u32::from(font.width.max(1)),
             height: u32::from(font.height.max(1)),

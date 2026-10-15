@@ -138,6 +138,8 @@ fn scenario(root: &Path) -> Outcome<()> {
         Page::Changed,
     )?;
 
+    table_of_contents_scenario(&mut session, &fixtures.join("outline.pdf"), &doc)?;
+
     copy(&fixtures.join("synctex/thesis.pdf"), &doc)?;
     copy(
         &fixtures.join("synctex/thesis.synctex.gz"),
@@ -182,6 +184,38 @@ fn copy(from: &Path, to: &Path) -> Outcome<()> {
     fs::copy(from, to)
         .map(|_| ())
         .map_err(|error| format!("copying {} to {}: {error}", from.display(), to.display()))
+}
+
+fn table_of_contents_scenario(session: &mut Session, outline: &Path, doc: &Path) -> Outcome<()> {
+    copy(outline, doc)?;
+    session.step(
+        "outline-pdf-loaded",
+        "page 2/3 · fit page · doc.pdf",
+        Page::Changed,
+    )?;
+    session.send("t")?;
+    session.wait_for_status("the table of contents", |status| {
+        status.starts_with("contents ") && status.ends_with(" · doc.pdf")
+    })?;
+    poll(STEP_TIMEOUT, "the headings to replace the pages", || {
+        let screen = session.screen();
+        let listed = ["Introduction", "  Background", "Measurements", "Results"]
+            .iter()
+            .all(|heading| screen.contains(heading));
+        let hidden = session
+            .screenshot("table-of-contents")
+            .is_ok_and(|shot| !page_is_drawn(&shot));
+        (listed && hidden).then_some(())
+    })
+    .map_err(|error| format!("{error}; last screen:\n{}", session.screen()))?;
+    println!("ok   table-of-contents: headings drawn over the pages");
+    session.send("G\r")?;
+    session.step(
+        "table-of-contents-jumps",
+        "page 3/3 · fit page · doc.pdf",
+        Page::Changed,
+    )?;
+    Ok(())
 }
 
 fn search_scenario(session: &mut Session) -> Outcome<()> {

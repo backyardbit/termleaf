@@ -1,6 +1,6 @@
 use crate::keys::{Command, ScreenCell};
 use crate::layout::{CellSize, DocumentPoint, Layout, Pane, Position, View, fit_page, fit_width};
-use crate::pdf::{PageInfo, PageSize, Scale, nearest_whole};
+use crate::pdf::{LinkTarget, PageInfo, PageSize, Scale, nearest_whole};
 
 const ZOOM_STEP: f64 = 1.1;
 const MIN_PIXELS_PER_POINT: f64 = 0.1;
@@ -101,6 +101,7 @@ impl Viewer {
             Command::JumpBack(count) => self.walk_history(count, Direction::Back),
             Command::JumpForward(count) => self.walk_history(count, Direction::Forward),
             Command::SearchSubmit
+            | Command::Outline(_)
             | Command::SearchDismiss
             | Command::SearchNext(_)
             | Command::SearchPrevious(_)
@@ -175,6 +176,10 @@ impl Viewer {
         }
         parts.extend(notice.map(str::to_owned));
         parts.join(" · ")
+    }
+
+    pub fn follow(&mut self, target: LinkTarget) {
+        self.jump(|viewer| viewer.go_to_target(target));
     }
 
     pub fn jump_to(&mut self, target: Position) {
@@ -317,10 +322,14 @@ impl Viewer {
         }) else {
             return;
         };
+        self.go_to_target(link.target);
+    }
+
+    fn go_to_target(&mut self, target: LinkTarget) {
         let target = Position {
-            page: link.target.page.min(self.page_count().saturating_sub(1)),
+            page: target.page.min(self.page_count().saturating_sub(1)),
             x: 0.0,
-            y: f64::from(link.target.top.unwrap_or(0.0)),
+            y: f64::from(target.top.unwrap_or(0.0)),
         };
         let row = self.view.layout.point_of(target).row;
         self.view.top = nearest_whole(row.floor());
@@ -746,6 +755,23 @@ mod tests {
         assert_eq!(viewer.view().top, before);
         viewer.apply(Command::JumpForward(1));
         assert_eq!(viewer.view().top, target);
+    }
+
+    #[test]
+    fn following_a_heading_puts_its_top_at_the_top_and_can_be_undone() {
+        let mut viewer = viewer(5);
+        viewer.follow(LinkTarget {
+            page: 3,
+            top: Some(300.0),
+        });
+        let expected = viewer.view().layout.point_of(Position {
+            page: 3,
+            x: 0.0,
+            y: 300.0,
+        });
+        assert_eq!(viewer.view().top, nearest_whole(expected.row.floor()));
+        viewer.apply(Command::JumpBack(1));
+        assert_eq!(viewer.view().top, 0);
     }
 
     #[test]

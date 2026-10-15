@@ -18,7 +18,8 @@ use crate::inverse::{Editors, Inverse};
 use crate::keys::{Command, Key, KeyParser};
 use crate::layout::{CellSize, Pane, View};
 use crate::mouse::{Gestures, MouseInput};
-use crate::pdf::PageInfo;
+use crate::outline::OutlinePanel;
+use crate::pdf::{Heading, PageInfo};
 use crate::pinch::{PinchGate, PinchInput};
 use crate::raster::frame::tile_keys;
 use crate::raster::painter::{Job, Painter, Painting};
@@ -77,6 +78,8 @@ pub struct App {
     inverse: Inverse,
     follow: Follow,
     viewer: Viewer,
+    outline: OutlinePanel,
+    clear_screen: bool,
     cells: CellWatch,
     requery: Option<(Duration, Instant)>,
     search: Search,
@@ -115,6 +118,7 @@ pub struct Parts {
     pub path: PathBuf,
     pub editors: Box<dyn Editors>,
     pub pages: Vec<PageInfo>,
+    pub outline: Vec<Heading>,
     pub cell: CellSize,
     pub pane: Pane,
     pub requery_every: Option<Duration>,
@@ -131,6 +135,8 @@ impl App {
             inverse: Inverse::new(&parts.path, parts.editors),
             follow: parts.follow,
             viewer: Viewer::new(parts.pages, parts.cell, parts.pane),
+            outline: OutlinePanel::new(parts.outline),
+            clear_screen: false,
             cells: CellWatch::new(crossterm::terminal::window_size().ok()),
             requery: parts.requery_every.map(|every| (every, Instant::now())),
             search: Search::default(),
@@ -185,6 +191,10 @@ impl App {
             self.requery_cell_at(now);
             self.inverse.expire(now);
             self.flush(terminal)?;
+            if self.clear_screen {
+                self.clear_screen = false;
+                terminal.clear()?;
+            }
             terminal.draw(|frame| self.draw(frame))?;
             let first = match inbox.recv_timeout(self.idle_wait(Instant::now())) {
                 Ok(event) => event,
@@ -291,6 +301,16 @@ impl App {
     }
 
     fn apply_at(&mut self, command: Command, now: Instant) -> Flow {
+        let outline_was_shown = self.outline.shown();
+        if self
+            .outline
+            .command(command, &mut self.keys, &mut self.viewer)
+        {
+            if self.outline.shown() != outline_was_shown {
+                self.outline_toggled();
+            }
+            return Flow::Continue;
+        }
         let revision = self.search.revision();
         if self.search.command(
             command,
@@ -333,6 +353,16 @@ impl App {
         Flow::Continue
     }
 
+    fn outline_toggled(&mut self) {
+        if self.outline.shown() {
+            self.clear_screen = true;
+            self.first_valid_job = self.next_job;
+        }
+        self.submitted = None;
+        self.on_screen = None;
+        self.paint_due = None;
+    }
+
     fn zooming(&mut self, now: Instant) -> bool {
         if self.zooming_until.is_some_and(|until| now >= until) {
             self.zooming_until = None;
@@ -370,7 +400,11 @@ impl App {
     fn paint_at(&mut self, now: Instant) {
         self.paint_due = None;
         let view = self.viewer.view().clone();
-        if view.pane.columns == 0 || view.pane.rows == 0 || !self.may_paint(now) {
+        if view.pane.columns == 0
+            || view.pane.rows == 0
+            || !self.may_paint(now)
+            || self.outline.shown()
+        {
             return;
         }
         let wanted = tile_keys(self.generation, &view);
@@ -518,11 +552,16 @@ impl App {
 
     fn receive(&mut self, response: Response) {
         match response {
-            Response::Loaded { generation, pages } if generation == self.requested_generation => {
+            Response::Loaded {
+                generation,
+                pages,
+                outline,
+            } if generation == self.requested_generation => {
                 self.generation = generation;
                 self.document_generation = generation;
                 self.reload_retries = 0;
                 self.viewer.reloaded(pages);
+                self.outline.reloaded(outline);
                 self.search
                     .restart(&self.renderer, self.document_generation);
                 self.inverse.reloaded();
@@ -601,7 +640,11 @@ impl App {
     fn draw(&self, frame: &mut Frame) {
         let area = frame.area();
         let pages = page_area(area);
-        frame.render_widget(PaintedElsewhere, pages);
+        if self.outline.shown() {
+            frame.render_widget(&self.outline, pages);
+        } else {
+            frame.render_widget(PaintedElsewhere, pages);
+        }
         frame.render_widget(
             Line::styled(
                 self.status(),
@@ -616,6 +659,9 @@ impl App {
     }
 
     fn status(&self) -> String {
+        if self.outline.shown() {
+            return self.outline.status(&self.file_name);
+        }
         if let Some(query) = self.keys.search_line() {
             return format!("/{query}");
         }
@@ -729,7 +775,7 @@ mod tests {
             let _ = events.send(Event::Painted(painting));
         });
         renderer.load(0);
-        let Ok(Event::Renderer(Response::Loaded { pages, .. })) = inbox.recv() else {
+        let Ok(Event::Renderer(Response::Loaded { pages, outline, .. })) = inbox.recv() else {
             panic!("the fixture did not load");
         };
         let app = App::new(Parts {
@@ -738,6 +784,7 @@ mod tests {
             path,
             editors: Box::new(StatusOnly),
             pages,
+            outline,
             cell: CELL,
             pane,
             requery_every: None,
@@ -914,6 +961,7 @@ mod tests {
         app.handle(Event::Renderer(Response::Loaded {
             generation: 7,
             pages: crate::pdf::Pdf::from_bytes(&bytes).unwrap().pages(),
+            outline: Vec::new(),
         }));
         app.handle(previous);
         assert!(app.search.highlights.hits.is_empty());
@@ -1221,6 +1269,42 @@ mod tests {
         assert_eq!(buffer[(0, 24)].diff_option, CellDiffOption::None);
         let status: String = (0..80).map(|x| buffer[(x, 24)].symbol()).collect();
         assert!(status.starts_with("page 1/3 · doc.pdf"), "{status}");
+    }
+
+    #[test]
+    fn the_table_of_contents_clears_the_frame_and_the_frame_returns_when_it_is_hidden() {
+        let (mut app, inbox) = headless_app(fixture("outline.pdf"), PANE);
+        settle(&mut app, &inbox);
+        app.outgoing.clear();
+        app.handle(Event::Key(Key::Char('t')));
+        assert!(app.clear_screen);
+        let mut terminal = Terminal::new(TestBackend::new(80, 25)).unwrap();
+        let drawn = terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert_eq!(drawn.buffer[(0, 0)].diff_option, CellDiffOption::None);
+        assert_eq!(drawn.buffer[(0, 0)].symbol(), "I");
+        app.handle(Event::Key(Key::Char('j')));
+        app.prepare_frame(settled());
+        assert_eq!(frames_written(&app), 0);
+        app.handle(Event::Key(Key::Char('t')));
+        settle(&mut app, &inbox);
+        assert_eq!(frames_written(&app), 1);
+    }
+
+    #[test]
+    fn a_frame_painted_before_the_table_of_contents_opened_is_never_written() {
+        let (mut app, inbox) = headless_app(fixture("outline.pdf"), PANE);
+        loop {
+            app.prepare_frame(settled());
+            if app.submitted.is_some() {
+                break;
+            }
+            let event = inbox.recv_timeout(Duration::from_secs(20)).unwrap();
+            app.handle(event);
+        }
+        app.handle(Event::Key(Key::Char('t')));
+        let painting = next_painting(&mut app, &inbox);
+        app.handle(Event::Painted(painting));
+        assert_eq!(frames_written(&app), 0);
     }
 
     #[test]
