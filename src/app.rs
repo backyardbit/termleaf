@@ -309,7 +309,11 @@ fn translate_key(key: KeyEvent) -> Option<Key> {
     }
     match key.code {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Some(Key::Interrupt),
+        KeyCode::Char(character) if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(Key::Control(character))
+        }
         KeyCode::Char(character) => Some(Key::Char(character)),
+        KeyCode::Tab => Some(Key::Tab),
         KeyCode::Enter => Some(Key::Enter),
         KeyCode::Esc => Some(Key::Escape),
         KeyCode::Backspace => Some(Key::Backspace),
@@ -2384,5 +2388,16 @@ mod tests {
     fn control_c_interrupts() {
         let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert_eq!(translate_key(key), Some(Key::Interrupt));
+    }
+
+    #[test]
+    fn control_o_tab_and_control_i_reach_the_parser_as_jump_keys() {
+        let control = |character| KeyEvent::new(KeyCode::Char(character), KeyModifiers::CONTROL);
+        assert_eq!(translate_key(control('o')), Some(Key::Control('o')));
+        assert_eq!(translate_key(control('i')), Some(Key::Control('i')));
+        assert_eq!(
+            translate_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+            Some(Key::Tab)
+        );
     }
 }

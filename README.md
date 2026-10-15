@@ -65,6 +65,7 @@ The file must exist when termleaf starts. If a later build leaves the PDF broken
 | `/`, then Enter | search PDF text |
 | `n`, `N` | next / previous match, wrapping at the ends (counts work) |
 | Escape | cancel a search prompt, or dismiss search results |
+| `Ctrl-O` / `Ctrl-I` (or Tab) | jump back / forward through links followed, `gg`, `G`, `:<n>` and search matches (takes a count) |
 | `F`, `:follow`, `:nofollow` | follow your editor on / off ([SyncTeX](#synctex)) |
 | `q`, `:q`, `Ctrl-C` | quit |
 

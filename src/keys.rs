@@ -4,6 +4,8 @@ pub enum Key {
     Enter,
     Escape,
     Backspace,
+    Tab,
+    Control(char),
     Interrupt,
 }
 
@@ -43,6 +45,8 @@ pub enum Command {
     SearchNext(usize),
     SearchPrevious(usize),
     SearchDismiss,
+    JumpBack(usize),
+    JumpForward(usize),
     Quit,
 }
 
@@ -100,9 +104,14 @@ impl KeyParser {
             self.reset();
             return Some(Command::SearchDismiss);
         }
-        let Key::Char(character) = key else {
-            self.reset();
-            return None;
+        let character = match key {
+            Key::Char(character) => character,
+            Key::Control('o') => return Some(Command::JumpBack(self.take_count())),
+            Key::Tab | Key::Control('i') => return Some(Command::JumpForward(self.take_count())),
+            _ => {
+                self.reset();
+                return None;
+            }
         };
         if self.awaiting_second_g {
             let count = self.count;
@@ -177,7 +186,14 @@ impl KeyParser {
                 self.command_line = None;
                 None
             }
+            Key::Tab | Key::Control(_) => None,
         }
+    }
+
+    fn take_count(&mut self) -> usize {
+        let count = self.count.unwrap_or(1);
+        self.reset();
+        count
     }
 
     fn reset(&mut self) {
@@ -245,6 +261,29 @@ mod tests {
             })
             .filter_map(|key| parser.feed(key))
             .collect()
+    }
+
+    #[test]
+    fn control_o_jumps_back_and_tab_or_control_i_jumps_forward() {
+        let mut keys = KeyParser::default();
+        assert_eq!(keys.feed(Key::Control('o')), Some(Command::JumpBack(1)));
+        assert_eq!(keys.feed(Key::Tab), Some(Command::JumpForward(1)));
+        assert_eq!(keys.feed(Key::Control('i')), Some(Command::JumpForward(1)));
+        keys.feed(Key::Char('3'));
+        assert_eq!(keys.feed(Key::Control('o')), Some(Command::JumpBack(3)));
+    }
+
+    #[test]
+    fn jump_keys_do_nothing_inside_a_prompt() {
+        let mut keys = KeyParser::default();
+        keys.feed(Key::Char(':'));
+        assert_eq!(keys.feed(Key::Control('o')), None);
+        assert_eq!(keys.feed(Key::Tab), None);
+        assert_eq!(keys.command_line(), Some(""));
+        keys.feed(Key::Escape);
+        keys.feed(Key::Char('/'));
+        assert_eq!(keys.feed(Key::Control('o')), None);
+        assert_eq!(keys.search_line(), Some(""));
     }
 
     #[test]

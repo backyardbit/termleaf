@@ -156,14 +156,11 @@ impl Search {
         let Some(area) = hit.areas.first() else {
             return;
         };
-        viewer.show(
-            Position {
-                page: hit.page,
-                x: f64::from(area.x0),
-                y: f64::from(area.y0),
-            },
-            true,
-        );
+        viewer.jump_to(Position {
+            page: hit.page,
+            x: f64::from(area.x0),
+            y: f64::from(area.y0),
+        });
     }
 
     pub fn status(&self) -> Option<String> {
@@ -294,6 +291,17 @@ mod tests {
         assert_eq!(viewer.page(), 0);
         search.advance(usize::MAX, false, &mut viewer);
         assert!(search.highlights.current.unwrap() < 3);
+    }
+
+    #[test]
+    fn jumping_back_after_a_search_returns_to_where_it_started() {
+        let (mut search, ticket) = waiting();
+        search.jump_on_result = true;
+        let mut viewer = viewer();
+        assert!(search.receive(&ticket, 7, Ok(vec![hit(2)]), &mut viewer));
+        assert_eq!(viewer.page(), 2);
+        viewer.apply(Command::JumpBack(1));
+        assert_eq!(viewer.page(), 0);
     }
 
     #[test]
