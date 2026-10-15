@@ -386,7 +386,9 @@ impl Run<'_> {
         );
         self.server.text(&self.server.editor, &command)?;
         let text = poll("vim to write its state", || {
-            fs::read_to_string(&marker).ok()
+            fs::read_to_string(&marker)
+                .ok()
+                .filter(|text| text.ends_with('\n'))
         })?;
         parse_state(&text)
     }
