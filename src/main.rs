@@ -1,5 +1,6 @@
 mod app;
 mod browser;
+mod clipboard;
 mod editor;
 mod encoder;
 mod follow;
@@ -15,10 +16,12 @@ mod pinch;
 mod raster;
 mod renderer;
 mod search;
+mod selection;
 mod shelf;
 mod synctex;
 mod terminal;
 mod viewer;
+mod visual;
 mod watch;
 
 use std::path::PathBuf;

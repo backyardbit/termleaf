@@ -13,6 +13,7 @@ use ratatui::widgets::Widget;
 use ratatui::{DefaultTerminal, Frame};
 
 use crate::browser::{Browser, WebLinks};
+use crate::clipboard::{self, Clipboard, SystemClipboard};
 use crate::follow::{Follow, Request};
 use crate::graphics::CellWatch;
 use crate::inverse::{Editors, Inverse};
@@ -26,8 +27,9 @@ use crate::raster::frame::tile_keys;
 use crate::raster::painter::{Job, Painter, Painting};
 use crate::raster::tiles::Tiles;
 use crate::renderer::{Generation, RenderKey, Renderer, Response};
-use crate::search::Search;
+use crate::search::{Highlights, Search};
 use crate::viewer::Viewer;
+use crate::visual::{Visual, VisualCommand};
 
 const RELOAD_SETTLE: Duration = Duration::from_millis(100);
 const RELOAD_RETRY: Duration = Duration::from_millis(250);
@@ -85,6 +87,8 @@ pub struct App {
     cells: CellWatch,
     requery: Option<(Duration, Instant)>,
     search: Search,
+    visual: Visual,
+    clipboard: Box<dyn Clipboard>,
     document_generation: Generation,
     serial: Generation,
     keys: KeyParser,
@@ -144,6 +148,8 @@ impl App {
             cells: CellWatch::new(crossterm::terminal::window_size().ok()),
             requery: parts.requery_every.map(|every| (every, Instant::now())),
             search: Search::default(),
+            visual: Visual::default(),
+            clipboard: Box::new(SystemClipboard::detect()),
             document_generation: 0,
             serial: 0,
             keys: KeyParser::default(),
@@ -315,6 +321,11 @@ impl App {
             if self.outline.shown() != outline_was_shown {
                 self.outline_toggled();
             }
+            return Flow::Continue;
+        }
+        self.visual.acknowledge();
+        if let Command::Visual(command) = command {
+            self.select(command);
             return Flow::Continue;
         }
         let revision = self.search.revision();
@@ -542,13 +553,39 @@ impl App {
         self.serial
     }
 
+    fn select(&mut self, command: VisualCommand) {
+        let revision = self.visual.revision();
+        let copied = self.visual.command(
+            command,
+            &mut self.viewer,
+            &self.renderer,
+            self.document_generation,
+        );
+        self.after_selection_change(revision);
+        if let Some(text) = copied {
+            self.outgoing.push_str(&clipboard::osc52(&text));
+            self.clipboard.copy(&text);
+        }
+    }
+
+    fn after_selection_change(&mut self, revision: u64) {
+        self.keys.set_visual(self.visual.active());
+        if self.visual.revision() != revision {
+            self.refresh_highlights();
+        }
+    }
+
+    fn highlights(&self) -> Highlights {
+        Highlights {
+            selection: self.visual.areas(),
+            ..self.search.highlights.clone()
+        }
+    }
+
     fn refresh_highlights(&mut self) {
         self.generation = self.next_generation();
-        self.renderer.highlight(
-            self.document_generation,
-            self.generation,
-            self.search.highlights.clone(),
-        );
+        self.renderer
+            .highlight(self.document_generation, self.generation, self.highlights());
         self.tiles.forget(|_| true);
         self.in_flight.clear();
         self.submitted = None;
@@ -574,6 +611,8 @@ impl App {
                 self.reload_retries = 0;
                 self.viewer.reloaded(pages);
                 self.outline.reloaded(outline);
+                self.visual.reloaded();
+                self.keys.set_visual(false);
                 self.search
                     .restart(&self.renderer, self.document_generation);
                 self.inverse.reloaded();
@@ -597,6 +636,15 @@ impl App {
                 if self.reload_at.is_none() {
                     self.follow.reloaded(&mut self.viewer, &mut self.inverse);
                 }
+            }
+            Response::Read {
+                document,
+                page,
+                text,
+            } => {
+                let revision = self.visual.revision();
+                self.visual.receive(document, page, text, &mut self.viewer);
+                self.after_selection_change(revision);
             }
             Response::Searched { ticket, result } => {
                 if self
@@ -679,11 +727,16 @@ impl App {
         }
         let search = self.search.status();
         let notice = self.follow.beside(self.inverse.notice());
-        let notice = [notice, self.web.notice().map(str::to_owned), search]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" · ");
+        let notice = [
+            self.visual.status(),
+            notice,
+            self.web.notice().map(str::to_owned),
+            search,
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ");
         self.viewer.status_line(
             &self.file_name,
             self.keys.command_line(),
@@ -727,6 +780,7 @@ mod tests {
     use crate::keys::ScreenCell;
     use std::path::{Path, PathBuf};
     use std::sync::mpsc;
+    use std::sync::{Arc, Mutex};
 
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -886,6 +940,52 @@ mod tests {
                 .expect("search did not finish");
             app.handle(event);
         }
+    }
+
+    #[derive(Clone, Default)]
+    struct Copied(Arc<Mutex<Vec<String>>>);
+
+    impl Clipboard for Copied {
+        fn copy(&self, text: &str) {
+            self.0.lock().unwrap().push(text.to_owned());
+        }
+    }
+
+    fn press(app: &mut App, keys: &str) {
+        for character in keys.chars() {
+            app.handle(Event::Key(Key::Char(character)));
+        }
+    }
+
+    fn read_text(app: &mut App, inbox: &Receiver<Event>) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.status().contains("reading text…") {
+            let event = inbox
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .expect("the page text never arrived");
+            app.handle(event);
+        }
+    }
+
+    #[test]
+    fn v_highlights_a_selection_and_y_copies_it_to_the_terminal_and_system_clipboards() {
+        let (mut app, inbox) = headless_app(fixture("three-pages.pdf"), PANE);
+        let copied = Copied::default();
+        app.clipboard = Box::new(copied.clone());
+        let generation = app.generation;
+        press(&mut app, "v");
+        read_text(&mut app, &inbox);
+        assert!(app.status().contains("-- VISUAL --"), "{}", app.status());
+        assert_ne!(app.generation, generation);
+        assert_eq!(app.highlights().selection.len(), 1);
+        press(&mut app, "$y");
+        assert_eq!(*copied.0.lock().unwrap(), ["1 First"]);
+        assert!(app.outgoing.contains(&clipboard::osc52("1 First")));
+        assert!(app.status().contains("copied 7 characters"));
+        assert!(app.highlights().selection.is_empty());
+        press(&mut app, "j");
+        assert_eq!(app.viewer.page(), 1);
+        assert!(!app.status().contains("copied"));
     }
 
     #[test]

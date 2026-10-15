@@ -68,6 +68,7 @@ The file must exist when termleaf starts. If a later build leaves the PDF broken
 | `e` | open the source line under the pointer in your editor ([SyncTeX](#synctex)) |
 | `/`, then Enter | search PDF text |
 | `n`, `N` | next / previous match, wrapping at the ends (counts work) |
+| `v` / `V` | select text by character / by line, then `y` to copy ([Copying text](#copying-text)) |
 | Escape | cancel a search prompt, or dismiss search results |
 | `Ctrl-O` / `Ctrl-I` (or Tab) | jump back / forward through links followed, `gg`, `G`, `:<n>`, search matches and the table of contents (takes a count) |
 | `t` | show / hide the [table of contents](#table-of-contents) |
@@ -97,6 +98,25 @@ Press `/`, type a phrase and press Enter. Matches are yellow, with the current m
 Search is case-insensitive and uses the PDF's native text, including Unicode and phrases spanning lines. It does not perform OCR: scanned pages need an existing text layer. Search runs in the background a page at a time, behind pending rendering work. The status says `searching…` until it finishes. Results are limited to 10,000 matches, with an explicit limit notice; a text-extraction failure says `search failed`.
 
 Highlights work with Kitty, Sixel and iTerm2 graphics and follow zooming and scrolling. A successful PDF rebuild reruns the query without moving your view; incomplete rebuilds keep the last good PDF and its matches. Search does not turn editor follow off; use `F` when you want to browse independently of editor movement.
+
+### Copying text
+
+Press `v` to start selecting at the first line at the top of the pane, or `V` to select whole lines. Move the end of the selection with the vim motions below, then press `y` to copy it and leave the selection. Escape, or the same `v` or `V` again, cancels; pressing the other one switches between character and line selection. The selection is tinted light blue and the status bar shows `-- VISUAL --` or `-- VISUAL LINE --`, then how many characters were copied.
+
+| Key in a selection | Action |
+| --- | --- |
+| `h` / `l`, `←` / `→` | previous / next character, wrapping between lines |
+| `j` / `k`, `↓` / `↑` | next / previous line, keeping the same place across the page |
+| `w` / `b` / `e` | next word / previous word / end of word |
+| `0` or `^` / `$` | start / end of the line |
+| `{` / `}` | previous / next paragraph |
+| `gg` / `G` | start / end of the document |
+| `o` | move the other end of the selection |
+| `y` | copy and leave the selection |
+
+Motions take a count, like `3w`. `Ctrl-D`, `Ctrl-U`, `PgDn`, `PgUp`, zoom and fit keys work as usual, and the view follows the selection as it moves. Copied text joins the lines of a paragraph with spaces and starts each paragraph on a new line.
+
+termleaf copies through the terminal with OSC 52, which works over SSH and in most terminals; inside tmux it needs `set-clipboard on`. When running locally it also hands the text to `pbcopy` on macOS, or to `wl-copy` or `xclip` on Linux, whichever matches your session. Selection uses the PDF's native text, like search: the first `v` reads it in the background, nearest pages first, and the status shows `reading text…` until the first page arrives. A rebuild of the PDF ends the selection.
 
 ### Pinch to zoom
 
