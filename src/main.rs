@@ -1,4 +1,5 @@
 mod app;
+mod browser;
 mod editor;
 mod encoder;
 mod follow;
@@ -44,7 +45,7 @@ mouse:
   wheel               scroll (shift or a sideways swipe pans across)
   Ctrl + wheel        zoom at the pointer
   drag                pan
-  click               follow a link
+  click               follow a link, or open a web link in the browser
   double-click        switch between fit width and fit page
   pinch               zoom at the pointer (see below)
 

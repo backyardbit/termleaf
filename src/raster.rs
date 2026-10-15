@@ -165,6 +165,7 @@ fn show(
         ),
         path: path.to_path_buf(),
         editors: Box::new(crate::editor::Jumper::default()),
+        browser: Box::new(crate::browser::SystemBrowser),
         pages,
         cell: CellSize {
             width: u32::from(font.width.max(1)),

@@ -1,6 +1,7 @@
+use crate::browser::WebAddress;
 use crate::keys::{Command, ScreenCell};
 use crate::layout::{CellSize, DocumentPoint, Layout, Pane, Position, View, fit_page, fit_width};
-use crate::pdf::{PageInfo, PageSize, Scale, nearest_whole};
+use crate::pdf::{Link, LinkTarget, PageInfo, PageSize, Scale, nearest_whole};
 
 const ZOOM_STEP: f64 = 1.1;
 const MIN_PIXELS_PER_POINT: f64 = 0.1;
@@ -306,21 +307,31 @@ impl Viewer {
         }
     }
 
+    pub fn web_link_under(&self, at: ScreenCell) -> Option<&WebAddress> {
+        match &self.link_under(at)?.target {
+            LinkTarget::Web(address) => Some(address),
+            LinkTarget::Page { .. } => None,
+        }
+    }
+
+    fn link_under(&self, at: ScreenCell) -> Option<&Link> {
+        let position = self.view.page_under(at.column, at.row)?;
+        self.pages
+            .get(position.page)?
+            .links
+            .iter()
+            .find(|link| link.area.contains(narrow(position.x), narrow(position.y)))
+    }
+
     fn follow_link(&mut self, at: ScreenCell) {
-        let Some(position) = self.view.page_under(at.column, at.row) else {
-            return;
-        };
-        let Some(link) = self.pages.get(position.page).and_then(|page| {
-            page.links
-                .iter()
-                .find(|link| link.area.contains(narrow(position.x), narrow(position.y)))
-        }) else {
+        let Some(&LinkTarget::Page { page, top }) = self.link_under(at).map(|link| &link.target)
+        else {
             return;
         };
         let target = Position {
-            page: link.target.page.min(self.page_count().saturating_sub(1)),
+            page: page.min(self.page_count().saturating_sub(1)),
             x: 0.0,
-            y: f64::from(link.target.top.unwrap_or(0.0)),
+            y: f64::from(top.unwrap_or(0.0)),
         };
         let row = self.view.layout.point_of(target).row;
         self.view.top = nearest_whole(row.floor());
@@ -394,7 +405,7 @@ fn sizes(pages: &[PageInfo]) -> Vec<PageSize> {
 mod tests {
     use super::*;
     use crate::layout::Tile;
-    use crate::pdf::{Link, LinkTarget, PointRect};
+    use crate::pdf::PointRect;
 
     const CELL: CellSize = CellSize {
         width: 10,
@@ -695,10 +706,19 @@ mod tests {
                 x1: 200.0,
                 y1: 120.0,
             },
-            target: LinkTarget {
+            target: LinkTarget::Page {
                 page: 2,
                 top: Some(300.0),
             },
+        });
+        pages[0].links.push(Link {
+            area: PointRect {
+                x0: 100.0,
+                y0: 200.0,
+                x1: 200.0,
+                y1: 220.0,
+            },
+            target: LinkTarget::Web(WebAddress::try_from("https://example.com").unwrap()),
         });
         pages
     }
@@ -732,6 +752,38 @@ mod tests {
         let off_link = cell_over(&viewer, 400.0, 110.0);
         viewer.apply(Command::Click(off_link));
         assert_eq!(viewer.view().top, 0);
+    }
+
+    #[test]
+    fn a_web_link_is_found_under_the_pointer() {
+        let viewer = Viewer::new(linked_document(), CELL, PANE);
+        assert_eq!(
+            viewer.web_link_under(cell_over(&viewer, 150.0, 210.0)),
+            Some(&WebAddress::try_from("https://example.com").unwrap())
+        );
+        assert_eq!(
+            viewer.web_link_under(cell_over(&viewer, 150.0, 110.0)),
+            None
+        );
+        assert_eq!(
+            viewer.web_link_under(cell_over(&viewer, 400.0, 210.0)),
+            None
+        );
+    }
+
+    #[test]
+    fn clicking_a_web_link_leaves_the_view_and_jump_history_alone() {
+        let mut viewer = Viewer::new(linked_document(), CELL, PANE);
+        viewer.apply(Command::Scroll {
+            columns: 0,
+            rows: 1,
+        });
+        let top = viewer.view().top;
+        let on_web_link = cell_over(&viewer, 150.0, 210.0);
+        viewer.apply(Command::Click(on_web_link));
+        assert_eq!(viewer.view().top, top);
+        viewer.apply(Command::JumpBack(1));
+        assert_eq!(viewer.view().top, top);
     }
 
     #[test]

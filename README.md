@@ -81,7 +81,7 @@ Pages scroll continuously and open at fit width.
 | shift + wheel, sideways swipe | pan left / right |
 | `Ctrl` + wheel | zoom at the pointer |
 | drag | pan |
-| click | follow a link (`\ref`, citations, table of contents) |
+| click | follow a link (`\ref`, citations, table of contents), or open a web or mail link (`\url`, `\href`) in your browser |
 | double-click | switch between fit width and fit page |
 | `Alt` + click, `Ctrl` + click | open the source line under the click in your editor ([SyncTeX](#synctex)) |
 

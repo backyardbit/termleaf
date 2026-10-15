@@ -1,3 +1,4 @@
+use crate::browser::WebAddress;
 use anyhow::{Context, Result, bail, ensure};
 use image::RgbImage;
 use mupdf::{
@@ -78,13 +79,13 @@ impl PointRect {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct LinkTarget {
-    pub page: usize,
-    pub top: Option<f32>,
+#[derive(Debug, Clone, PartialEq)]
+pub enum LinkTarget {
+    Page { page: usize, top: Option<f32> },
+    Web(WebAddress),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Link {
     pub area: PointRect,
     pub target: LinkTarget,
@@ -348,8 +349,13 @@ fn page_info(page: &Page) -> Result<PageInfo> {
     let links = page
         .links()?
         .filter_map(|link| {
-            let destination = link.dest?;
-            let page = usize::try_from(destination.loc.page_number).ok()?;
+            let target = match link.dest {
+                Some(destination) => LinkTarget::Page {
+                    page: usize::try_from(destination.loc.page_number).ok()?,
+                    top: destination_top(destination.kind),
+                },
+                None => LinkTarget::Web(WebAddress::try_from(link.uri.as_str()).ok()?),
+            };
             Some(Link {
                 area: PointRect {
                     x0: link.bounds.x0 - bounds.x0,
@@ -357,10 +363,7 @@ fn page_info(page: &Page) -> Result<PageInfo> {
                     x1: link.bounds.x1 - bounds.x0,
                     y1: link.bounds.y1 - bounds.y0,
                 },
-                target: LinkTarget {
-                    page,
-                    top: destination_top(destination.kind),
-                },
+                target,
             })
         })
         .collect();
@@ -528,13 +531,20 @@ mod tests {
         assert_eq!(image.get_pixel(0, 0).0, [255, 255, 255]);
     }
 
+    fn page_of(link: &Link) -> Option<(usize, Option<f32>)> {
+        match link.target {
+            LinkTarget::Page { page, top } => Some((page, top)),
+            LinkTarget::Web(_) => None,
+        }
+    }
+
     #[test]
     fn finds_an_internal_link_and_its_target_page() {
         let pages = open("linked.pdf").pages();
         let link = pages[0]
             .links
             .iter()
-            .find(|link| link.target.page == 2)
+            .find(|link| page_of(link).is_some_and(|(page, _)| page == 2))
             .expect("a link to page three");
         assert!(link.area.x1 > link.area.x0 && link.area.y1 > link.area.y0);
         assert!(link.area.y1 < pages[0].size.height);
@@ -546,10 +556,30 @@ mod tests {
         let link = pages[0]
             .links
             .iter()
-            .find(|link| link.target.page == 2)
+            .find(|link| page_of(link).is_some_and(|(page, _)| page == 2))
             .unwrap();
-        let top = link.target.top.expect("the section's position");
+        let top = page_of(link)
+            .and_then(|(_, top)| top)
+            .expect("the section's position");
         assert!(top > 0.0 && top < pages[2].size.height / 2.0);
+    }
+
+    #[test]
+    fn finds_a_web_link_beside_an_internal_one() {
+        let pages = open("web-link.pdf").pages();
+        let web: Vec<&LinkTarget> = pages[0]
+            .links
+            .iter()
+            .map(|link| &link.target)
+            .filter(|target| matches!(target, LinkTarget::Web(_)))
+            .collect();
+        assert_eq!(
+            web,
+            [&LinkTarget::Web(
+                WebAddress::try_from("https://example.com/termleaf").unwrap()
+            )]
+        );
+        assert!(pages[0].links.iter().any(|link| page_of(link).is_some()));
     }
 
     #[test]
