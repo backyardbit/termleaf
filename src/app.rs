@@ -32,6 +32,7 @@ use crate::layout::{
     CellSize, Density, Pane, RenderedTile, Stretched, StretchedGrid, TILE_ROWS, View,
 };
 use crate::mouse::{Gestures, MouseInput, Wheel};
+use crate::outline::OutlinePanel;
 use crate::pinch::{self, PinchGate, PinchInput};
 use crate::raster;
 use crate::renderer::{Generation, RenderKey, Renderer, Response};
@@ -100,8 +101,8 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
         )
     };
     renderer.load(0);
-    let pages = match inbox.recv().context("the render thread stopped")? {
-        Event::Renderer(Response::Loaded { pages, .. }) => pages,
+    let (pages, outline) = match inbox.recv().context("the render thread stopped")? {
+        Event::Renderer(Response::Loaded { pages, outline, .. }) => (pages, outline),
         _ => bail!("{} is not a readable PDF", path.display()),
     };
 
@@ -167,6 +168,7 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
             }
         }),
         viewer: Viewer::new(pages, cell, pane),
+        outline: OutlinePanel::new(outline),
         cells: CellWatch::new(
             crossterm::terminal::window_size()
                 .ok()
@@ -393,6 +395,7 @@ impl Default for Travel {
 struct App {
     file_name: String,
     viewer: Viewer,
+    outline: OutlinePanel,
     cells: CellWatch,
     cell_due: Option<Instant>,
     search: Search,
@@ -569,6 +572,12 @@ impl App {
     }
 
     fn apply_at(&mut self, command: Command, now: Instant) -> Flow {
+        if self
+            .outline
+            .command(command, &mut self.keys, &mut self.viewer)
+        {
+            return Flow::Continue;
+        }
         let revision = self.search.revision();
         if self.search.command(
             command,
@@ -691,11 +700,16 @@ impl App {
 
     fn receive(&mut self, response: Response) {
         match response {
-            Response::Loaded { generation, pages } if generation == self.requested_generation => {
+            Response::Loaded {
+                generation,
+                pages,
+                outline,
+            } if generation == self.requested_generation => {
                 self.generation = generation;
                 self.document_generation = generation;
                 self.reload_retries = 0;
                 self.viewer.reloaded(pages);
+                self.outline.reloaded(outline);
                 self.search
                     .restart(&self.renderer, self.document_generation);
                 self.inverse.reloaded();
@@ -1114,6 +1128,21 @@ impl App {
             ..area
         };
 
+        if self.outline.shown() {
+            frame.render_widget(&self.outline, pages);
+        } else {
+            self.draw_pages(frame, pages);
+        }
+        frame.render_widget(
+            Line::styled(
+                self.status(),
+                Style::default().add_modifier(Modifier::REVERSED),
+            ),
+            status_area,
+        );
+    }
+
+    fn draw_pages(&self, frame: &mut Frame, pages: Rect) {
         for (id, placed) in &self.stretched {
             let area = Rect {
                 x: pages.x + placed.area.x,
@@ -1154,14 +1183,6 @@ impl App {
                 );
             }
         }
-
-        frame.render_widget(
-            Line::styled(
-                self.status(),
-                Style::default().add_modifier(Modifier::REVERSED),
-            ),
-            status_area,
-        );
     }
 
     fn status(&self) -> String {
@@ -1170,6 +1191,9 @@ impl App {
                 "{} · waiting for the terminal to report its cell pixel size",
                 self.file_name
             );
+        }
+        if self.outline.shown() {
+            return self.outline.status(&self.file_name);
         }
         if let Some(query) = self.keys.search_line() {
             return format!("/{query}");
@@ -1272,12 +1296,13 @@ mod tests {
         };
         let encoder = encoders.start(queued, CELL);
         renderer.load(0);
-        let Ok(Event::Renderer(Response::Loaded { pages, .. })) = inbox.recv() else {
+        let Ok(Event::Renderer(Response::Loaded { pages, outline, .. })) = inbox.recv() else {
             panic!("the fixture did not load");
         };
         let app = App {
             file_name: "doc.pdf".to_owned(),
             viewer: Viewer::new(pages, CELL, pane),
+            outline: OutlinePanel::new(outline),
             cells: CellWatch::new(None),
             cell_due: None,
             search: Search::default(),
@@ -1357,6 +1382,59 @@ mod tests {
                 .expect("search did not finish");
             app.handle(event);
         }
+    }
+
+    fn drawn_rows(app: &App, columns: u16, rows: u16) -> Vec<String> {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(columns, rows)).unwrap();
+        let drawn = terminal.draw(|frame| app.draw(frame)).unwrap();
+        (0..rows)
+            .map(|y| {
+                (0..columns)
+                    .map(|x| drawn.buffer[(x, y)].symbol().to_owned())
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn t_draws_the_table_of_contents_over_the_pages_and_t_again_brings_them_back() {
+        let pane = Pane {
+            columns: 40,
+            rows: 12,
+        };
+        let (mut app, inbox) = headless_app_for(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/outline.pdf"),
+            pane,
+        );
+        settle(&mut app, &inbox);
+        app.handle(Event::Key(Key::Char('t')));
+        let rows = drawn_rows(&app, 40, 13);
+        assert!(rows[0].starts_with("Introduction"), "{rows:?}");
+        assert!(rows[1].starts_with("  Background"), "{rows:?}");
+        assert!(rows[12].starts_with("contents 2/6 · doc.pdf"), "{rows:?}");
+        app.handle(Event::Key(Key::Char('t')));
+        let rows = drawn_rows(&app, 40, 13);
+        assert!(!rows[0].contains("Introduction"), "{rows:?}");
+        assert!(rows[12].starts_with("page 1/3"), "{rows:?}");
+    }
+
+    #[test]
+    fn enter_in_the_table_of_contents_shows_the_chosen_heading() {
+        let (mut app, inbox) = headless_app_for(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/outline.pdf"),
+            Pane {
+                columns: 40,
+                rows: 12,
+            },
+        );
+        settle(&mut app, &inbox);
+        for key in [Key::Char('t'), Key::Char('G'), Key::Enter] {
+            app.handle(Event::Key(key));
+        }
+        assert_eq!(app.viewer.page(), 2);
+        app.handle(Event::Key(Key::Control('o')));
+        assert_eq!(app.viewer.page(), 0);
     }
 
     #[test]
@@ -1447,6 +1525,7 @@ mod tests {
         app.handle(Event::Renderer(Response::Loaded {
             generation: 7,
             pages: crate::pdf::Pdf::from_bytes(&bytes).unwrap().pages(),
+            outline: Vec::new(),
         }));
         app.handle(previous);
         assert!(app.search.highlights.hits.is_empty());
@@ -2107,6 +2186,7 @@ mod tests {
         app.handle(Event::Renderer(Response::Loaded {
             generation: 1,
             pages,
+            outline: Vec::new(),
         }));
         assert!(!app.shelf.holds(old[0]));
         app.wanted.set(old.clone());

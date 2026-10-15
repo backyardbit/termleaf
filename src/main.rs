@@ -8,6 +8,7 @@ mod keys;
 mod kitty;
 mod layout;
 mod mouse;
+mod outline;
 mod pdf;
 mod pinch;
 mod raster;
@@ -37,6 +38,7 @@ keys:
   s / a        fit width / fit page
   /            search PDF text (Enter submits, Escape cancels/dismisses)
   n / N        next / previous match, wrapping at the ends
+  t            table of contents (j/k move, Enter jumps, t/q/Escape close)
   F            follow the editor on / off (also :follow and :nofollow)
   q, Ctrl-C    quit
 

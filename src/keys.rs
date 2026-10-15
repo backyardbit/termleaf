@@ -82,7 +82,19 @@ pub enum Command {
     SearchDismiss,
     JumpBack(usize),
     JumpForward(usize),
+    Outline(OutlineCommand),
     Quit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutlineCommand {
+    Show,
+    Hide,
+    Down(usize),
+    Up(usize),
+    First,
+    Last,
+    Follow,
 }
 
 #[derive(Debug, Default)]
@@ -91,6 +103,7 @@ pub struct KeyParser {
     awaiting_second_g: bool,
     command_line: Option<String>,
     search_line: Option<String>,
+    outline: bool,
 }
 
 impl KeyParser {
@@ -121,6 +134,55 @@ impl KeyParser {
         None
     }
 
+    pub fn leave_outline(&mut self) {
+        self.outline = false;
+        self.reset();
+    }
+
+    fn feed_outline(&mut self, key: Key) -> Option<Command> {
+        let command = match key {
+            Key::Char(character) => self.feed_outline_character(character)?,
+            Key::Down => OutlineCommand::Down(self.take_count()),
+            Key::Up => OutlineCommand::Up(self.take_count()),
+            Key::Enter => OutlineCommand::Follow,
+            Key::Escape => OutlineCommand::Hide,
+            _ => {
+                self.reset();
+                return None;
+            }
+        };
+        if matches!(command, OutlineCommand::Hide | OutlineCommand::Follow) {
+            self.leave_outline();
+        }
+        Some(Command::Outline(command))
+    }
+
+    fn feed_outline_character(&mut self, character: char) -> Option<OutlineCommand> {
+        if self.awaiting_second_g {
+            self.reset();
+            return (character == 'g').then_some(OutlineCommand::First);
+        }
+        match character {
+            '1'..='9' => self.push_digit(character),
+            '0' if self.count.is_some() => self.push_digit(character),
+            'g' => {
+                self.awaiting_second_g = true;
+                None
+            }
+            'j' => Some(OutlineCommand::Down(self.take_count())),
+            'k' => Some(OutlineCommand::Up(self.take_count())),
+            'G' => {
+                self.reset();
+                Some(OutlineCommand::Last)
+            }
+            't' | 'q' => Some(OutlineCommand::Hide),
+            _ => {
+                self.reset();
+                None
+            }
+        }
+    }
+
     pub fn command_line(&self) -> Option<&str> {
         self.command_line.as_deref()
     }
@@ -134,6 +196,9 @@ impl KeyParser {
         }
         if self.command_line.is_some() {
             return self.feed_command_line(key);
+        }
+        if self.outline {
+            return self.feed_outline(key);
         }
         if key == Key::Escape {
             self.reset();
@@ -167,6 +232,11 @@ impl KeyParser {
                 self.command_line = Some(String::new());
                 None
             }
+            't' => {
+                self.reset();
+                self.outline = true;
+                Some(Command::Outline(OutlineCommand::Show))
+            }
             _ => {
                 let count = self.count;
                 self.reset();
@@ -192,7 +262,7 @@ impl KeyParser {
         }
     }
 
-    fn push_digit(&mut self, digit: char) -> Option<Command> {
+    fn push_digit<T>(&mut self, digit: char) -> Option<T> {
         let value = digit.to_digit(10).and_then(|d| usize::try_from(d).ok());
         self.count = value.map(|d| self.count.unwrap_or(0).saturating_mul(10).saturating_add(d));
         None
@@ -363,6 +433,107 @@ mod tests {
                 Command::SetFollow(true)
             ]
         );
+    }
+
+    fn outline(command: OutlineCommand) -> Command {
+        Command::Outline(command)
+    }
+
+    #[test]
+    fn t_shows_the_outline_and_j_k_move_through_it_instead_of_the_pages() {
+        assert_eq!(
+            run("tjk3jG"),
+            [
+                outline(OutlineCommand::Show),
+                outline(OutlineCommand::Down(1)),
+                outline(OutlineCommand::Up(1)),
+                outline(OutlineCommand::Down(3)),
+                outline(OutlineCommand::Last),
+            ]
+        );
+    }
+
+    #[test]
+    fn gg_goes_to_the_first_heading_in_the_outline() {
+        assert_eq!(
+            run("tGgg"),
+            [
+                outline(OutlineCommand::Show),
+                outline(OutlineCommand::Last),
+                outline(OutlineCommand::First),
+            ]
+        );
+    }
+
+    #[test]
+    fn arrows_move_through_the_outline() {
+        assert_eq!(
+            feed_all(&[Key::Char('t'), Key::Down, Key::Char('2'), Key::Up]),
+            [
+                outline(OutlineCommand::Show),
+                outline(OutlineCommand::Down(1)),
+                outline(OutlineCommand::Up(2)),
+            ]
+        );
+    }
+
+    #[test]
+    fn t_q_and_escape_hide_the_outline_and_give_the_keys_back_to_the_pages() {
+        assert_eq!(
+            run("ttj"),
+            [
+                outline(OutlineCommand::Show),
+                outline(OutlineCommand::Hide),
+                Command::Next(1),
+            ]
+        );
+        assert_eq!(
+            run("tqq"),
+            [
+                outline(OutlineCommand::Show),
+                outline(OutlineCommand::Hide),
+                Command::Quit,
+            ]
+        );
+        assert_eq!(
+            run("t\u{1b}j"),
+            [
+                outline(OutlineCommand::Show),
+                outline(OutlineCommand::Hide),
+                Command::Next(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn enter_follows_the_selected_heading_and_leaves_the_outline() {
+        assert_eq!(
+            run("tj\nj"),
+            [
+                outline(OutlineCommand::Show),
+                outline(OutlineCommand::Down(1)),
+                outline(OutlineCommand::Follow),
+                Command::Next(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_heading_followed_by_the_mouse_gives_the_keys_back_to_the_pages() {
+        let mut keys = KeyParser::default();
+        keys.feed(Key::Char('t'));
+        keys.leave_outline();
+        assert_eq!(keys.feed(Key::Char('j')), Some(Command::Next(1)));
+    }
+
+    #[test]
+    fn search_and_the_command_line_keep_t_as_text() {
+        assert_eq!(run(":t\u{1b}"), []);
+        let mut keys = KeyParser::default();
+        for character in "/at".chars() {
+            keys.feed(Key::Char(character));
+        }
+        assert_eq!(keys.search_line(), Some("at"));
     }
 
     #[test]
