@@ -5,6 +5,7 @@ use crate::pdf::{PageInfo, PageSize, Scale, nearest_whole};
 const ZOOM_STEP: f64 = 1.1;
 const MIN_PIXELS_PER_POINT: f64 = 0.1;
 const MAX_PIXELS_PER_POINT: f64 = 12.0;
+const JUMP_HISTORY: usize = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileState {
@@ -26,6 +27,8 @@ pub struct Viewer {
     view: View,
     origin: DocumentPoint,
     file_state: FileState,
+    jumps_back: Vec<Position>,
+    jumps_forward: Vec<Position>,
 }
 
 impl Viewer {
@@ -46,6 +49,8 @@ impl Viewer {
                 row: 0.0,
             },
             file_state: FileState::Fresh,
+            jumps_back: Vec::new(),
+            jumps_forward: Vec::new(),
         }
     }
 
@@ -67,9 +72,11 @@ impl Viewer {
         match command {
             Command::Next(count) => self.go_to_page(page.saturating_add(count).min(last)),
             Command::Previous(count) => self.go_to_page(page.saturating_sub(count)),
-            Command::First => self.go_to_page(0),
-            Command::Last => self.go_to_page(last),
-            Command::GoTo(number) => self.go_to_page(number.saturating_sub(1).min(last)),
+            Command::First => self.jump(|viewer| viewer.go_to_page(0)),
+            Command::Last => self.jump(|viewer| viewer.go_to_page(last)),
+            Command::GoTo(number) => {
+                self.jump(|viewer| viewer.go_to_page(number.saturating_sub(1).min(last)));
+            }
             Command::Scroll { columns, rows } => self.scroll(columns, rows),
             Command::ScrollHalfPanes(halves) => {
                 self.scroll(0, self.half_pane_rows().saturating_mul(halves))
@@ -90,7 +97,9 @@ impl Viewer {
                 };
                 self.fit(zoom, Some(at));
             }
-            Command::Click(at) => self.follow_link(at),
+            Command::Click(at) => self.jump(|viewer| viewer.follow_link(at)),
+            Command::JumpBack(count) => self.walk_history(count, Direction::Back),
+            Command::JumpForward(count) => self.walk_history(count, Direction::Forward),
             Command::SearchSubmit
             | Command::SearchDismiss
             | Command::SearchNext(_)
@@ -112,14 +121,7 @@ impl Viewer {
     }
 
     pub fn reloaded(&mut self, pages: Vec<PageInfo>) {
-        let mut anchor = self.view.layout.position_at(self.view.point_at(0.0, 0.0));
-        if anchor.page >= pages.len() {
-            anchor = Position {
-                page: pages.len().saturating_sub(1),
-                x: anchor.x,
-                y: 0.0,
-            };
-        }
+        let anchor = self.top_left();
         self.pages = pages;
         let cell = self.view.layout.cell();
         let pane = self.view.pane;
@@ -128,9 +130,7 @@ impl Viewer {
             layout: Layout::new(sizes(&self.pages), scale, cell).for_pane(pane),
             ..self.view.clone()
         };
-        let point = self.view.layout.point_of(anchor);
-        self.view = self.view.clone().scrolled_to(point, 0.0, 0.0);
-        self.origin = self.view.origin();
+        self.scroll_to(anchor);
         self.file_state = FileState::Fresh;
     }
 
@@ -177,6 +177,10 @@ impl Viewer {
         parts.join(" · ")
     }
 
+    pub fn jump_to(&mut self, target: Position) {
+        self.jump(|viewer| viewer.show(target, true));
+    }
+
     pub fn show(&mut self, target: Position, new_page: bool) {
         if self.zoom == Zoom::FitPage {
             if target.page != self.page() {
@@ -201,6 +205,55 @@ impl Viewer {
             self.view.left = nearest_whole((point.column - columns / 3.0).floor());
         }
         self.view = self.view.clone().clamped();
+        self.origin = self.view.origin();
+    }
+
+    fn jump(&mut self, move_view: impl FnOnce(&mut Self)) {
+        let from = self.top_left();
+        let before = (self.view.top, self.view.left);
+        move_view(self);
+        if (self.view.top, self.view.left) == before {
+            return;
+        }
+        if self.jumps_back.len() == JUMP_HISTORY {
+            self.jumps_back.remove(0);
+        }
+        self.jumps_back.push(from);
+        self.jumps_forward.clear();
+    }
+
+    fn walk_history(&mut self, count: usize, direction: Direction) {
+        for _ in 0..count {
+            let here = self.top_left();
+            let (from, to) = match direction {
+                Direction::Back => (&mut self.jumps_back, &mut self.jumps_forward),
+                Direction::Forward => (&mut self.jumps_forward, &mut self.jumps_back),
+            };
+            let Some(target) = from.pop() else {
+                return;
+            };
+            to.push(here);
+            self.scroll_to(target);
+        }
+    }
+
+    fn top_left(&self) -> Position {
+        self.view.layout.position_at(self.view.point_at(0.0, 0.0))
+    }
+
+    fn scroll_to(&mut self, position: Position) {
+        let last = self.page_count().saturating_sub(1);
+        let position = if position.page > last {
+            Position {
+                page: last,
+                x: position.x,
+                y: 0.0,
+            }
+        } else {
+            position
+        };
+        let point = self.view.layout.point_of(position);
+        self.view = self.view.clone().scrolled_to(point, 0.0, 0.0);
         self.origin = self.view.origin();
     }
 
@@ -317,6 +370,12 @@ impl Viewer {
         self.origin = view.origin_for(point, screen_column, screen_row);
         self.view = view.at_origin(self.origin);
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Direction {
+    Back,
+    Forward,
 }
 
 #[expect(
@@ -673,6 +732,94 @@ mod tests {
         let off_link = cell_over(&viewer, 400.0, 110.0);
         viewer.apply(Command::Click(off_link));
         assert_eq!(viewer.view().top, 0);
+    }
+
+    #[test]
+    fn jumping_back_after_a_link_returns_to_where_the_click_happened() {
+        let mut viewer = Viewer::new(linked_document(), CELL, PANE);
+        let before = viewer.view().top;
+        let on_link = cell_over(&viewer, 150.0, 110.0);
+        viewer.apply(Command::Click(on_link));
+        let target = viewer.view().top;
+        assert_ne!(target, before);
+        viewer.apply(Command::JumpBack(1));
+        assert_eq!(viewer.view().top, before);
+        viewer.apply(Command::JumpForward(1));
+        assert_eq!(viewer.view().top, target);
+    }
+
+    #[test]
+    fn first_last_and_go_to_are_jumps_that_can_be_undone_in_order() {
+        let mut viewer = viewer(9);
+        viewer.apply(Command::GoTo(4));
+        viewer.apply(Command::Last);
+        viewer.apply(Command::First);
+        viewer.apply(Command::JumpBack(1));
+        assert_eq!(viewer.page(), 8);
+        viewer.apply(Command::JumpBack(2));
+        assert_eq!(viewer.page(), 0);
+        viewer.apply(Command::JumpForward(1));
+        assert_eq!(viewer.page(), 3);
+    }
+
+    #[test]
+    fn paging_and_scrolling_are_not_jumps() {
+        let mut viewer = viewer(5);
+        viewer.apply(Command::GoTo(3));
+        viewer.apply(Command::Next(1));
+        viewer.apply(Command::Scroll {
+            columns: 0,
+            rows: 5,
+        });
+        viewer.apply(Command::JumpBack(1));
+        assert_eq!(viewer.view().top, 0);
+    }
+
+    #[test]
+    fn a_jump_that_does_not_move_the_view_is_not_remembered() {
+        let mut viewer = viewer(5);
+        viewer.apply(Command::GoTo(3));
+        viewer.apply(Command::GoTo(3));
+        viewer.apply(Command::JumpBack(1));
+        assert_eq!(viewer.page(), 0);
+    }
+
+    #[test]
+    fn a_new_jump_after_going_back_drops_the_forward_history() {
+        let mut viewer = viewer(9);
+        viewer.apply(Command::GoTo(4));
+        viewer.apply(Command::GoTo(7));
+        viewer.apply(Command::JumpBack(1));
+        viewer.apply(Command::GoTo(2));
+        viewer.apply(Command::JumpForward(1));
+        assert_eq!(viewer.page(), 1);
+        viewer.apply(Command::JumpBack(1));
+        assert_eq!(viewer.page(), 3);
+    }
+
+    #[test]
+    fn jumping_past_either_end_of_the_history_stays_put() {
+        let mut viewer = viewer(5);
+        viewer.apply(Command::JumpBack(1));
+        viewer.apply(Command::JumpForward(1));
+        assert_eq!(viewer.page(), 0);
+        viewer.apply(Command::GoTo(3));
+        viewer.apply(Command::JumpBack(10));
+        assert_eq!(viewer.page(), 0);
+        viewer.apply(Command::JumpForward(10));
+        assert_eq!(viewer.page(), 2);
+    }
+
+    #[test]
+    fn jump_history_survives_a_reload_that_shortens_the_document() {
+        let mut viewer = viewer(9);
+        viewer.apply(Command::GoTo(8));
+        viewer.apply(Command::GoTo(2));
+        viewer.apply(Command::JumpBack(1));
+        viewer.apply(Command::JumpBack(1));
+        viewer.reloaded(document(4));
+        viewer.apply(Command::JumpForward(1));
+        assert_eq!(viewer.page(), 3);
     }
 
     #[test]

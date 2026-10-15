@@ -16,6 +16,7 @@ pub enum Key {
     Enter,
     Escape,
     Backspace,
+    Tab,
     Interrupt,
 }
 
@@ -37,6 +38,7 @@ pub fn decode(key: KeyEvent) -> Option<Key> {
         KeyCode::Enter => Some(Key::Enter),
         KeyCode::Esc => Some(Key::Escape),
         KeyCode::Backspace => Some(Key::Backspace),
+        KeyCode::Tab => Some(Key::Tab),
         _ => None,
     }
 }
@@ -78,6 +80,8 @@ pub enum Command {
     SearchNext(usize),
     SearchPrevious(usize),
     SearchDismiss,
+    JumpBack(usize),
+    JumpForward(usize),
     Quit,
 }
 
@@ -135,10 +139,11 @@ impl KeyParser {
             self.reset();
             return Some(Command::SearchDismiss);
         }
-        let Key::Char(character) = key else {
-            let repeat = self.count.unwrap_or(1);
-            self.reset();
-            return navigate(key, repeat);
+        let character = match key {
+            Key::Char(character) => character,
+            Key::Control('o') => return Some(Command::JumpBack(self.take_count())),
+            Key::Tab | Key::Control('i') => return Some(Command::JumpForward(self.take_count())),
+            other => return navigate(other, self.take_count()),
         };
         if self.awaiting_second_g {
             let count = self.count;
@@ -215,7 +220,8 @@ impl KeyParser {
                 self.command_line = None;
                 None
             }
-            Key::Control(_)
+            Key::Tab
+            | Key::Control(_)
             | Key::Up
             | Key::Down
             | Key::Left
@@ -223,6 +229,12 @@ impl KeyParser {
             | Key::PageUp
             | Key::PageDown => None,
         }
+    }
+
+    fn take_count(&mut self) -> usize {
+        let count = self.count.unwrap_or(1);
+        self.reset();
+        count
     }
 
     fn reset(&mut self) {
@@ -316,6 +328,29 @@ mod tests {
             })
             .filter_map(|key| parser.feed(key))
             .collect()
+    }
+
+    #[test]
+    fn control_o_jumps_back_and_tab_or_control_i_jumps_forward() {
+        let mut keys = KeyParser::default();
+        assert_eq!(keys.feed(Key::Control('o')), Some(Command::JumpBack(1)));
+        assert_eq!(keys.feed(Key::Tab), Some(Command::JumpForward(1)));
+        assert_eq!(keys.feed(Key::Control('i')), Some(Command::JumpForward(1)));
+        keys.feed(Key::Char('3'));
+        assert_eq!(keys.feed(Key::Control('o')), Some(Command::JumpBack(3)));
+    }
+
+    #[test]
+    fn jump_keys_do_nothing_inside_a_prompt() {
+        let mut keys = KeyParser::default();
+        keys.feed(Key::Char(':'));
+        assert_eq!(keys.feed(Key::Control('o')), None);
+        assert_eq!(keys.feed(Key::Tab), None);
+        assert_eq!(keys.command_line(), Some(""));
+        keys.feed(Key::Escape);
+        keys.feed(Key::Char('/'));
+        assert_eq!(keys.feed(Key::Control('o')), None);
+        assert_eq!(keys.search_line(), Some(""));
     }
 
     #[test]
@@ -559,6 +594,22 @@ mod tests {
         assert_eq!(
             decode(press(KeyCode::Char('u'), KeyModifiers::CONTROL)),
             Some(Key::Control('u'))
+        );
+    }
+
+    #[test]
+    fn control_o_tab_and_control_i_decode_as_jump_keys() {
+        assert_eq!(
+            decode(press(KeyCode::Char('o'), KeyModifiers::CONTROL)),
+            Some(Key::Control('o'))
+        );
+        assert_eq!(
+            decode(press(KeyCode::Char('i'), KeyModifiers::CONTROL)),
+            Some(Key::Control('i'))
+        );
+        assert_eq!(
+            decode(press(KeyCode::Tab, KeyModifiers::NONE)),
+            Some(Key::Tab)
         );
     }
 
