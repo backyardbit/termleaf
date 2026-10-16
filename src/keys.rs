@@ -1,5 +1,8 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
+use crate::selection::{Granularity, Motion};
+use crate::visual::VisualCommand;
+
 const ARROW_ROWS: i32 = 3;
 const PAN_COLUMNS: i32 = 6;
 
@@ -83,6 +86,7 @@ pub enum Command {
     JumpBack(usize),
     JumpForward(usize),
     Outline(OutlineCommand),
+    Visual(VisualCommand),
     Quit,
 }
 
@@ -104,6 +108,7 @@ pub struct KeyParser {
     command_line: Option<String>,
     search_line: Option<String>,
     outline: bool,
+    visual: bool,
 }
 
 impl KeyParser {
@@ -187,6 +192,13 @@ impl KeyParser {
         self.command_line.as_deref()
     }
 
+    pub fn set_visual(&mut self, on: bool) {
+        if self.visual != on {
+            self.reset();
+        }
+        self.visual = on;
+    }
+
     pub fn feed(&mut self, key: Key) -> Option<Command> {
         if key == Key::Interrupt {
             return Some(Command::Quit);
@@ -199,6 +211,9 @@ impl KeyParser {
         }
         if self.outline {
             return self.feed_outline(key);
+        }
+        if self.visual {
+            return self.feed_visual(key);
         }
         if key == Key::Escape {
             self.reset();
@@ -255,10 +270,41 @@ impl KeyParser {
                     'a' => Some(Command::FitPage),
                     'e' => Some(Command::Inverse(None)),
                     'F' => Some(Command::ToggleFollow),
+                    'v' => Some(visual(VisualCommand::Start(Granularity::Character))),
+                    'V' => Some(visual(VisualCommand::Start(Granularity::Line))),
                     'q' => Some(Command::Quit),
                     _ => None,
                 }
             }
+        }
+    }
+
+    fn feed_visual(&mut self, key: Key) -> Option<Command> {
+        let character = match key {
+            Key::Escape => {
+                self.reset();
+                return Some(visual(VisualCommand::Cancel));
+            }
+            Key::Char(character) => character,
+            Key::Left => 'h',
+            Key::Right => 'l',
+            Key::Up => 'k',
+            Key::Down => 'j',
+            other => return navigate(other, self.take_count()),
+        };
+        if self.awaiting_second_g {
+            self.reset();
+            return (character == 'g')
+                .then(|| visual(VisualCommand::Move(Motion::DocumentStart, 1)));
+        }
+        match character {
+            '1'..='9' => self.push_digit(character),
+            '0' if self.count.is_some() => self.push_digit(character),
+            'g' => {
+                self.awaiting_second_g = true;
+                None
+            }
+            _ => visual_key(character, self.take_count()),
         }
     }
 
@@ -337,6 +383,41 @@ fn navigate(key: Key, repeat: usize) -> Option<Command> {
         Key::PageUp => Some(Command::ScrollHalfPanes(times(repeat, -2))),
         _ => None,
     }
+}
+
+fn visual(command: VisualCommand) -> Command {
+    Command::Visual(command)
+}
+
+fn visual_key(character: char, repeat: usize) -> Option<Command> {
+    let motion = match character {
+        'h' => Motion::Left,
+        'l' => Motion::Right,
+        'j' => Motion::Down,
+        'k' => Motion::Up,
+        'w' => Motion::WordForward,
+        'b' => Motion::WordBackward,
+        'e' => Motion::WordEnd,
+        '0' | '^' => Motion::LineStart,
+        '$' => Motion::LineEnd,
+        '}' => Motion::ParagraphForward,
+        '{' => Motion::ParagraphBackward,
+        'G' => Motion::DocumentEnd,
+        other => {
+            return match other {
+                'o' => Some(visual(VisualCommand::SwapEnds)),
+                'y' => Some(visual(VisualCommand::Copy)),
+                'v' => Some(visual(VisualCommand::Start(Granularity::Character))),
+                'V' => Some(visual(VisualCommand::Start(Granularity::Line))),
+                '+' | '=' => Some(zoom(repeat, 1)),
+                '-' => Some(zoom(repeat, -1)),
+                's' => Some(Command::FitWidth),
+                'a' => Some(Command::FitPage),
+                _ => None,
+            };
+        }
+    };
+    Some(visual(VisualCommand::Move(motion, repeat)))
 }
 
 fn zoom(repeat: usize, direction: i32) -> Command {
@@ -534,6 +615,113 @@ mod tests {
             keys.feed(Key::Char(character));
         }
         assert_eq!(keys.search_line(), Some("at"));
+    }
+
+    fn visual_run(input: &str) -> Vec<Command> {
+        let mut parser = KeyParser::default();
+        parser.set_visual(true);
+        input
+            .chars()
+            .map(|c| match c {
+                '\u{1b}' => Key::Escape,
+                other => Key::Char(other),
+            })
+            .filter_map(|key| parser.feed(key))
+            .collect()
+    }
+
+    fn step(motion: Motion, count: usize) -> Command {
+        Command::Visual(VisualCommand::Move(motion, count))
+    }
+
+    #[test]
+    fn v_and_capital_v_start_character_and_line_selections() {
+        assert_eq!(
+            run("vV"),
+            [
+                Command::Visual(VisualCommand::Start(Granularity::Character)),
+                Command::Visual(VisualCommand::Start(Granularity::Line)),
+            ]
+        );
+    }
+
+    #[test]
+    fn in_visual_mode_vim_motions_move_the_selection_and_take_counts() {
+        assert_eq!(
+            visual_run("hjkl3wbe0^${}gg2G"),
+            [
+                step(Motion::Left, 1),
+                step(Motion::Down, 1),
+                step(Motion::Up, 1),
+                step(Motion::Right, 1),
+                step(Motion::WordForward, 3),
+                step(Motion::WordBackward, 1),
+                step(Motion::WordEnd, 1),
+                step(Motion::LineStart, 1),
+                step(Motion::LineStart, 1),
+                step(Motion::LineEnd, 1),
+                step(Motion::ParagraphBackward, 1),
+                step(Motion::ParagraphForward, 1),
+                step(Motion::DocumentStart, 1),
+                step(Motion::DocumentEnd, 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn in_visual_mode_arrows_move_the_selection_and_pane_keys_still_scroll() {
+        let mut parser = KeyParser::default();
+        parser.set_visual(true);
+        let commands: Vec<_> = [Key::Down, Key::Left, Key::Control('d'), Key::PageUp]
+            .into_iter()
+            .filter_map(|key| parser.feed(key))
+            .collect();
+        assert_eq!(
+            commands,
+            [
+                step(Motion::Down, 1),
+                step(Motion::Left, 1),
+                Command::ScrollHalfPanes(1),
+                Command::ScrollHalfPanes(-2),
+            ]
+        );
+    }
+
+    #[test]
+    fn in_visual_mode_y_copies_o_swaps_and_escape_cancels() {
+        assert_eq!(
+            visual_run("oy\u{1b}"),
+            [
+                Command::Visual(VisualCommand::SwapEnds),
+                Command::Visual(VisualCommand::Copy),
+                Command::Visual(VisualCommand::Cancel),
+            ]
+        );
+    }
+
+    #[test]
+    fn in_visual_mode_zoom_and_fit_keys_still_work_and_q_does_not_quit() {
+        assert_eq!(
+            visual_run("+saq"),
+            [
+                Command::Zoom {
+                    steps: 1,
+                    anchor: None
+                },
+                Command::FitWidth,
+                Command::FitPage,
+            ]
+        );
+    }
+
+    #[test]
+    fn leaving_visual_mode_restores_page_keys() {
+        let mut parser = KeyParser::default();
+        parser.set_visual(true);
+        parser.feed(Key::Char('3'));
+        parser.set_visual(false);
+        assert_eq!(parser.feed(Key::Char('j')), Some(Command::Next(1)));
+        assert_eq!(parser.feed(Key::Char('y')), None);
     }
 
     #[test]

@@ -3,9 +3,11 @@ use anyhow::{Context, Result, bail, ensure};
 use image::RgbImage;
 use mupdf::{
     ColorParams, Colorspace, DestinationKind, Device, DisplayList, Document, Image, Matrix,
-    NativeDevice, Outline, Page, Pixmap, Rect, link::LinkDestination,
+    NativeDevice, Outline, Page, Pixmap, Quad, Rect, link::LinkDestination,
 };
 use std::cell::RefCell;
+
+use crate::selection::{Glyph, PageText, TextLine};
 use std::num::NonZero;
 use std::rc::Rc;
 
@@ -279,20 +281,7 @@ impl Pdf {
         let bounds = page.bounds()?;
         let text = page.to_text_page(mupdf::TextPageFlags::empty())?;
         text.search_cb(query, &mut hits, |hits, quads| {
-            let areas = quads
-                .iter()
-                .map(|quad| {
-                    let points = [&quad.ul, &quad.ur, &quad.ll, &quad.lr];
-                    PointRect {
-                        x0: points.iter().map(|p| p.x).fold(f32::INFINITY, f32::min) - bounds.x0,
-                        y0: points.iter().map(|p| p.y).fold(f32::INFINITY, f32::min) - bounds.y0,
-                        x1: points.iter().map(|p| p.x).fold(f32::NEG_INFINITY, f32::max)
-                            - bounds.x0,
-                        y1: points.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max)
-                            - bounds.y0,
-                    }
-                })
-                .collect();
+            let areas = quads.iter().map(|quad| quad_area(quad, &bounds)).collect();
             hits.push(crate::search::Hit {
                 page: page_index,
                 areas,
@@ -304,6 +293,34 @@ impl Pdf {
             }
         })?;
         Ok(hits)
+    }
+
+    pub fn text(&self, page_index: usize) -> Result<PageText> {
+        let page = self.load(page_index)?;
+        let bounds = page.bounds()?;
+        let text = page.to_text_page(mupdf::TextPageFlags::empty())?;
+        let lines = text
+            .blocks()
+            .enumerate()
+            .flat_map(|(block, content)| {
+                content
+                    .lines()
+                    .map(|line| TextLine {
+                        block,
+                        glyphs: line
+                            .chars()
+                            .filter_map(|glyph| {
+                                Some(Glyph {
+                                    character: glyph.char()?,
+                                    area: quad_area(&glyph.quad(), &bounds),
+                                })
+                            })
+                            .collect(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        Ok(PageText::from_lines(lines))
     }
 
     pub fn render(
@@ -381,6 +398,16 @@ fn link_target(destination: LinkDestination) -> Option<LinkTarget> {
         page: usize::try_from(destination.loc.page_number).ok()?,
         top: destination_top(destination.kind),
     })
+}
+
+fn quad_area(quad: &Quad, bounds: &Rect) -> PointRect {
+    let points = [&quad.ul, &quad.ur, &quad.ll, &quad.lr];
+    PointRect {
+        x0: points.iter().map(|p| p.x).fold(f32::INFINITY, f32::min) - bounds.x0,
+        y0: points.iter().map(|p| p.y).fold(f32::INFINITY, f32::min) - bounds.y0,
+        x1: points.iter().map(|p| p.x).fold(f32::NEG_INFINITY, f32::max) - bounds.x0,
+        y1: points.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max) - bounds.y0,
+    }
 }
 
 fn page_info(page: &Page) -> Result<PageInfo> {
@@ -514,6 +541,26 @@ mod tests {
     #[test]
     fn a_pdf_without_bookmarks_has_an_empty_outline() {
         assert!(open("three-pages.pdf").outline().is_empty());
+    }
+
+    #[test]
+    fn page_text_lists_lines_in_reading_order_with_each_glyph_on_the_page() {
+        let pdf = open("three-pages.pdf");
+        let text = pdf.text(1).unwrap();
+        let lines: Vec<String> = text
+            .lines
+            .iter()
+            .map(|line| line.glyphs.iter().map(|glyph| glyph.character).collect())
+            .collect();
+        assert_eq!(lines.first().map(String::as_str), Some("2 Second"));
+        assert!(lines[1].starts_with("This is page two, with some math:"));
+        assert_ne!(text.lines[0].block, text.lines[1].block);
+        let size = pdf.pages()[1].size;
+        for glyph in text.lines.iter().flat_map(|line| &line.glyphs) {
+            assert!(glyph.area.x0 >= 0.0 && glyph.area.x1 <= size.width);
+            assert!(glyph.area.y0 >= 0.0 && glyph.area.y1 <= size.height);
+            assert!(glyph.area.x0 <= glyph.area.x1 && glyph.area.y0 < glyph.area.y1);
+        }
     }
 
     #[test]

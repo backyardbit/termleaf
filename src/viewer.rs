@@ -109,6 +109,7 @@ impl Viewer {
             | Command::Inverse(_)
             | Command::ToggleFollow
             | Command::SetFollow(_)
+            | Command::Visual(_)
             | Command::Quit => {}
         }
     }

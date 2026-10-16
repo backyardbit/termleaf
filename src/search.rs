@@ -25,6 +25,7 @@ pub struct Ticket {
 pub struct Highlights {
     pub hits: Vec<Hit>,
     pub current: Option<usize>,
+    pub selection: Vec<Hit>,
 }
 
 #[derive(Default)]
@@ -185,38 +186,65 @@ impl Search {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tint {
+    Match,
+    CurrentMatch,
+    Selected,
+}
+
+impl Tint {
+    fn apply(self, pixel: &mut image::Rgb<u8>) {
+        match self {
+            Self::Match => pixel[2] /= 3,
+            Self::CurrentMatch => {
+                pixel[2] /= 3;
+                pixel[1] = pixel[1].saturating_sub(pixel[1] / 3);
+            }
+            Self::Selected => {
+                pixel[0] = pixel[0].saturating_sub(pixel[0] / 5 * 2);
+                pixel[1] = pixel[1].saturating_sub(pixel[1] / 5);
+            }
+        }
+    }
+}
+
 impl Highlights {
     pub fn tint(&self, page: usize, scale: Scale, region: PixelRegion, image: &mut RgbImage) {
-        for (index, hit) in self
-            .hits
-            .iter()
-            .enumerate()
-            .filter(|(_, hit)| hit.page == page)
-        {
+        let matches = self.hits.iter().enumerate().map(|(index, hit)| {
+            let tint = if self.current == Some(index) {
+                Tint::CurrentMatch
+            } else {
+                Tint::Match
+            };
+            (hit, tint)
+        });
+        let selected = self.selection.iter().map(|hit| (hit, Tint::Selected));
+        for (hit, tint) in matches.chain(selected).filter(|(hit, _)| hit.page == page) {
             for area in &hit.areas {
-                let scale = scale.pixels_per_point();
-                let x0 = nearest_whole((f64::from(area.x0) * scale).floor())
-                    .saturating_sub(region.x)
-                    .min(image.width());
-                let y0 = nearest_whole((f64::from(area.y0) * scale).floor())
-                    .saturating_sub(region.y)
-                    .min(image.height());
-                let x1 = nearest_whole((f64::from(area.x1) * scale).ceil())
-                    .saturating_sub(region.x)
-                    .min(image.width());
-                let y1 = nearest_whole((f64::from(area.y1) * scale).ceil())
-                    .saturating_sub(region.y)
-                    .min(image.height());
-                for y in y0..y1 {
-                    for x in x0..x1 {
-                        let pixel = image.get_pixel_mut(x, y);
-                        pixel[2] /= 3;
-                        if self.current == Some(index) {
-                            pixel[1] = pixel[1].saturating_sub(pixel[1] / 3);
-                        }
-                    }
-                }
+                tint_area(*area, tint, scale, region, image);
             }
+        }
+    }
+}
+
+fn tint_area(area: PointRect, tint: Tint, scale: Scale, region: PixelRegion, image: &mut RgbImage) {
+    let scale = scale.pixels_per_point();
+    let x0 = nearest_whole((f64::from(area.x0) * scale).floor())
+        .saturating_sub(region.x)
+        .min(image.width());
+    let y0 = nearest_whole((f64::from(area.y0) * scale).floor())
+        .saturating_sub(region.y)
+        .min(image.height());
+    let x1 = nearest_whole((f64::from(area.x1) * scale).ceil())
+        .saturating_sub(region.x)
+        .min(image.width());
+    let y1 = nearest_whole((f64::from(area.y1) * scale).ceil())
+        .saturating_sub(region.y)
+        .min(image.height());
+    for y in y0..y1 {
+        for x in x0..x1 {
+            tint.apply(image.get_pixel_mut(x, y));
         }
     }
 }
@@ -335,6 +363,7 @@ mod tests {
         let highlights = Highlights {
             hits: vec![hit(0)],
             current: Some(0),
+            ..Highlights::default()
         };
         let mut image = RgbImage::from_pixel(100, 40, image::Rgb([255, 255, 255]));
         image.put_pixel(1, 1, image::Rgb([0, 0, 0]));
@@ -355,10 +384,35 @@ mod tests {
     }
 
     #[test]
+    fn a_selection_tints_paper_light_blue_and_keeps_black_text() {
+        let highlights = Highlights {
+            selection: vec![hit(0)],
+            ..Highlights::default()
+        };
+        let mut image = RgbImage::from_pixel(100, 40, image::Rgb([255, 255, 255]));
+        image.put_pixel(1, 1, image::Rgb([0, 0, 0]));
+        highlights.tint(
+            0,
+            Scale::from_pixels_per_point(1.0),
+            PixelRegion {
+                x: 100,
+                y: 100,
+                width: 100,
+                height: 40,
+            },
+            &mut image,
+        );
+        assert_eq!(image.get_pixel(0, 0).0, [153, 204, 255]);
+        assert_eq!(image.get_pixel(1, 1).0, [0, 0, 0]);
+        assert_eq!(image.get_pixel(90, 30).0, [255, 255, 255]);
+    }
+
+    #[test]
     fn highlights_on_other_pages_do_not_change_pixels() {
         let highlights = Highlights {
             hits: vec![hit(1)],
             current: Some(0),
+            ..Highlights::default()
         };
         let mut image = RgbImage::from_pixel(20, 20, image::Rgb([255, 255, 255]));
         let before = image.clone();
