@@ -19,6 +19,7 @@ use ratatui::text::Line;
 use ratatui_image::FontSize;
 use ratatui_image::picker::Capability;
 
+use crate::browser::{SystemBrowser, WebLinks};
 use crate::editor::{self, Jumper};
 use crate::encoder::{self, Encoded, Encoder, Job, Wanted};
 use crate::follow::{self, Follow, Listener, Request};
@@ -159,6 +160,7 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
     let mut app = App {
         file_name: display_name(&path),
         inverse: Inverse::new(&path, Box::new(Jumper::default())),
+        web: WebLinks::new(Box::new(SystemBrowser)),
         follow: Follow::new(options.follow).starting({
             let path = path.clone();
             move |gate| {
@@ -405,6 +407,7 @@ struct App {
     gestures: Gestures,
     pinch: PinchGate,
     inverse: Inverse,
+    web: WebLinks,
     follow: Follow,
     renderer: Renderer,
     encoder: Encoder,
@@ -465,6 +468,7 @@ impl App {
                 self.prepare_frame(now);
             }
             self.inverse.expire(now);
+            self.web.expire(now);
             if self.cell_due.is_none() && self.may_transmit(now) {
                 self.resize_settles_at = None;
                 self.flush(terminal)?;
@@ -501,6 +505,7 @@ impl App {
             self.resize_settles_at,
             self.zooming_until,
             self.inverse.notice_ends(),
+            self.web.notice_ends(),
             self.settles_at().filter(|at| *at > now),
             self.lands_at().filter(|at| self.landing && *at > now),
         ]
@@ -593,6 +598,12 @@ impl App {
         }
         if command == Command::Quit {
             return Flow::Quit;
+        }
+        if let Command::Click(at) = command
+            && let Some(address) = self.viewer.web_link_under(at)
+        {
+            self.web.open(address, now);
+            return Flow::Continue;
         }
         if let Command::Inverse(at) = command {
             let position = self
@@ -1200,7 +1211,7 @@ impl App {
         }
         let search = self.search.status();
         let notice = self.follow.beside(self.inverse.notice());
-        let notice = [notice, search]
+        let notice = [notice, self.web.notice().map(str::to_owned), search]
             .into_iter()
             .flatten()
             .collect::<Vec<_>>()
@@ -1252,6 +1263,8 @@ fn tile_key(generation: Generation, view: &View, tile: crate::layout::Tile) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::browser::WebAddress;
+    use crate::browser::fake::RecordingBrowser;
     use crate::inverse::StatusOnly;
     use crate::layout::{TILE_COLUMNS, TILE_ROWS, Tile};
 
@@ -1312,6 +1325,7 @@ mod tests {
             gestures: Gestures::default(),
             pinch: PinchGate::default(),
             inverse: Inverse::new(path, Box::new(StatusOnly)),
+            web: WebLinks::new(Box::new(RecordingBrowser::default())),
             follow: Follow::default(),
             renderer,
             encoder,
@@ -1435,6 +1449,40 @@ mod tests {
         assert_eq!(app.viewer.page(), 2);
         app.handle(Event::Key(Key::Control('o')));
         assert_eq!(app.viewer.page(), 0);
+    }
+
+    #[test]
+    fn clicking_a_web_link_opens_it_in_the_browser_and_keeps_the_view() {
+        let (mut app, _inbox) = headless_app_for(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/web-link.pdf"),
+            Pane {
+                columns: 80,
+                rows: 24,
+            },
+        );
+        let browser = RecordingBrowser::default();
+        app.web = WebLinks::new(Box::new(browser.clone()));
+        let pane = app.viewer.view().pane;
+        let on_link = (0..pane.rows)
+            .flat_map(|row| {
+                (0..pane.columns).map(move |column| ScreenCell {
+                    column: u16::try_from(column).unwrap(),
+                    row: u16::try_from(row).unwrap(),
+                })
+            })
+            .find(|at| app.viewer.web_link_under(*at).is_some())
+            .expect("a cell over the web link");
+        let top = app.viewer.view().top;
+        app.apply(Command::Click(on_link));
+        assert_eq!(
+            *browser.opened.borrow(),
+            [WebAddress::try_from("https://example.com/termleaf").unwrap()]
+        );
+        assert_eq!(app.viewer.view().top, top);
+        assert!(
+            app.status()
+                .contains("opening https://example.com/termleaf")
+        );
     }
 
     #[test]

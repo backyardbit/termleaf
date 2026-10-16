@@ -12,6 +12,7 @@ use ratatui::text::Line;
 use ratatui::widgets::Widget;
 use ratatui::{DefaultTerminal, Frame};
 
+use crate::browser::{Browser, WebLinks};
 use crate::follow::{Follow, Request};
 use crate::graphics::CellWatch;
 use crate::inverse::{Editors, Inverse};
@@ -76,6 +77,7 @@ struct OnScreen {
 pub struct App {
     file_name: String,
     inverse: Inverse,
+    web: WebLinks,
     follow: Follow,
     viewer: Viewer,
     outline: OutlinePanel,
@@ -117,6 +119,7 @@ pub struct Parts {
     pub file_name: String,
     pub path: PathBuf,
     pub editors: Box<dyn Editors>,
+    pub browser: Box<dyn Browser>,
     pub pages: Vec<PageInfo>,
     pub outline: Vec<Heading>,
     pub cell: CellSize,
@@ -133,6 +136,7 @@ impl App {
         Self {
             file_name: parts.file_name,
             inverse: Inverse::new(&parts.path, parts.editors),
+            web: WebLinks::new(parts.browser),
             follow: parts.follow,
             viewer: Viewer::new(parts.pages, parts.cell, parts.pane),
             outline: OutlinePanel::new(parts.outline),
@@ -190,6 +194,7 @@ impl App {
             self.prepare_frame(now);
             self.requery_cell_at(now);
             self.inverse.expire(now);
+            self.web.expire(now);
             self.flush(terminal)?;
             if self.clear_screen {
                 self.clear_screen = false;
@@ -222,6 +227,7 @@ impl App {
             self.paint_due,
             self.requery_due(),
             self.inverse.notice_ends(),
+            self.web.notice_ends(),
         ]
         .into_iter()
         .flatten()
@@ -326,6 +332,12 @@ impl App {
         }
         if command == Command::Quit {
             return Flow::Quit;
+        }
+        if let Command::Click(at) = command
+            && let Some(address) = self.viewer.web_link_under(at)
+        {
+            self.web.open(address, now);
+            return Flow::Continue;
         }
         if let Command::Inverse(at) = command {
             let position = self
@@ -667,7 +679,7 @@ impl App {
         }
         let search = self.search.status();
         let notice = self.follow.beside(self.inverse.notice());
-        let notice = [notice, search]
+        let notice = [notice, self.web.notice().map(str::to_owned), search]
             .into_iter()
             .flatten()
             .collect::<Vec<_>>()
@@ -709,7 +721,10 @@ pub fn pane_of(area: Rect) -> Pane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::browser::WebAddress;
+    use crate::browser::fake::RecordingBrowser;
     use crate::inverse::StatusOnly;
+    use crate::keys::ScreenCell;
     use std::path::{Path, PathBuf};
     use std::sync::mpsc;
 
@@ -783,6 +798,7 @@ mod tests {
             file_name: "doc.pdf".to_owned(),
             path,
             editors: Box::new(StatusOnly),
+            browser: Box::new(RecordingBrowser::default()),
             pages,
             outline,
             cell: CELL,
@@ -870,6 +886,34 @@ mod tests {
                 .expect("search did not finish");
             app.handle(event);
         }
+    }
+
+    #[test]
+    fn clicking_a_web_link_opens_it_in_the_browser_and_keeps_the_view() {
+        let (mut app, _inbox) = headless_app(fixture("web-link.pdf"), PANE);
+        let browser = RecordingBrowser::default();
+        app.web = WebLinks::new(Box::new(browser.clone()));
+        let pane = app.viewer.view().pane;
+        let on_link = (0..pane.rows)
+            .flat_map(|row| {
+                (0..pane.columns).map(move |column| ScreenCell {
+                    column: u16::try_from(column).unwrap(),
+                    row: u16::try_from(row).unwrap(),
+                })
+            })
+            .find(|at| app.viewer.web_link_under(*at).is_some())
+            .expect("a cell over the web link");
+        let top = app.viewer.view().top;
+        app.apply_at(Command::Click(on_link), Instant::now());
+        assert_eq!(
+            *browser.opened.borrow(),
+            [WebAddress::try_from("https://example.com/termleaf").unwrap()]
+        );
+        assert_eq!(app.viewer.view().top, top);
+        assert!(
+            app.status()
+                .contains("opening https://example.com/termleaf")
+        );
     }
 
     #[test]
