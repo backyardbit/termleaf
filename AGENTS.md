@@ -69,4 +69,4 @@ These are wanted eventually. Keep the architecture open to them, but do not buil
   - The MuPDF build fails on macOS when Homebrew's GNU Make 4.x comes first in PATH (mupdf-rs#211).
 - Releases: bump `version` in `Cargo.toml`, then push a `v*` tag. The `dist` workflow builds the binaries and a shell installer, and `cargo publish` pushes the crate to crates.io. `xtask` is never published.
 - Commit `Cargo.lock`. This is a binary crate.
-- The human owner is the only author of every commit. Write commit messages with no `Co-Authored-By` trailer and no other attribution to an agent or AI tool. The same goes for PR descriptions.
+- The human owner is the only author of every commit. Write commit messages with no `Co-Authored-By` trailer and no other attribution to an agent or AI tool. The same goes for PR descriptions. `cargo xtask commits <base>..<head> "<PR title>"` checks this on every PR, along with `(type): ` titles and a `(test)` commit before each `(fix)` or `(perf)` that changes `src/`.
