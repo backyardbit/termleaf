@@ -69,7 +69,8 @@ The file must exist when termleaf starts. If a later build leaves the PDF broken
 | `/`, then Enter | search PDF text |
 | `n`, `N` | next / previous match, wrapping at the ends (counts work) |
 | Escape | cancel a search prompt, or dismiss search results |
-| `Ctrl-O` / `Ctrl-I` (or Tab) | jump back / forward through links followed, `gg`, `G`, `:<n>` and search matches (takes a count) |
+| `Ctrl-O` / `Ctrl-I` (or Tab) | jump back / forward through links followed, `gg`, `G`, `:<n>`, search matches and the table of contents (takes a count) |
+| `t` | show / hide the [table of contents](#table-of-contents) |
 | `F`, `:follow`, `:nofollow` | follow your editor on / off ([SyncTeX](#synctex)) |
 | `q`, `:q`, `Ctrl-C` | quit |
 
@@ -84,6 +85,10 @@ Pages scroll continuously and open at fit width.
 | click | follow a link (`\ref`, citations, table of contents), or open a web or mail link (`\url`, `\href`) in your browser |
 | double-click | switch between fit width and fit page |
 | `Alt` + click, `Ctrl` + click | open the source line under the click in your editor ([SyncTeX](#synctex)) |
+
+### Table of contents
+
+`t` shows the PDF's outline (its bookmarks, which `hyperref` writes for every `\section`) in place of the pages, with the heading you are reading selected and each heading's page on the right. `j` / `k` or the arrows move the selection (counts work), `gg` / `G` go to the first and last heading, and the wheel moves it too. Enter or a click jumps to the heading and closes the list; `Ctrl-O` jumps back. `t`, `q` or Escape close it without moving. The outline is reloaded with the PDF, and a PDF without bookmarks says so.
 
 ### Text search
 

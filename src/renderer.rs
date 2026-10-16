@@ -8,7 +8,7 @@ use image::RgbImage;
 use crate::search::{Highlights, Hit, MAX_HITS, Ticket};
 
 use crate::layout::Density;
-use crate::pdf::{PageInfo, Pdf, PixelRegion, Scale};
+use crate::pdf::{Heading, PageInfo, Pdf, PixelRegion, Scale};
 
 pub type Generation = u64;
 
@@ -40,6 +40,7 @@ pub enum Response {
     Loaded {
         generation: Generation,
         pages: Vec<PageInfo>,
+        outline: Vec<Heading>,
     },
     Unreadable {
         generation: Generation,
@@ -121,6 +122,7 @@ fn load(path: &Path, generation: Generation, loaded: &mut Option<LoadedPdf>) -> 
     match Pdf::from_bytes(&bytes) {
         Ok(pdf) => {
             let pages = pdf.pages();
+            let outline = pdf.outline();
             *loaded = Some(LoadedPdf {
                 generation,
                 rendered_generation: generation,
@@ -128,7 +130,11 @@ fn load(path: &Path, generation: Generation, loaded: &mut Option<LoadedPdf>) -> 
                 pdf,
                 bytes,
             });
-            Response::Loaded { generation, pages }
+            Response::Loaded {
+                generation,
+                pages,
+                outline,
+            }
         }
         Err(_) => Response::Unreadable { generation },
     }
@@ -478,7 +484,11 @@ mod tests {
         renderer.load(1);
         assert!(matches!(
             next_response(&responses),
-            Response::Loaded { generation: 1, pages } if pages.len() == 3
+            Response::Loaded {
+                generation: 1,
+                pages,
+                ..
+            } if pages.len() == 3
         ));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }

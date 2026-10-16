@@ -3,7 +3,7 @@ use anyhow::{Context, Result, bail, ensure};
 use image::RgbImage;
 use mupdf::{
     ColorParams, Colorspace, DestinationKind, Device, DisplayList, Document, Image, Matrix,
-    NativeDevice, Page, Pixmap, Rect,
+    NativeDevice, Outline, Page, Pixmap, Rect, link::LinkDestination,
 };
 use std::cell::RefCell;
 use std::num::NonZero;
@@ -79,16 +79,29 @@ impl PointRect {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LinkTarget {
+    pub page: usize,
+    pub top: Option<f32>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
-pub enum LinkTarget {
-    Page { page: usize, top: Option<f32> },
+pub enum Destination {
+    Page(LinkTarget),
     Web(WebAddress),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Link {
     pub area: PointRect,
-    pub target: LinkTarget,
+    pub target: Destination,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Heading {
+    pub title: String,
+    pub depth: usize,
+    pub target: Option<LinkTarget>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -248,6 +261,14 @@ impl Pdf {
         self.page_count
     }
 
+    pub fn outline(&self) -> Vec<Heading> {
+        let mut headings = Vec::new();
+        if let Ok(outline) = self.document.outlines() {
+            flatten_outline(&outline, 0, &mut headings);
+        }
+        headings
+    }
+
     pub fn search(&self, page_index: usize, query: &str) -> Result<Vec<crate::search::Hit>> {
         use mupdf::text_page::SearchHitResponse;
         let mut hits = Vec::new();
@@ -344,17 +365,32 @@ fn scale_factor(scale: Scale) -> f32 {
     scale.pixels_per_point() as f32
 }
 
+fn flatten_outline(outline: &[Outline], depth: usize, headings: &mut Vec<Heading>) {
+    for entry in outline {
+        headings.push(Heading {
+            title: entry.title.trim().to_owned(),
+            depth,
+            target: entry.dest.and_then(link_target),
+        });
+        flatten_outline(&entry.down, depth + 1, headings);
+    }
+}
+
+fn link_target(destination: LinkDestination) -> Option<LinkTarget> {
+    Some(LinkTarget {
+        page: usize::try_from(destination.loc.page_number).ok()?,
+        top: destination_top(destination.kind),
+    })
+}
+
 fn page_info(page: &Page) -> Result<PageInfo> {
     let bounds = page.bounds()?;
     let links = page
         .links()?
         .filter_map(|link| {
             let target = match link.dest {
-                Some(destination) => LinkTarget::Page {
-                    page: usize::try_from(destination.loc.page_number).ok()?,
-                    top: destination_top(destination.kind),
-                },
-                None => LinkTarget::Web(WebAddress::try_from(link.uri.as_str()).ok()?),
+                Some(destination) => Destination::Page(link_target(destination)?),
+                None => Destination::Web(WebAddress::try_from(link.uri.as_str()).ok()?),
             };
             Some(Link {
                 area: PointRect {
@@ -440,6 +476,44 @@ mod tests {
         assert!(hits[0].areas[0].x1 > hits[0].areas[0].x0);
         assert!(pdf.search(0, "").unwrap().is_empty());
         assert!(pdf.search(0, "not present café").unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_outline_lists_every_heading_in_order_with_its_depth_and_page() {
+        let outline = open("outline.pdf").outline();
+        let summary: Vec<_> = outline
+            .iter()
+            .map(|heading| {
+                (
+                    heading.title.as_str(),
+                    heading.depth,
+                    heading.target.map(|target| target.page),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("Introduction", 0, Some(0)),
+                ("Background", 1, Some(0)),
+                ("Method", 0, Some(1)),
+                ("Setup", 1, Some(1)),
+                ("Measurements", 1, Some(1)),
+                ("Results", 0, Some(2)),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_heading_lower_on_its_page_points_lower_down() {
+        let outline = open("outline.pdf").outline();
+        let top = |index: usize| outline[index].target.and_then(|target| target.top);
+        assert!(top(4) > top(3), "{:?} {:?}", top(3), top(4));
+    }
+
+    #[test]
+    fn a_pdf_without_bookmarks_has_an_empty_outline() {
+        assert!(open("three-pages.pdf").outline().is_empty());
     }
 
     #[test]
@@ -533,8 +607,8 @@ mod tests {
 
     fn page_of(link: &Link) -> Option<(usize, Option<f32>)> {
         match link.target {
-            LinkTarget::Page { page, top } => Some((page, top)),
-            LinkTarget::Web(_) => None,
+            Destination::Page(LinkTarget { page, top }) => Some((page, top)),
+            Destination::Web(_) => None,
         }
     }
 
@@ -567,15 +641,15 @@ mod tests {
     #[test]
     fn finds_a_web_link_beside_an_internal_one() {
         let pages = open("web-link.pdf").pages();
-        let web: Vec<&LinkTarget> = pages[0]
+        let web: Vec<&Destination> = pages[0]
             .links
             .iter()
             .map(|link| &link.target)
-            .filter(|target| matches!(target, LinkTarget::Web(_)))
+            .filter(|target| matches!(target, Destination::Web(_)))
             .collect();
         assert_eq!(
             web,
-            [&LinkTarget::Web(
+            [&Destination::Web(
                 WebAddress::try_from("https://example.com/termleaf").unwrap()
             )]
         );

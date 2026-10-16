@@ -1,7 +1,7 @@
 use crate::browser::WebAddress;
 use crate::keys::{Command, ScreenCell};
 use crate::layout::{CellSize, DocumentPoint, Layout, Pane, Position, View, fit_page, fit_width};
-use crate::pdf::{Link, LinkTarget, PageInfo, PageSize, Scale, nearest_whole};
+use crate::pdf::{Destination, Link, LinkTarget, PageInfo, PageSize, Scale, nearest_whole};
 
 const ZOOM_STEP: f64 = 1.1;
 const MIN_PIXELS_PER_POINT: f64 = 0.1;
@@ -102,6 +102,7 @@ impl Viewer {
             Command::JumpBack(count) => self.walk_history(count, Direction::Back),
             Command::JumpForward(count) => self.walk_history(count, Direction::Forward),
             Command::SearchSubmit
+            | Command::Outline(_)
             | Command::SearchDismiss
             | Command::SearchNext(_)
             | Command::SearchPrevious(_)
@@ -176,6 +177,10 @@ impl Viewer {
         }
         parts.extend(notice.map(str::to_owned));
         parts.join(" · ")
+    }
+
+    pub fn follow(&mut self, target: LinkTarget) {
+        self.jump(|viewer| viewer.go_to_target(target));
     }
 
     pub fn jump_to(&mut self, target: Position) {
@@ -309,8 +314,8 @@ impl Viewer {
 
     pub fn web_link_under(&self, at: ScreenCell) -> Option<&WebAddress> {
         match &self.link_under(at)?.target {
-            LinkTarget::Web(address) => Some(address),
-            LinkTarget::Page { .. } => None,
+            Destination::Web(address) => Some(address),
+            Destination::Page(_) => None,
         }
     }
 
@@ -324,14 +329,17 @@ impl Viewer {
     }
 
     fn follow_link(&mut self, at: ScreenCell) {
-        let Some(&LinkTarget::Page { page, top }) = self.link_under(at).map(|link| &link.target)
-        else {
+        let Some(&Destination::Page(target)) = self.link_under(at).map(|link| &link.target) else {
             return;
         };
+        self.go_to_target(target);
+    }
+
+    fn go_to_target(&mut self, target: LinkTarget) {
         let target = Position {
-            page: page.min(self.page_count().saturating_sub(1)),
+            page: target.page.min(self.page_count().saturating_sub(1)),
             x: 0.0,
-            y: f64::from(top.unwrap_or(0.0)),
+            y: f64::from(target.top.unwrap_or(0.0)),
         };
         let row = self.view.layout.point_of(target).row;
         self.view.top = nearest_whole(row.floor());
@@ -706,10 +714,10 @@ mod tests {
                 x1: 200.0,
                 y1: 120.0,
             },
-            target: LinkTarget::Page {
+            target: Destination::Page(LinkTarget {
                 page: 2,
                 top: Some(300.0),
-            },
+            }),
         });
         pages[0].links.push(Link {
             area: PointRect {
@@ -718,7 +726,7 @@ mod tests {
                 x1: 200.0,
                 y1: 220.0,
             },
-            target: LinkTarget::Web(WebAddress::try_from("https://example.com").unwrap()),
+            target: Destination::Web(WebAddress::try_from("https://example.com").unwrap()),
         });
         pages
     }
@@ -798,6 +806,23 @@ mod tests {
         assert_eq!(viewer.view().top, before);
         viewer.apply(Command::JumpForward(1));
         assert_eq!(viewer.view().top, target);
+    }
+
+    #[test]
+    fn following_a_heading_puts_its_top_at_the_top_and_can_be_undone() {
+        let mut viewer = viewer(5);
+        viewer.follow(LinkTarget {
+            page: 3,
+            top: Some(300.0),
+        });
+        let expected = viewer.view().layout.point_of(Position {
+            page: 3,
+            x: 0.0,
+            y: 300.0,
+        });
+        assert_eq!(viewer.view().top, nearest_whole(expected.row.floor()));
+        viewer.apply(Command::JumpBack(1));
+        assert_eq!(viewer.view().top, 0);
     }
 
     #[test]
