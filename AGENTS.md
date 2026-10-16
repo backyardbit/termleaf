@@ -62,7 +62,7 @@ These are wanted eventually. Keep the architecture open to them, but do not buil
   - To suppress a lint, use `#[expect(lint, reason = "...")]`. `#[allow]` is denied.
   - In tests, replace a dependency through a real trait and a fake implementation of it. Mocking crates are banned.
   - No identifier may contain "shape". Name things after their domain role.
-- Test PDFs live in `tests/fixtures/`, each committed next to the `.tex` it was compiled from. Tests build broken variants (cut short, empty, missing) from those files in code.
+- Test PDFs live in `tests/fixtures/`, each committed next to the `.tex` it was compiled from. `cargo xtask lint` fails when code names a fixture that git does not track. Tests build broken variants (cut short, empty, missing) from those files in code.
 - Tests that touch the filesystem watcher check that events arrive, never that they don't. macOS FSEvents delivers events late and in batches.
 - Build gotchas:
   - `unicode-ident` is pinned in `xtask/Cargo.toml`. `ra-ap-rustc_lexer` fails to compile when its Unicode version differs from `unicode-properties`.
