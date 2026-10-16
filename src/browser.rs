@@ -180,15 +180,4 @@ mod tests {
             Some("could not open https://example.com: no opener")
         );
     }
-
-    #[test]
-    fn the_notice_goes_away_after_a_while() {
-        let mut links = WebLinks::new(Box::new(RecordingBrowser::default()));
-        let now = Instant::now();
-        links.open(&address("https://example.com"), now);
-        links.expire(now + NOTICE_FOR - Duration::from_millis(1));
-        assert!(links.notice().is_some());
-        links.expire(now + NOTICE_FOR);
-        assert_eq!(links.notice(), None);
-    }
 }

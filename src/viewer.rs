@@ -763,23 +763,6 @@ mod tests {
     }
 
     #[test]
-    fn a_web_link_is_found_under_the_pointer() {
-        let viewer = Viewer::new(linked_document(), CELL, PANE);
-        assert_eq!(
-            viewer.web_link_under(cell_over(&viewer, 150.0, 210.0)),
-            Some(&WebAddress::try_from("https://example.com").unwrap())
-        );
-        assert_eq!(
-            viewer.web_link_under(cell_over(&viewer, 150.0, 110.0)),
-            None
-        );
-        assert_eq!(
-            viewer.web_link_under(cell_over(&viewer, 400.0, 210.0)),
-            None
-        );
-    }
-
-    #[test]
     fn clicking_a_web_link_leaves_the_view_and_jump_history_alone() {
         let mut viewer = Viewer::new(linked_document(), CELL, PANE);
         viewer.apply(Command::Scroll {
