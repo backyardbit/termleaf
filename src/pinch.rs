@@ -7,6 +7,9 @@ mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::keys::{Command, ScreenCell};
 use crate::pdf::nearest_whole;
 
@@ -23,24 +26,41 @@ pub enum PinchInput {
     Ended,
 }
 
-#[derive(Debug)]
-pub struct PinchGate {
-    focused: bool,
-    pointer: Option<ScreenCell>,
-}
+#[derive(Debug, Clone)]
+pub struct PaneFocus(Arc<AtomicBool>);
 
-impl Default for PinchGate {
+impl Default for PaneFocus {
     fn default() -> Self {
-        Self {
-            focused: true,
-            pointer: None,
-        }
+        Self(Arc::new(AtomicBool::new(true)))
     }
 }
 
+impl PaneFocus {
+    pub fn has(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    fn set(&self, focused: bool) {
+        self.0.store(focused, Ordering::Relaxed);
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct PinchGate {
+    focus: PaneFocus,
+    pointer: Option<ScreenCell>,
+}
+
 impl PinchGate {
+    pub fn new(focus: PaneFocus) -> Self {
+        Self {
+            focus,
+            pointer: None,
+        }
+    }
+
     pub fn focus(&mut self, focused: bool) {
-        self.focused = focused;
+        self.focus.set(focused);
     }
 
     pub fn pointer(&mut self, at: ScreenCell) {
@@ -51,7 +71,7 @@ impl PinchGate {
         let PinchInput::Scale(scale) = input else {
             return None;
         };
-        if !self.focused || !scale.is_finite() || scale <= 0.0 {
+        if !self.focus.has() || !scale.is_finite() || scale <= 0.0 {
             return None;
         }
         let per_mille = nearest_whole(scale * PER_MILLE);
@@ -112,6 +132,17 @@ mod tests {
                 anchor: Some(at)
             })
         );
+    }
+
+    #[test]
+    fn the_os_listener_sees_the_focus_the_gate_was_told() {
+        let focus = PaneFocus::default();
+        let mut gate = PinchGate::new(focus.clone());
+        assert!(focus.has());
+        gate.focus(false);
+        assert!(!focus.has());
+        gate.focus(true);
+        assert!(focus.has());
     }
 
     #[test]

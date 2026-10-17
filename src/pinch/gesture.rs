@@ -18,6 +18,10 @@ pub fn decode(kind: i64, phase: i64, value: f64) -> Option<PinchInput> {
     (value != 0.0).then_some(PinchInput::Scale(1.0 + value))
 }
 
+pub fn claims(kind: i64, focused: bool) -> bool {
+    kind == PINCH && focused
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -43,6 +47,23 @@ mod tests {
         assert_eq!(decode(GESTURE_ENDED, 0, 0.0), Some(PinchInput::Ended));
         assert_eq!(decode(PINCH, PHASE_ENDED, 0.0), Some(PinchInput::Ended));
         assert_eq!(decode(PINCH, PHASE_CANCELLED, 0.0), Some(PinchInput::Ended));
+    }
+
+    #[test]
+    fn a_pinch_over_a_focused_pane_is_kept_from_the_terminal() {
+        assert!(claims(PINCH, true));
+    }
+
+    #[test]
+    fn a_pinch_while_another_pane_has_focus_reaches_the_terminal() {
+        assert!(!claims(PINCH, false));
+    }
+
+    #[test]
+    fn other_gestures_always_reach_the_terminal() {
+        assert!(!claims(5, true));
+        assert!(!claims(6, true));
+        assert!(!claims(GESTURE_ENDED, true));
     }
 
     #[test]

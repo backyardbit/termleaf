@@ -35,7 +35,7 @@ use crate::layout::{
 };
 use crate::mouse::{Gestures, MouseInput, Wheel};
 use crate::outline::OutlinePanel;
-use crate::pinch::{self, PinchGate, PinchInput};
+use crate::pinch::{self, PaneFocus, PinchGate, PinchInput};
 use crate::raster;
 use crate::renderer::{Generation, RenderKey, Renderer, Response};
 use crate::search::{Highlights, Search};
@@ -140,11 +140,15 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
         )
         .ok()
     };
+    let focus = PaneFocus::default();
     if options.pinch {
         let pinches = events.clone();
-        let _ = pinch::listen(move |input| {
-            let _ = pinches.send(Event::Pinch(input));
-        });
+        let _ = pinch::listen(
+            move |input| {
+                let _ = pinches.send(Event::Pinch(input));
+            },
+            focus.clone(),
+        );
     }
     let cell = cell_size(picker.font_size());
     let encoders = Encoders {
@@ -187,7 +191,7 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
         serial: 0,
         keys: KeyParser::default(),
         gestures: Gestures::default(),
-        pinch: PinchGate::default(),
+        pinch: PinchGate::new(focus),
         renderer,
         encoder,
         encoders,
