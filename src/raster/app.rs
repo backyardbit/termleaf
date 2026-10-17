@@ -22,7 +22,7 @@ use crate::layout::{CellSize, Pane, View};
 use crate::mouse::{Gestures, MouseInput};
 use crate::outline::OutlinePanel;
 use crate::pdf::{Heading, PageInfo};
-use crate::pinch::{PinchGate, PinchInput};
+use crate::pinch::{PaneFocus, PinchGate, PinchInput};
 use crate::raster::frame::tile_keys;
 use crate::raster::painter::{Job, Painter, Painting};
 use crate::raster::tiles::Tiles;
@@ -133,6 +133,7 @@ pub struct Parts {
     pub painter: Painter,
     pub partial_repaint_interval: Duration,
     pub frame_interval: Duration,
+    pub focus: PaneFocus,
 }
 
 impl App {
@@ -154,7 +155,7 @@ impl App {
             serial: 0,
             keys: KeyParser::default(),
             gestures: Gestures::default(),
-            pinch: PinchGate::default(),
+            pinch: PinchGate::new(parts.focus),
             renderer: parts.renderer,
             painter: parts.painter,
             tiles: Tiles::new(TILE_BYTE_BUDGET),
@@ -862,6 +863,7 @@ mod tests {
             painter,
             partial_repaint_interval,
             frame_interval,
+            focus: PaneFocus::default(),
         });
         (app, inbox)
     }
