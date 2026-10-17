@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.4.0
+
+- Navigate with more vim and pager keys. `Ctrl-d` / `Ctrl-u` scroll half a pane, `PgDn` / `PgUp` a whole pane, the arrows scroll and pan, and `h` / `l` pan. All take a count (#61).
+- Jump back and forward with `Ctrl-o` and `Ctrl-i` (or Tab). Following an internal link, `gg`, `G`, `:<n>`, a search match or a table of contents entry records where the view was. Paging and scrolling are not jumps (#60).
+- Show the table of contents with `t`. It lists the PDF's bookmarks (which `hyperref` writes for every `\section`) over the page area, with the heading you are reading selected. `j` / `k`, `gg` / `G` and the wheel move the selection, Enter or a click jumps, and `t`, `q` or Escape close it (#63).
+- Clicking an http, https or mailto link opens it in the default browser (`open` on macOS, `xdg-open` on Linux), and the status bar says what was opened. Other schemes are ignored, and internal links still jump as before (#62).
+- Select text with `v` (by character) or `V` (by line), extend it with vim motions, and copy it with `y`. The selection is tinted into the page, and copying writes OSC 52 and, when running locally, also pipes the text to `pbcopy`, `wl-copy` or `xclip` (#64).
+- macOS: in terminals that zoom their own window on a trackpad pinch, such as Tern, a pinch over termleaf no longer zooms both. Give the terminal app Accessibility, and termleaf keeps the pinches it zooms on away from the terminal (#67).
+
 ## v0.3.2
 
 - Fix pages left blank after scrolling quickly under herdr. termleaf now keeps its Kitty images within herdr's 64 MiB per-pane limit (#48).
