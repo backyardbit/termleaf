@@ -6,6 +6,7 @@ use std::thread;
 use image::RgbImage;
 
 use crate::search::{Highlights, Hit, MAX_HITS, Ticket};
+use crate::selection::PageText;
 
 use crate::layout::Density;
 use crate::pdf::{Heading, PageInfo, Pdf, PixelRegion, Scale};
@@ -25,6 +26,10 @@ enum Request {
     Load(Generation),
     Render(RenderKey),
     Search(Ticket),
+    Read {
+        document: Generation,
+        pages: Vec<usize>,
+    },
     Highlight {
         document: Generation,
         generation: Generation,
@@ -33,6 +38,11 @@ enum Request {
 }
 
 pub enum Response {
+    Read {
+        document: Generation,
+        page: usize,
+        text: Result<PageText, String>,
+    },
     Searched {
         ticket: Ticket,
         result: Result<Vec<Hit>, String>,
@@ -69,6 +79,10 @@ impl Renderer {
 
     pub fn search(&self, ticket: Ticket) {
         self.send(Request::Search(ticket));
+    }
+
+    pub fn read(&self, document: Generation, pages: Vec<usize>) {
+        self.send(Request::Read { document, pages });
     }
 
     pub fn highlight(&self, document: Generation, generation: Generation, highlights: Highlights) {
@@ -151,8 +165,13 @@ fn serve(
     let mut loaded: Option<LoadedPdf> = None;
     let mut pending: Vec<Request> = Vec::new();
     let mut searching: Option<Scan> = None;
+    let mut reading: Option<Reading> = None;
     loop {
         pending.extend(inbox.try_iter().flatten());
+        if pending.is_empty() && reading.is_some() {
+            read_page(&mut reading, loaded.as_ref(), respond);
+            continue;
+        }
         if pending.is_empty() && searching.is_some() {
             scan_page(&mut searching, loaded.as_ref(), respond);
             continue;
@@ -173,6 +192,12 @@ fn serve(
                     ticket,
                     page: 0,
                     hits: Vec::new(),
+                });
+            }
+            Request::Read { document, pages } => {
+                reading = Some(Reading {
+                    document,
+                    pages: pages.into(),
                 });
             }
             Request::Highlight {
@@ -204,6 +229,33 @@ fn serve(
             }
         }
     }
+}
+
+struct Reading {
+    document: Generation,
+    pages: std::collections::VecDeque<usize>,
+}
+
+fn read_page(
+    reading: &mut Option<Reading>,
+    loaded: Option<&LoadedPdf>,
+    respond: &impl Fn(Response),
+) {
+    let Some(mut current) = reading.take() else {
+        return;
+    };
+    let Some(loaded) = loaded.filter(|loaded| loaded.generation == current.document) else {
+        return;
+    };
+    let Some(page) = current.pages.pop_front() else {
+        return;
+    };
+    respond(Response::Read {
+        document: current.document,
+        page,
+        text: loaded.pdf.text(page).map_err(|error| error.to_string()),
+    });
+    *reading = Some(current);
 }
 
 struct Scan {
@@ -337,6 +389,7 @@ mod tests {
             Highlights {
                 hits: pdf.search(0, "page").unwrap(),
                 current: Some(0),
+                ..Highlights::default()
             },
         );
         let key = RenderKey {
@@ -389,6 +442,41 @@ mod tests {
         assert!(
             matches!(next_response(&responses), Response::Searched { ticket: returned, result: Ok(hits) } if returned == ticket && hits.len() == 3)
         );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn reading_answers_each_requested_page_of_the_current_document_in_order() {
+        let path = scratch_copy_of_fixture();
+        let (send, responses) = mpsc::channel();
+        let renderer = Renderer::spawn(
+            path.clone(),
+            move |response| {
+                let _ = send.send(response);
+            },
+            |_, _| {},
+            |_| true,
+            Density::Full,
+        );
+        renderer.load(3);
+        next_response(&responses);
+        renderer.read(2, vec![0]);
+        renderer.read(3, vec![2, 0]);
+        let mut pages = Vec::new();
+        for _ in 0..2 {
+            let Response::Read {
+                document,
+                page,
+                text: Ok(text),
+            } = next_response(&responses)
+            else {
+                panic!("expected page text");
+            };
+            assert_eq!(document, 3);
+            assert!(!text.lines.is_empty());
+            pages.push(page);
+        }
+        assert_eq!(pages, [2, 0]);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

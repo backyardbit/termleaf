@@ -21,7 +21,7 @@ use crate::app::Options;
 use crate::follow::{self, Follow, Listener};
 use crate::graphics::{Raster, TerminalInfo, tmux_server};
 use crate::layout::CellSize;
-use crate::pinch;
+use crate::pinch::{self, PaneFocus};
 use crate::raster::app::{
     App, Event, FRAME_INTERVAL, PARTIAL_REPAINT_INTERVAL, Parts, page_area, pane_of,
 };
@@ -135,11 +135,15 @@ fn show(
         )
         .ok()
     };
+    let focus = PaneFocus::default();
     if options.pinch {
         let pinches = events.clone();
-        let _ = pinch::listen(move |input| {
-            let _ = pinches.send(Event::Pinch(input));
-        });
+        let _ = pinch::listen(
+            move |input| {
+                let _ = pinches.send(Event::Pinch(input));
+            },
+            focus.clone(),
+        );
     }
     let painter = {
         let events = events.clone();
@@ -178,6 +182,7 @@ fn show(
         painter,
         partial_repaint_interval: partial_repaint_interval(raster),
         frame_interval: frame_interval(raster),
+        focus,
     });
     app.event_loop(terminal, &inbox)
 }
