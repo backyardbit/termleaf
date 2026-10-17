@@ -5,13 +5,13 @@ use std::thread;
 
 use anyhow::{Result, bail};
 
-use super::PinchInput;
 use super::evdev::{RECORD_BYTES, Touches, is_touchpad, parse_record};
+use super::{PaneFocus, PinchInput};
 
 const INPUT_DEVICES: &str = "/dev/input";
 const SYSFS_INPUT: &str = "/sys/class/input";
 
-pub fn listen(send: impl Fn(PinchInput) + Clone + Send + 'static) -> Result<()> {
+pub fn listen(send: impl Fn(PinchInput) + Clone + Send + 'static, _focus: PaneFocus) -> Result<()> {
     let touchpads = touchpad_devices();
     if touchpads.is_empty() {
         bail!("pinch found no touchpad");
