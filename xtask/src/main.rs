@@ -1,3 +1,4 @@
+mod commits;
 mod dpi;
 mod e2e;
 mod follow;
@@ -53,10 +54,16 @@ struct Violation {
 }
 
 fn main() -> ExitCode {
-    let task = std::env::args().nth(1);
+    let args: Vec<String> = std::env::args().collect();
+    let task = args.get(1).cloned();
     match task.as_deref() {
         Some("lint") => lint(),
         Some("check") => check(),
+        Some("commits") => commits::run(
+            &workspace_root(),
+            args.get(2).map(String::as_str),
+            args.get(3).map(String::as_str),
+        ),
         Some("e2e") => e2e::run(&workspace_root()),
         Some("xterm") => xterm::run(&workspace_root()),
         Some("tmux") => jumps::run(&workspace_root(), jumps::Backend::Tmux),
@@ -70,10 +77,13 @@ fn main() -> ExitCode {
         Some("dpi") => dpi::run(&workspace_root()),
         _ => {
             eprintln!(
-                "usage: cargo xtask <lint|check|e2e|xterm|tmux|herdr|plain|zellij|screen|kitty|wezterm|follow|dpi>"
+                "usage: cargo xtask <lint|check|commits|e2e|xterm|tmux|herdr|plain|zellij|screen|kitty|wezterm|follow|dpi>"
             );
             eprintln!("  lint   run the anti-slop source checks");
             eprintln!("  check  run fmt, clippy, tests and lint");
+            eprintln!(
+                "  commits <base>..<head> [title]  check commit messages for attribution, (type): titles and a test before each fix"
+            );
             eprintln!(
                 "  e2e    drive termleaf in Ghostty and herdr on a virtual display (CI only)"
             );

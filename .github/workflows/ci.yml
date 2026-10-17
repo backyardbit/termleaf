@@ -22,6 +22,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo xtask check
 
+  commits:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Commit messages carry no attribution, use (type) titles and put a test before each fix
+        env:
+          RANGE: ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
+          TITLE: ${{ github.event.pull_request.title }}
+        run: cargo xtask commits "$RANGE" "$TITLE"
+
   follow-macos:
     name: follow (macos-latest)
     runs-on: macos-latest
