@@ -18,6 +18,8 @@ hosting = "github"
 # Whether to install an updater program
 install-updater = false
 publish-jobs = ["./publish-homebrew", "./publish-crates"]
+# Whether to start releases from a workflow_dispatch instead of a tag push
+dispatch-releases = true
 
 [dist.github-custom-runners]
 aarch64-apple-darwin = "macos-15"
