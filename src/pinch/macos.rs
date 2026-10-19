@@ -10,7 +10,7 @@ use core_foundation::mach_port::{CFMachPort, CFMachPortRef};
 use core_foundation::runloop::{CFRunLoop, kCFRunLoopCommonModes};
 
 use super::gesture::{claims, decode};
-use super::{PaneFocus, PinchInput};
+use super::{PaneFocus, PinchInput, Reach};
 
 const GESTURE_EVENT: u32 = 29;
 const GESTURE_KIND_FIELD: u32 = 110;
@@ -54,7 +54,7 @@ static ACTIVE_TAP: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 pub fn listen(
     send: impl Fn(PinchInput) + Clone + Send + Sync + 'static,
     focus: PaneFocus,
-) -> Result<()> {
+) -> Result<Reach> {
     // SAFETY: CGPreflightListenEventAccess takes no arguments and only reads the process's permission state.
     let allowed = unsafe { CGPreflightListenEventAccess() };
     if !allowed {
@@ -71,7 +71,7 @@ pub fn listen(
     let (started, outcome) = mpsc::channel();
     thread::spawn(move || run_tap(&started));
     match outcome.recv() {
-        Ok(true) => Ok(()),
+        Ok(Some(reach)) => Ok(reach),
         _ => bail!("pinch could not watch trackpad gestures"),
     }
 }
@@ -100,32 +100,32 @@ fn create_tap(options: u32) -> CFMachPortRef {
     }
 }
 
-fn run_tap(started: &mpsc::Sender<bool>) {
+fn run_tap(started: &mpsc::Sender<Option<Reach>>) {
     let active = if may_swallow() {
         create_tap(ACTIVE)
     } else {
         std::ptr::null_mut()
     };
-    let port = if active.is_null() {
-        create_tap(LISTEN_ONLY)
+    let (port, reach) = if active.is_null() {
+        (create_tap(LISTEN_ONLY), Reach::SharedWithTerminal)
     } else {
         ACTIVE_TAP.store(active.cast(), Ordering::Release);
-        active
+        (active, Reach::KeptFromTerminal)
     };
     if port.is_null() {
-        let _ = started.send(false);
+        let _ = started.send(None);
         return;
     }
     // SAFETY: the port was just returned non-null by CGEventTapCreate, which hands over one reference that the wrapper now owns.
     let port = unsafe { CFMachPort::wrap_under_create_rule(port) };
     let Ok(source) = port.create_runloop_source(0) else {
-        let _ = started.send(false);
+        let _ = started.send(None);
         return;
     };
     // SAFETY: kCFRunLoopCommonModes is an immutable CoreFoundation constant.
     let mode = unsafe { kCFRunLoopCommonModes };
     CFRunLoop::get_current().add_source(&source, mode);
-    let _ = started.send(true);
+    let _ = started.send(Some(reach));
     CFRunLoop::run_current();
 }
 

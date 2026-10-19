@@ -126,7 +126,7 @@ Terminals never pass trackpad pinches to the programs running inside them, so te
 - **macOS, terminals that zoom on a pinch (Tern):** give the terminal app **Accessibility** as well. termleaf then keeps the pinches it zooms on away from the terminal, so the terminal's own text doesn't zoom too. Pinches while another pane or app has focus still reach it. Without Accessibility, termleaf only listens and both zoom.
 - **Linux:** your user must be in the `input` group (`sudo usermod -aG input $USER`, then log in again). termleaf only opens devices that report themselves as touchpads, but the group gives read access to every input device.
 
-Run `termleaf --no-pinch` to keep termleaf away from OS input entirely. Ctrl+wheel and `+`/`-` zoom without any permission.
+Run `termleaf --pinch-check` in the terminal to see whether pinch works there and whether the terminal gets pinches too, with each pinch it sees printed for 20 seconds. Run `termleaf --no-pinch` to keep termleaf away from OS input entirely. Ctrl+wheel and `+`/`-` zoom without any permission.
 
 ## SyncTeX
 
