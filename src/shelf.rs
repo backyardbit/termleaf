@@ -77,6 +77,7 @@ mod tests {
                 width: 40,
                 height: 40,
             },
+            density: crate::layout::Density::Full,
         }
     }
 

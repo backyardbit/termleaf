@@ -1354,7 +1354,6 @@ mod tests {
                     let wanted = wanted.clone();
                     move |key: &RenderKey| wanted.contains(key)
                 },
-                Density::ThreeQuarters,
             )
         };
         let encoders = Encoders {
@@ -1399,6 +1398,7 @@ mod tests {
             resize_settles_at: None,
             reload_retries: 0,
             tiles: Vec::new(),
+            retiring: Vec::new(),
             in_flight: Vec::new(),
             resident: Vec::new(),
             travel: Travel::default(),
@@ -2024,6 +2024,151 @@ mod tests {
         assert_eq!(shown, app.viewer.view().layout.scale());
     }
 
+    fn full_density(key: RenderKey) -> RenderKey {
+        RenderKey {
+            density: Density::Full,
+            ..key
+        }
+    }
+
+    fn sharpen(app: &mut App, inbox: &Receiver<Event>, now: Instant) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            app.request_tiles_at(now);
+            if tile_keys(app.generation, app.viewer.view())
+                .iter()
+                .all(|key| app.cached(full_density(*key)).is_some())
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the view never sharpened; in flight: {:?}",
+                app.in_flight
+            );
+            if let Ok(event) = inbox.recv_timeout(Duration::from_millis(200)) {
+                app.handle(event);
+            }
+        }
+    }
+
+    fn transmitted_sizes(outgoing: &str, id: ImageId) -> [u32; 4] {
+        let mut expected = String::new();
+        kitty::transmit(
+            id,
+            &kitty::encode(
+                &image::RgbaImage::new(1, 1),
+                CellGrid {
+                    columns: 1,
+                    rows: 1,
+                },
+                Payload::Raw,
+            ),
+            &mut expected,
+        );
+        let marker = &expected[..expected.find(",s=").unwrap()];
+        let sequence = &outgoing[outgoing.find(marker).expect("the tile was not transmitted")..];
+        [",s=", ",v=", ",c=", ",r="].map(|field| {
+            let value = &sequence[sequence.find(field).unwrap() + field.len()..];
+            value.split(',').next().unwrap().parse().unwrap()
+        })
+    }
+
+    fn scroll_down(app: &mut App, rows: i32) {
+        app.viewer.apply(Command::Scroll { columns: 0, rows });
+    }
+
+    #[test]
+    fn a_scroll_is_shown_at_scrolling_density_without_rendering_sharp_tiles() {
+        let (mut app, inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        settle(&mut app, &inbox);
+        let now = Instant::now() + RESIZE_SETTLE;
+        scroll_down(&mut app, 30);
+        app.request_tiles_at(now);
+        scroll_down(&mut app, 30);
+        app.request_tiles_at(now + Duration::from_millis(10));
+        assert!(!app.in_flight.is_empty());
+        assert!(
+            app.in_flight
+                .iter()
+                .all(|key| key.density == Density::ThreeQuarters),
+            "{:?}",
+            app.in_flight
+        );
+    }
+
+    #[test]
+    fn once_a_scroll_settles_the_view_is_sent_again_one_image_pixel_per_screen_pixel() {
+        let (mut app, inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        settle(&mut app, &inbox);
+        let now = Instant::now() + RESIZE_SETTLE;
+        scroll_down(&mut app, 30);
+        app.request_tiles_at(now);
+        settle(&mut app, &inbox);
+        sharpen(&mut app, &inbox, now + HOLD_WINDOW);
+        for key in tile_keys(app.generation, app.viewer.view()) {
+            let id = app.placed(key).unwrap();
+            let [width, height, columns, rows] = transmitted_sizes(&app.outgoing, id);
+            assert_eq!((width, height), (columns * CELL.width, rows * CELL.height));
+        }
+    }
+
+    #[test]
+    fn the_sharp_tiles_are_drawn_and_the_tiles_they_replace_deleted_after_that_draw() {
+        let (mut app, inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        settle(&mut app, &inbox);
+        let view = tile_keys(app.generation, app.viewer.view());
+        let blurry: Vec<ImageId> = view.iter().filter_map(|key| app.cached(*key)).collect();
+        sharpen(
+            &mut app,
+            &inbox,
+            Instant::now() + RESIZE_SETTLE + HOLD_WINDOW,
+        );
+        app.outgoing.clear();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 31)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        for key in &view {
+            assert_eq!(app.placed(*key), app.cached(full_density(*key)));
+        }
+        assert!(app.outgoing.is_empty());
+        app.retire_replaced_tiles();
+        for id in blurry {
+            assert!(app.outgoing.contains(&kitty::delete(id)), "{id:?} was kept");
+        }
+        assert!(view.iter().all(|key| app.cached(*key).is_none()));
+    }
+
+    #[test]
+    fn a_sharp_tile_stays_on_screen_while_scrolling_past_it() {
+        let (mut app, inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        settle(&mut app, &inbox);
+        sharpen(
+            &mut app,
+            &inbox,
+            Instant::now() + RESIZE_SETTLE + HOLD_WINDOW,
+        );
+        let top = tile_keys(app.generation, app.viewer.view())[0];
+        let sharp_id = app.cached(full_density(top));
+        scroll_down(&mut app, 1);
+        app.request_tiles_at(Instant::now() + RESIZE_SETTLE + HOLD_WINDOW * 2);
+        assert!(tile_keys(app.generation, app.viewer.view()).contains(&top));
+        assert_eq!(app.placed(top), sharp_id);
+        assert!(!app.in_flight.contains(&top));
+    }
+
     #[test]
     fn a_pinch_zooms_the_page() {
         let (mut app, _inbox) = headless_app(Pane {
@@ -2391,11 +2536,12 @@ mod tests {
         loop {
             app.request_tiles_at(Instant::now() + RESIZE_SETTLE);
             terminal.read(app);
+            app.retire_replaced_tiles();
             let view = app.viewer.view().clone();
             if app.in_flight.is_empty()
                 && tile_keys(app.generation, &view)
                     .iter()
-                    .all(|key| app.cached(*key).is_some())
+                    .all(|key| app.placed(*key).is_some())
             {
                 return;
             }
