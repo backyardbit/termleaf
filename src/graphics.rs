@@ -1,3 +1,4 @@
+mod points;
 mod query;
 
 use std::fmt;
