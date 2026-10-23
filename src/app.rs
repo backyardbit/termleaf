@@ -181,6 +181,7 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
             crossterm::terminal::window_size()
                 .ok()
                 .filter(|_| picker.cell_reported()),
+            picker.pixels_per_point(),
         ),
         cell_due: (!picker.cell_reported() && options.graphics == Choice::Auto)
             .then(|| Instant::now() + CELL_WAIT),
@@ -1386,6 +1387,7 @@ mod tests {
     use super::*;
     use crate::browser::WebAddress;
     use crate::browser::fake::RecordingBrowser;
+    use crate::graphics::PixelsPerPoint;
     use crate::inverse::StatusOnly;
     use crate::layout::{TILE_COLUMNS, TILE_ROWS, Tile};
 
@@ -1436,7 +1438,7 @@ mod tests {
             file_name: "doc.pdf".to_owned(),
             viewer: Viewer::new(pages, CELL, pane),
             outline: OutlinePanel::new(outline),
-            cells: CellWatch::new(None),
+            cells: CellWatch::new(None, PixelsPerPoint::ONE),
             cell_due: None,
             search: Search::default(),
             visual: Visual::default(),

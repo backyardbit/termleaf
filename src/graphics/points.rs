@@ -16,8 +16,22 @@ impl PixelsPerPoint {
     }
 
     fn for_terminal(program: Option<&str>, display: impl FnOnce() -> Option<f64>) -> Self {
-        let _ = (program, display);
-        Self::ONE
+        let reports_points = program.is_some_and(|program| {
+            REPORTS_POINTS
+                .iter()
+                .any(|name| program.eq_ignore_ascii_case(name))
+        });
+        if !reports_points {
+            return Self::ONE;
+        }
+        display()
+            .map(f64::round)
+            .and_then(|scale| {
+                [2, 3, 4]
+                    .into_iter()
+                    .find(|whole| f64::from(*whole) == scale)
+            })
+            .map_or(Self::ONE, Self)
     }
 
     pub fn cell(self, (width, height): (u16, u16)) -> (u16, u16) {
