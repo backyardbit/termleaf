@@ -56,10 +56,14 @@ mouse:
 
 Pinch to zoom reads the trackpad from the OS, because terminals never pass
 pinches on. It needs Input Monitoring for your terminal app on macOS, or
-membership of the `input` group on Linux; without it, pinch stays off.
+membership of the `input` group on Linux; without it, pinch stays off. On
+macOS, Accessibility for the terminal app also keeps termleaf's pinches from
+the terminal, for terminals that zoom on a pinch themselves.
 
 options:
   --no-pinch              never read the trackpad from the OS
+  --pinch-check           say whether pinch works here and whether the
+                          terminal gets pinches too, then show each pinch
   --no-follow             start with follow off (F turns it on)
   --graphics <protocol>   auto (the default), or kitty, sixel or iterm2 to use
                           that protocol whatever the terminal reports
@@ -77,6 +81,7 @@ enum Invocation {
         graphics: Choice,
     },
     Follow(follow::Place),
+    PinchCheck,
     Misused,
 }
 
@@ -101,6 +106,7 @@ fn parse(arguments: &[String]) -> Invocation {
         ["--follow", place] => follow::place(place).map_or(Invocation::Misused, Invocation::Follow),
         ["-h" | "--help"] => Invocation::Help,
         ["-V" | "--version"] => Invocation::Version,
+        ["--pinch-check"] => Invocation::PinchCheck,
         [path] if !path.starts_with('-') => Invocation::View {
             path: PathBuf::from(path),
             pinch,
@@ -139,6 +145,10 @@ fn main() -> ExitCode {
             let file = std::path::absolute(&place.file).unwrap_or(place.file);
             let directory = follow::directory(|name| std::env::var(name).ok());
             follow::broadcast(&directory, &follow::Place { file, ..place });
+            return ExitCode::SUCCESS;
+        }
+        Invocation::PinchCheck => {
+            pinch::check();
             return ExitCode::SUCCESS;
         }
         Invocation::Misused => {
@@ -232,6 +242,12 @@ mod tests {
             run(&["--graphics", "halfblocks", "thesis.pdf"]),
             Invocation::Misused
         );
+    }
+
+    #[test]
+    fn pinch_check_runs_on_its_own() {
+        assert_eq!(run(&["--pinch-check"]), Invocation::PinchCheck);
+        assert_eq!(run(&["--pinch-check", "thesis.pdf"]), Invocation::Misused);
     }
 
     #[test]

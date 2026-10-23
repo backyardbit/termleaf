@@ -6,12 +6,15 @@ use std::thread;
 use anyhow::{Result, bail};
 
 use super::evdev::{RECORD_BYTES, Touches, is_touchpad, parse_record};
-use super::{PaneFocus, PinchInput};
+use super::{PaneFocus, PinchInput, Reach};
 
 const INPUT_DEVICES: &str = "/dev/input";
 const SYSFS_INPUT: &str = "/sys/class/input";
 
-pub fn listen(send: impl Fn(PinchInput) + Clone + Send + 'static, _focus: PaneFocus) -> Result<()> {
+pub fn listen(
+    send: impl Fn(PinchInput) + Clone + Send + 'static,
+    _focus: PaneFocus,
+) -> Result<Reach> {
     let touchpads = touchpad_devices();
     if touchpads.is_empty() {
         bail!("pinch found no touchpad");
@@ -31,7 +34,7 @@ pub fn listen(send: impl Fn(PinchInput) + Clone + Send + 'static, _focus: PaneFo
              (sudo usermod -aG input $USER) and log in again"
         );
     }
-    Ok(())
+    Ok(Reach::SharedWithTerminal)
 }
 
 fn touchpad_devices() -> Vec<String> {

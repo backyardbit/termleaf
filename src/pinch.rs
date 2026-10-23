@@ -9,6 +9,10 @@ mod macos;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+use anyhow::Result;
 
 use crate::keys::{Command, ScreenCell};
 use crate::pdf::nearest_whole;
@@ -19,6 +23,67 @@ pub use linux::listen;
 pub use macos::listen;
 
 const PER_MILLE: f64 = 1000.0;
+const CHECK_TIME: Duration = Duration::from_secs(20);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    #[cfg_attr(
+        not(any(target_os = "macos", test)),
+        expect(
+            dead_code,
+            reason = "only the macOS tap can keep pinches from the terminal"
+        )
+    )]
+    KeptFromTerminal,
+    SharedWithTerminal,
+}
+
+pub fn report(outcome: &Result<Reach>) -> String {
+    match outcome {
+        Ok(Reach::KeptFromTerminal) => {
+            "pinch is on and kept from the terminal, so only termleaf zooms".to_owned()
+        }
+        Ok(Reach::SharedWithTerminal) => "pinch is on, but the terminal gets every pinch too: \
+             on macOS, allow your terminal app in System Settings > Privacy & Security > \
+             Accessibility, then restart the terminal"
+            .to_owned(),
+        Err(error) => format!("pinch is off: {error:#}"),
+    }
+}
+
+pub fn seen(input: PinchInput, reach: Reach) -> String {
+    match (input, reach) {
+        (PinchInput::Ended, _) => "pinch ended".to_owned(),
+        (PinchInput::Scale(scale), Reach::KeptFromTerminal) => {
+            format!("pinch ×{scale:.3} · kept from the terminal")
+        }
+        (PinchInput::Scale(scale), Reach::SharedWithTerminal) => {
+            format!("pinch ×{scale:.3} · also reached the terminal")
+        }
+    }
+}
+
+pub fn check() {
+    let (pinches, inbox) = mpsc::channel();
+    let outcome = listen(
+        move |input| {
+            let _ = pinches.send(input);
+        },
+        PaneFocus::default(),
+    );
+    println!("{}", report(&outcome));
+    let Ok(reach) = outcome else {
+        return;
+    };
+    println!(
+        "pinch over this window for the next {} seconds (Ctrl-C stops)",
+        CHECK_TIME.as_secs()
+    );
+    let deadline = Instant::now() + CHECK_TIME;
+    while let Ok(input) = inbox.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        println!("{}", seen(input, reach));
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PinchInput {
@@ -85,6 +150,45 @@ impl PinchGate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_check_says_when_pinches_are_kept_from_the_terminal() {
+        assert_eq!(
+            report(&Ok(Reach::KeptFromTerminal)),
+            "pinch is on and kept from the terminal, so only termleaf zooms"
+        );
+    }
+
+    #[test]
+    fn the_check_says_how_to_keep_pinches_from_the_terminal() {
+        let line = report(&Ok(Reach::SharedWithTerminal));
+        assert!(line.starts_with("pinch is on, but the terminal gets every pinch too"));
+        assert!(line.contains("Accessibility"), "{line}");
+    }
+
+    #[test]
+    fn the_check_says_why_pinch_is_off() {
+        assert_eq!(
+            report(&Err(anyhow::anyhow!("pinch found no touchpad"))),
+            "pinch is off: pinch found no touchpad"
+        );
+    }
+
+    #[test]
+    fn the_check_names_each_pinch_and_where_it_went() {
+        assert_eq!(
+            seen(PinchInput::Scale(1.05), Reach::KeptFromTerminal),
+            "pinch ×1.050 · kept from the terminal"
+        );
+        assert_eq!(
+            seen(PinchInput::Scale(0.9), Reach::SharedWithTerminal),
+            "pinch ×0.900 · also reached the terminal"
+        );
+        assert_eq!(
+            seen(PinchInput::Ended, Reach::KeptFromTerminal),
+            "pinch ended"
+        );
+    }
 
     #[test]
     fn a_pinch_magnifies_by_exactly_its_own_scale() {
