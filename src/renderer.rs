@@ -19,6 +19,7 @@ pub struct RenderKey {
     pub page: usize,
     pub scale: Scale,
     pub region: PixelRegion,
+    pub density: Density,
 }
 
 #[derive(Debug, PartialEq)]
@@ -70,10 +71,9 @@ impl Renderer {
         respond: impl Fn(Response) + Send + 'static,
         deliver: impl Fn(RenderKey, RgbImage) + Send + 'static,
         wanted: impl Fn(&RenderKey) -> bool + Send + 'static,
-        density: Density,
     ) -> Self {
         let (requests, inbox) = mpsc::channel();
-        thread::spawn(move || serve(&path, &inbox, &respond, &deliver, &wanted, density));
+        thread::spawn(move || serve(&path, &inbox, &respond, &deliver, &wanted));
         Self { requests }
     }
 
@@ -160,7 +160,6 @@ fn serve(
     respond: &impl Fn(Response),
     deliver: &impl Fn(RenderKey, RgbImage),
     wanted: &impl Fn(&RenderKey) -> bool,
-    density: Density,
 ) {
     let mut loaded: Option<LoadedPdf> = None;
     let mut pending: Vec<Request> = Vec::new();
@@ -219,7 +218,8 @@ fn serve(
                 if current.rendered_generation != key.generation || !wanted(&key) {
                     continue;
                 }
-                let (scale, region) = (density.scale(key.scale), density.region(key.region));
+                let (scale, region) =
+                    (key.density.scale(key.scale), key.density.region(key.region));
                 if let Ok(mut image) = current.pdf.render(key.page, scale, region) {
                     current.highlights.tint(key.page, scale, region, &mut image);
                     deliver(key, image);

@@ -55,6 +55,7 @@ const CELL_POLL: Duration = Duration::from_millis(50);
 const RESIZE_SETTLE: Duration = Duration::from_millis(300);
 const ZOOM_SETTLE: Duration = Duration::from_millis(150);
 const PREFETCH_TILES: usize = 16;
+const SCROLLING_DENSITY: Density = Density::ThreeQuarters;
 const HOLD_WINDOW: Duration = Duration::from_millis(150);
 const SLOW_WRITE: Duration = Duration::from_millis(4);
 const SLOW_BYTES_PER_SECOND: f64 = 32_000_000.0;
@@ -100,7 +101,6 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
                 let wanted = wanted.clone();
                 move |key: &RenderKey| wanted.contains(key)
             },
-            Density::ThreeQuarters,
         )
     };
     renderer.load(0);
@@ -205,6 +205,7 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
         resize_settles_at: Some(Instant::now() + RESIZE_SETTLE),
         reload_retries: 0,
         tiles: Vec::new(),
+        retiring: Vec::new(),
         in_flight: Vec::new(),
         resident: Vec::new(),
         travel: Travel::default(),
@@ -432,6 +433,7 @@ struct App {
     resize_settles_at: Option<Instant>,
     reload_retries: u32,
     tiles: Vec<CachedTile>,
+    retiring: Vec<CachedTile>,
     in_flight: Vec<RenderKey>,
     resident: Vec<RenderKey>,
     travel: Travel,
@@ -484,6 +486,7 @@ impl App {
                 self.flush(terminal)?;
             }
             terminal.draw(|frame| self.draw(frame))?;
+            self.retire_replaced_tiles();
             let wait = match self.cell_due {
                 Some(_) => CELL_POLL,
                 None => self.idle_wait(Instant::now()),
@@ -818,11 +821,11 @@ impl App {
             self.encoder.claimed();
         }
         self.in_flight.retain(|pending| *pending != tile.key);
-        if tile.key.generation != self.generation || self.cached(tile.key).is_some() {
+        if tile.key.generation != self.generation || self.placed(tile.key).is_some() {
             return;
         }
         if self.wanted.contains(&tile.key)
-            && tile_keys(self.generation, self.viewer.view()).contains(&tile.key)
+            && tile_keys(self.generation, self.viewer.view()).contains(&scrolling(tile.key))
         {
             self.store(&tile);
         } else {
@@ -835,6 +838,12 @@ impl App {
         let id = self.next_id;
         self.next_id = id.next();
         kitty::transmit(id, &tile.image, &mut self.outgoing);
+        if tile.key.density == Density::Full {
+            let replaced = scrolling(tile.key);
+            let (retired, kept) = self.tiles.drain(..).partition(|held| held.key == replaced);
+            self.tiles = kept;
+            self.retiring.extend::<Vec<CachedTile>>(retired);
+        }
         self.tiles.push(CachedTile {
             key: tile.key,
             id,
@@ -842,14 +851,27 @@ impl App {
         });
     }
 
+    fn retire_replaced_tiles(&mut self) {
+        for tile in self.retiring.drain(..) {
+            self.stretch_grids.remove(&tile.id);
+            self.outgoing.push_str(&kitty::delete(tile.id));
+        }
+    }
+
     fn evict(&mut self, incoming: usize) {
         let current = tile_keys(self.generation, self.viewer.view());
         let protected = self.visible_keys();
-        let mut total = incoming + self.tiles.iter().map(|tile| tile.bytes).sum::<usize>();
+        let mut total = incoming
+            + self
+                .tiles
+                .iter()
+                .chain(&self.retiring)
+                .map(|tile| tile.bytes)
+                .sum::<usize>();
         for keep_protected in [true, false] {
             let mut index = 0;
             while total > TILE_BYTE_BUDGET && index < self.tiles.len() {
-                let key = self.tiles[index].key;
+                let key = scrolling(self.tiles[index].key);
                 if current.contains(&key)
                     || (keep_protected
                         && (protected.contains(&key) || self.resident.contains(&key)))
@@ -880,6 +902,7 @@ impl App {
 
     fn forget_all_tiles(&mut self) {
         self.forget_tiles(|_| true);
+        self.retire_replaced_tiles();
     }
 
     fn flush(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
@@ -949,17 +972,33 @@ impl App {
         };
         self.resident = resident;
         let wanted = tile_keys(self.generation, &view);
-        self.wanted
-            .set(prefetch.iter().chain(&wanted).copied().collect());
-        self.in_flight
-            .retain(|key| wanted.contains(key) || prefetch.contains(key));
         let drawn = self.requested_view.as_ref() == Some(&view);
+        let view_ready = drawn && wanted.iter().all(|key| self.placed(*key).is_some());
+        let sharpening: Vec<RenderKey> = if view_ready && settled && self.may_transmit(now) {
+            wanted
+                .iter()
+                .map(|key| sharp(*key))
+                .filter(|key| self.cached(*key).is_none())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        self.wanted.set(
+            prefetch
+                .iter()
+                .chain(&wanted)
+                .chain(&sharpening)
+                .copied()
+                .collect(),
+        );
+        self.in_flight.retain(|key| {
+            wanted.contains(key) || prefetch.contains(key) || sharpening.contains(key)
+        });
         self.requested_view = Some(view.clone());
-        let view_ready = drawn && wanted.iter().all(|key| self.cached(*key).is_some());
         let mut bump = !drawn;
         for key in prefetch.iter().rev() {
             if !self.shelf.holds(*key)
-                && self.cached(*key).is_none()
+                && self.placed(*key).is_none()
                 && !self.in_flight.contains(key)
             {
                 self.request(*key);
@@ -967,7 +1006,7 @@ impl App {
             }
         }
         if bump {
-            for key in &wanted {
+            for key in wanted.iter().chain(&sharpening) {
                 if self.in_flight.contains(key) {
                     self.renderer.render(*key);
                 }
@@ -992,6 +1031,9 @@ impl App {
             }
             self.request(*key);
         }
+        for key in &sharpening {
+            self.request(*key);
+        }
         let pipe_idle = settled && self.outgoing.is_empty();
         if view_ready && pipe_idle {
             self.send_one_prefetched();
@@ -1003,7 +1045,7 @@ impl App {
                 view: view.clone(),
             });
         }
-        if !wanted.iter().all(|key| self.cached(*key).is_some()) || !self.may_transmit(now) {
+        if !wanted.iter().all(|key| self.placed(*key).is_some()) || !self.may_transmit(now) {
             return;
         }
         let scale = view.layout.scale();
@@ -1104,6 +1146,7 @@ impl App {
         major.truncate(PREFETCH_TILES * (TILE_ROWS / view.layout.tile_rows()) as usize);
         let mut seen: Vec<RenderKey> = Vec::new();
         for key in visible {
+            let key = sharp(key);
             if !seen.contains(&key) {
                 seen.push(key);
             }
@@ -1137,7 +1180,7 @@ impl App {
     fn prefetched_waiting(&self) -> bool {
         self.resident
             .iter()
-            .any(|key| self.cached(*key).is_none() && self.shelf.holds(*key))
+            .any(|key| self.placed(*key).is_none() && self.shelf.holds(*key))
     }
 
     fn send_one_prefetched(&mut self) {
@@ -1145,7 +1188,7 @@ impl App {
             .resident
             .iter()
             .copied()
-            .find(|key| self.cached(*key).is_none() && self.shelf.holds(*key))
+            .find(|key| self.placed(*key).is_none() && self.shelf.holds(*key))
         else {
             return;
         };
@@ -1163,7 +1206,7 @@ impl App {
     }
 
     fn request(&mut self, key: RenderKey) {
-        if self.cached(key).is_some() || self.in_flight.contains(&key) {
+        if self.placed(key).is_some() || self.in_flight.contains(&key) {
             return;
         }
         if let Some(tile) = self.shelf.take(key) {
@@ -1173,6 +1216,10 @@ impl App {
         self.in_flight.retain(|pending| pending.scale == key.scale);
         self.in_flight.push(key);
         self.renderer.render(key);
+    }
+
+    fn placed(&self, key: RenderKey) -> Option<ImageId> {
+        self.cached(sharp(key)).or_else(|| self.cached(key))
     }
 
     fn cached(&self, key: RenderKey) -> Option<ImageId> {
@@ -1226,7 +1273,7 @@ impl App {
         if let Some(shown) = self.shown.as_ref().filter(|_| self.stretched.is_empty()) {
             for placement in shown.view.placements() {
                 let key = tile_key(shown.generation, &shown.view, placement.tile);
-                let Some(id) = self.cached(key) else {
+                let Some(id) = self.placed(key) else {
                     continue;
                 };
                 let area = Rect {
@@ -1289,10 +1336,12 @@ enum Flow {
 
 fn tile_bytes(key: RenderKey, cell: CellSize) -> usize {
     let width = u64::from(
-        Density::ThreeQuarters.shrink_up(key.region.width.div_ceil(cell.width) * cell.width),
+        key.density
+            .shrink_up(key.region.width.div_ceil(cell.width) * cell.width),
     );
     let height = u64::from(
-        Density::ThreeQuarters.shrink_up(key.region.height.div_ceil(cell.height) * cell.height),
+        key.density
+            .shrink_up(key.region.height.div_ceil(cell.height) * cell.height),
     );
     width
         .checked_mul(height)
@@ -1314,6 +1363,21 @@ fn tile_key(generation: Generation, view: &View, tile: crate::layout::Tile) -> R
         page: tile.page,
         scale: view.layout.scale(),
         region: view.layout.tile_region(tile),
+        density: SCROLLING_DENSITY,
+    }
+}
+
+fn sharp(key: RenderKey) -> RenderKey {
+    RenderKey {
+        density: Density::Full,
+        ..key
+    }
+}
+
+fn scrolling(key: RenderKey) -> RenderKey {
+    RenderKey {
+        density: SCROLLING_DENSITY,
+        ..key
     }
 }
 

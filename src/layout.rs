@@ -7,7 +7,7 @@ pub const TILE_COLUMNS: u32 = 64;
 pub const TILE_ROWS: u32 = 48;
 const MIN_TILE_ROWS: u32 = 8;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Density {
     Full,
     ThreeQuarters,

@@ -105,8 +105,9 @@ fn serve(
 }
 
 pub fn encode(job: Job, cell: CellSize, payload: Payload) -> Encoded {
-    if job.image.width() < job.key.region.width {
-        return encode_stretched(job, cell, payload, Density::ThreeQuarters);
+    if job.key.density != Density::Full {
+        let density = job.key.density;
+        return encode_stretched(job, cell, payload, density);
     }
     let padded = pad_to_cells(job.image, cell);
     let grid = grid_of(&padded, cell);
