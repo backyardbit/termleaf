@@ -15,7 +15,7 @@ use ratatui::{DefaultTerminal, Frame};
 use crate::browser::{Browser, WebLinks};
 use crate::clipboard::{self, Clipboard, SystemClipboard};
 use crate::follow::{Follow, Request};
-use crate::graphics::CellWatch;
+use crate::graphics::{CellWatch, PixelsPerPoint};
 use crate::inverse::{Editors, Inverse};
 use crate::keys::{Command, Key, KeyParser};
 use crate::layout::{CellSize, Pane, View};
@@ -127,6 +127,7 @@ pub struct Parts {
     pub pages: Vec<PageInfo>,
     pub outline: Vec<Heading>,
     pub cell: CellSize,
+    pub pixels_per_point: PixelsPerPoint,
     pub pane: Pane,
     pub requery_every: Option<Duration>,
     pub renderer: Renderer,
@@ -146,7 +147,10 @@ impl App {
             viewer: Viewer::new(parts.pages, parts.cell, parts.pane),
             outline: OutlinePanel::new(parts.outline),
             clear_screen: false,
-            cells: CellWatch::new(crossterm::terminal::window_size().ok()),
+            cells: CellWatch::new(
+                crossterm::terminal::window_size().ok(),
+                parts.pixels_per_point,
+            ),
             requery: parts.requery_every.map(|every| (every, Instant::now())),
             search: Search::default(),
             visual: Visual::default(),
@@ -838,7 +842,6 @@ mod tests {
                     let _ = tiles.send(Event::Tile(key, image));
                 },
                 |_| true,
-                crate::layout::Density::Full,
             )
         };
         let painter = Painter::spawn(Box::new(|frame, _| sixel::encode(frame)), move |painting| {
@@ -857,6 +860,7 @@ mod tests {
             pages,
             outline,
             cell: CELL,
+            pixels_per_point: PixelsPerPoint::ONE,
             pane,
             requery_every: None,
             renderer,

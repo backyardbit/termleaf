@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use image::{Rgb, RgbImage};
 
-use crate::layout::{Tile, View};
+use crate::layout::{Density, Tile, View};
 use crate::renderer::{Generation, RenderKey};
 
 pub const GAP: Rgb<u8> = Rgb([48, 48, 48]);
@@ -25,6 +25,7 @@ fn tile_key(generation: Generation, view: &View, tile: Tile) -> RenderKey {
         page: tile.page,
         scale: view.layout.scale(),
         region: view.layout.tile_region(tile),
+        density: Density::Full,
     }
 }
 

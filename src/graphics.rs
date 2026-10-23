@@ -1,4 +1,7 @@
+mod points;
 mod query;
+
+pub use points::PixelsPerPoint;
 
 use std::fmt;
 use std::os::fd::AsFd;
@@ -62,6 +65,7 @@ impl fmt::Display for Raster {
 
 pub struct TerminalInfo {
     font_size: FontSize,
+    pixels_per_point: PixelsPerPoint,
     cell_reported: bool,
     capabilities: Vec<Capability>,
     tmux: bool,
@@ -70,6 +74,10 @@ pub struct TerminalInfo {
 impl TerminalInfo {
     pub fn font_size(&self) -> FontSize {
         self.font_size
+    }
+
+    pub fn pixels_per_point(&self) -> PixelsPerPoint {
+        self.pixels_per_point
     }
 
     pub fn cell_reported(&self) -> bool {
@@ -115,19 +123,23 @@ pub fn detect(choice: Choice) -> Result<(Protocol, TerminalInfo)> {
         .ok()
         .and_then(|size| cell_of(&size))
         .map(|(width, height)| FontSize::new(width, height));
-    let (found, terminal) = interpret(replies, hints, fallback);
+    let (found, mut terminal) = interpret(replies, hints, fallback);
+    terminal.pixels_per_point = PixelsPerPoint::detect();
+    terminal.font_size = terminal.pixels_per_point.font(terminal.font_size);
     let protocol = decide(found, choice, Hints::from_env(), terminal.cell_reported)?;
     Ok((protocol, terminal))
 }
 
 pub struct CellWatch {
     seen: Option<(u16, u16)>,
+    pixels_per_point: PixelsPerPoint,
 }
 
 impl CellWatch {
-    pub fn new(size: Option<WindowSize>) -> Self {
+    pub fn new(size: Option<WindowSize>, pixels_per_point: PixelsPerPoint) -> Self {
         Self {
             seen: size.as_ref().and_then(cell_of),
+            pixels_per_point,
         }
     }
 
@@ -137,10 +149,13 @@ impl CellWatch {
 
     pub fn cell(&mut self, size: Option<WindowSize>, current: CellSize) -> CellSize {
         match size.as_ref().and_then(cell_of) {
-            Some(cell) if self.seen.replace(cell) != Some(cell) => CellSize {
-                width: u32::from(cell.0),
-                height: u32::from(cell.1),
-            },
+            Some(cell) if self.seen.replace(cell) != Some(cell) => {
+                let (width, height) = self.pixels_per_point.cell(cell);
+                CellSize {
+                    width: u32::from(width),
+                    height: u32::from(height),
+                }
+            }
             _ => current,
         }
     }
@@ -234,6 +249,7 @@ fn interpret(
         found,
         TerminalInfo {
             font_size: font_size.unwrap_or(FontSize::new(10, 20)),
+            pixels_per_point: PixelsPerPoint::ONE,
             cell_reported: font_size.is_some(),
             capabilities,
             tmux: hints.tmux,
@@ -371,7 +387,7 @@ mod tests {
             width: 20,
             height: 40,
         };
-        let mut cells = CellWatch::new(size(1000, 800));
+        let mut cells = CellWatch::new(size(1000, 800), PixelsPerPoint::ONE);
         assert_eq!(cells.cell(size(1000, 800), queried), queried);
         assert_eq!(cells.cell(size(0, 0), queried), queried);
         assert_eq!(cells.cell(None, queried), queried);

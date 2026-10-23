@@ -105,8 +105,9 @@ fn serve(
 }
 
 pub fn encode(job: Job, cell: CellSize, payload: Payload) -> Encoded {
-    if job.image.width() < job.key.region.width {
-        return encode_stretched(job, cell, payload, Density::ThreeQuarters);
+    if job.key.density != Density::Full {
+        let density = job.key.density;
+        return encode_stretched(job, cell, payload, density);
     }
     let padded = pad_to_cells(job.image, cell);
     let grid = grid_of(&padded, cell);
@@ -184,6 +185,7 @@ mod tests {
                 width: 95,
                 height: 41,
             },
+            density: crate::layout::Density::Full,
         }
     }
 
@@ -261,6 +263,26 @@ mod tests {
         let padded = pad_to_cells(RgbImage::new(95, 41), CELL);
         assert_eq!(padded.get_pixel(99, 59).0[3], 0);
         assert_eq!(padded.get_pixel(95, 0).0[3], 0);
+    }
+
+    #[test]
+    fn a_tile_carries_one_pixel_per_screen_pixel_only_at_full_density() {
+        let sizes = |density| {
+            let key = RenderKey { density, ..key(0) };
+            let image = RgbImage::new(
+                density.shrink_up(key.region.width),
+                density.shrink_up(key.region.height),
+            );
+            let encoded = encode(Job { key, image }, CELL, Payload::Raw);
+            let mut sequence = String::new();
+            kitty::transmit(kitty::ImageId::first(), &encoded.image, &mut sequence);
+            [",s=", ",v=", ",c=", ",r="].map(|field| {
+                let value = &sequence[sequence.find(field).unwrap() + field.len()..];
+                value.split(',').next().unwrap().parse::<u32>().unwrap()
+            })
+        };
+        assert_eq!(sizes(Density::Full), [100, 60, 10, 3]);
+        assert_eq!(sizes(Density::ThreeQuarters), [75, 45, 10, 3]);
     }
 
     #[test]

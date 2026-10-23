@@ -106,6 +106,7 @@ mod tests {
                 width: 10,
                 height: 10,
             },
+            density: crate::layout::Density::Full,
         }
     }
 

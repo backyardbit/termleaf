@@ -55,6 +55,7 @@ const CELL_POLL: Duration = Duration::from_millis(50);
 const RESIZE_SETTLE: Duration = Duration::from_millis(300);
 const ZOOM_SETTLE: Duration = Duration::from_millis(150);
 const PREFETCH_TILES: usize = 16;
+const SCROLLING_DENSITY: Density = Density::ThreeQuarters;
 const HOLD_WINDOW: Duration = Duration::from_millis(150);
 const SLOW_WRITE: Duration = Duration::from_millis(4);
 const SLOW_BYTES_PER_SECOND: f64 = 32_000_000.0;
@@ -100,7 +101,6 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
                 let wanted = wanted.clone();
                 move |key: &RenderKey| wanted.contains(key)
             },
-            Density::ThreeQuarters,
         )
     };
     renderer.load(0);
@@ -181,6 +181,7 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
             crossterm::terminal::window_size()
                 .ok()
                 .filter(|_| picker.cell_reported()),
+            picker.pixels_per_point(),
         ),
         cell_due: (!picker.cell_reported() && options.graphics == Choice::Auto)
             .then(|| Instant::now() + CELL_WAIT),
@@ -205,6 +206,7 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
         resize_settles_at: Some(Instant::now() + RESIZE_SETTLE),
         reload_retries: 0,
         tiles: Vec::new(),
+        retiring: Vec::new(),
         in_flight: Vec::new(),
         resident: Vec::new(),
         travel: Travel::default(),
@@ -432,6 +434,7 @@ struct App {
     resize_settles_at: Option<Instant>,
     reload_retries: u32,
     tiles: Vec<CachedTile>,
+    retiring: Vec<CachedTile>,
     in_flight: Vec<RenderKey>,
     resident: Vec<RenderKey>,
     travel: Travel,
@@ -484,6 +487,7 @@ impl App {
                 self.flush(terminal)?;
             }
             terminal.draw(|frame| self.draw(frame))?;
+            self.retire_replaced_tiles();
             let wait = match self.cell_due {
                 Some(_) => CELL_POLL,
                 None => self.idle_wait(Instant::now()),
@@ -818,11 +822,11 @@ impl App {
             self.encoder.claimed();
         }
         self.in_flight.retain(|pending| *pending != tile.key);
-        if tile.key.generation != self.generation || self.cached(tile.key).is_some() {
+        if tile.key.generation != self.generation || self.placed(tile.key).is_some() {
             return;
         }
         if self.wanted.contains(&tile.key)
-            && tile_keys(self.generation, self.viewer.view()).contains(&tile.key)
+            && tile_keys(self.generation, self.viewer.view()).contains(&scrolling(tile.key))
         {
             self.store(&tile);
         } else {
@@ -835,6 +839,12 @@ impl App {
         let id = self.next_id;
         self.next_id = id.next();
         kitty::transmit(id, &tile.image, &mut self.outgoing);
+        if tile.key.density == Density::Full {
+            let replaced = scrolling(tile.key);
+            let (retired, kept) = self.tiles.drain(..).partition(|held| held.key == replaced);
+            self.tiles = kept;
+            self.retiring.extend::<Vec<CachedTile>>(retired);
+        }
         self.tiles.push(CachedTile {
             key: tile.key,
             id,
@@ -842,14 +852,27 @@ impl App {
         });
     }
 
+    fn retire_replaced_tiles(&mut self) {
+        for tile in self.retiring.drain(..) {
+            self.stretch_grids.remove(&tile.id);
+            self.outgoing.push_str(&kitty::delete(tile.id));
+        }
+    }
+
     fn evict(&mut self, incoming: usize) {
         let current = tile_keys(self.generation, self.viewer.view());
         let protected = self.visible_keys();
-        let mut total = incoming + self.tiles.iter().map(|tile| tile.bytes).sum::<usize>();
+        let mut total = incoming
+            + self
+                .tiles
+                .iter()
+                .chain(&self.retiring)
+                .map(|tile| tile.bytes)
+                .sum::<usize>();
         for keep_protected in [true, false] {
             let mut index = 0;
             while total > TILE_BYTE_BUDGET && index < self.tiles.len() {
-                let key = self.tiles[index].key;
+                let key = scrolling(self.tiles[index].key);
                 if current.contains(&key)
                     || (keep_protected
                         && (protected.contains(&key) || self.resident.contains(&key)))
@@ -880,6 +903,7 @@ impl App {
 
     fn forget_all_tiles(&mut self) {
         self.forget_tiles(|_| true);
+        self.retire_replaced_tiles();
     }
 
     fn flush(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
@@ -949,17 +973,33 @@ impl App {
         };
         self.resident = resident;
         let wanted = tile_keys(self.generation, &view);
-        self.wanted
-            .set(prefetch.iter().chain(&wanted).copied().collect());
-        self.in_flight
-            .retain(|key| wanted.contains(key) || prefetch.contains(key));
         let drawn = self.requested_view.as_ref() == Some(&view);
+        let view_ready = drawn && wanted.iter().all(|key| self.placed(*key).is_some());
+        let sharpening: Vec<RenderKey> = if view_ready && settled && self.may_transmit(now) {
+            wanted
+                .iter()
+                .map(|key| sharp(*key))
+                .filter(|key| self.cached(*key).is_none())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        self.wanted.set(
+            prefetch
+                .iter()
+                .chain(&wanted)
+                .chain(&sharpening)
+                .copied()
+                .collect(),
+        );
+        self.in_flight.retain(|key| {
+            wanted.contains(key) || prefetch.contains(key) || sharpening.contains(key)
+        });
         self.requested_view = Some(view.clone());
-        let view_ready = drawn && wanted.iter().all(|key| self.cached(*key).is_some());
         let mut bump = !drawn;
         for key in prefetch.iter().rev() {
             if !self.shelf.holds(*key)
-                && self.cached(*key).is_none()
+                && self.placed(*key).is_none()
                 && !self.in_flight.contains(key)
             {
                 self.request(*key);
@@ -967,7 +1007,7 @@ impl App {
             }
         }
         if bump {
-            for key in &wanted {
+            for key in wanted.iter().chain(&sharpening) {
                 if self.in_flight.contains(key) {
                     self.renderer.render(*key);
                 }
@@ -992,6 +1032,9 @@ impl App {
             }
             self.request(*key);
         }
+        for key in &sharpening {
+            self.request(*key);
+        }
         let pipe_idle = settled && self.outgoing.is_empty();
         if view_ready && pipe_idle {
             self.send_one_prefetched();
@@ -1003,7 +1046,7 @@ impl App {
                 view: view.clone(),
             });
         }
-        if !wanted.iter().all(|key| self.cached(*key).is_some()) || !self.may_transmit(now) {
+        if !wanted.iter().all(|key| self.placed(*key).is_some()) || !self.may_transmit(now) {
             return;
         }
         let scale = view.layout.scale();
@@ -1104,6 +1147,7 @@ impl App {
         major.truncate(PREFETCH_TILES * (TILE_ROWS / view.layout.tile_rows()) as usize);
         let mut seen: Vec<RenderKey> = Vec::new();
         for key in visible {
+            let key = sharp(key);
             if !seen.contains(&key) {
                 seen.push(key);
             }
@@ -1137,7 +1181,7 @@ impl App {
     fn prefetched_waiting(&self) -> bool {
         self.resident
             .iter()
-            .any(|key| self.cached(*key).is_none() && self.shelf.holds(*key))
+            .any(|key| self.placed(*key).is_none() && self.shelf.holds(*key))
     }
 
     fn send_one_prefetched(&mut self) {
@@ -1145,7 +1189,7 @@ impl App {
             .resident
             .iter()
             .copied()
-            .find(|key| self.cached(*key).is_none() && self.shelf.holds(*key))
+            .find(|key| self.placed(*key).is_none() && self.shelf.holds(*key))
         else {
             return;
         };
@@ -1163,7 +1207,7 @@ impl App {
     }
 
     fn request(&mut self, key: RenderKey) {
-        if self.cached(key).is_some() || self.in_flight.contains(&key) {
+        if self.placed(key).is_some() || self.in_flight.contains(&key) {
             return;
         }
         if let Some(tile) = self.shelf.take(key) {
@@ -1173,6 +1217,10 @@ impl App {
         self.in_flight.retain(|pending| pending.scale == key.scale);
         self.in_flight.push(key);
         self.renderer.render(key);
+    }
+
+    fn placed(&self, key: RenderKey) -> Option<ImageId> {
+        self.cached(sharp(key)).or_else(|| self.cached(key))
     }
 
     fn cached(&self, key: RenderKey) -> Option<ImageId> {
@@ -1226,7 +1274,7 @@ impl App {
         if let Some(shown) = self.shown.as_ref().filter(|_| self.stretched.is_empty()) {
             for placement in shown.view.placements() {
                 let key = tile_key(shown.generation, &shown.view, placement.tile);
-                let Some(id) = self.cached(key) else {
+                let Some(id) = self.placed(key) else {
                     continue;
                 };
                 let area = Rect {
@@ -1289,10 +1337,12 @@ enum Flow {
 
 fn tile_bytes(key: RenderKey, cell: CellSize) -> usize {
     let width = u64::from(
-        Density::ThreeQuarters.shrink_up(key.region.width.div_ceil(cell.width) * cell.width),
+        key.density
+            .shrink_up(key.region.width.div_ceil(cell.width) * cell.width),
     );
     let height = u64::from(
-        Density::ThreeQuarters.shrink_up(key.region.height.div_ceil(cell.height) * cell.height),
+        key.density
+            .shrink_up(key.region.height.div_ceil(cell.height) * cell.height),
     );
     width
         .checked_mul(height)
@@ -1314,6 +1364,21 @@ fn tile_key(generation: Generation, view: &View, tile: crate::layout::Tile) -> R
         page: tile.page,
         scale: view.layout.scale(),
         region: view.layout.tile_region(tile),
+        density: SCROLLING_DENSITY,
+    }
+}
+
+fn sharp(key: RenderKey) -> RenderKey {
+    RenderKey {
+        density: Density::Full,
+        ..key
+    }
+}
+
+fn scrolling(key: RenderKey) -> RenderKey {
+    RenderKey {
+        density: SCROLLING_DENSITY,
+        ..key
     }
 }
 
@@ -1322,6 +1387,7 @@ mod tests {
     use super::*;
     use crate::browser::WebAddress;
     use crate::browser::fake::RecordingBrowser;
+    use crate::graphics::PixelsPerPoint;
     use crate::inverse::StatusOnly;
     use crate::layout::{TILE_COLUMNS, TILE_ROWS, Tile};
 
@@ -1354,7 +1420,6 @@ mod tests {
                     let wanted = wanted.clone();
                     move |key: &RenderKey| wanted.contains(key)
                 },
-                Density::ThreeQuarters,
             )
         };
         let encoders = Encoders {
@@ -1373,7 +1438,7 @@ mod tests {
             file_name: "doc.pdf".to_owned(),
             viewer: Viewer::new(pages, CELL, pane),
             outline: OutlinePanel::new(outline),
-            cells: CellWatch::new(None),
+            cells: CellWatch::new(None, PixelsPerPoint::ONE),
             cell_due: None,
             search: Search::default(),
             visual: Visual::default(),
@@ -1399,6 +1464,7 @@ mod tests {
             resize_settles_at: None,
             reload_retries: 0,
             tiles: Vec::new(),
+            retiring: Vec::new(),
             in_flight: Vec::new(),
             resident: Vec::new(),
             travel: Travel::default(),
@@ -2024,6 +2090,151 @@ mod tests {
         assert_eq!(shown, app.viewer.view().layout.scale());
     }
 
+    fn full_density(key: RenderKey) -> RenderKey {
+        RenderKey {
+            density: Density::Full,
+            ..key
+        }
+    }
+
+    fn sharpen(app: &mut App, inbox: &Receiver<Event>, now: Instant) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            app.request_tiles_at(now);
+            if tile_keys(app.generation, app.viewer.view())
+                .iter()
+                .all(|key| app.cached(full_density(*key)).is_some())
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the view never sharpened; in flight: {:?}",
+                app.in_flight
+            );
+            if let Ok(event) = inbox.recv_timeout(Duration::from_millis(200)) {
+                app.handle(event);
+            }
+        }
+    }
+
+    fn transmitted_sizes(outgoing: &str, id: ImageId) -> [u32; 4] {
+        let mut expected = String::new();
+        kitty::transmit(
+            id,
+            &kitty::encode(
+                &image::RgbaImage::new(1, 1),
+                CellGrid {
+                    columns: 1,
+                    rows: 1,
+                },
+                Payload::Raw,
+            ),
+            &mut expected,
+        );
+        let marker = &expected[..expected.find(",s=").unwrap()];
+        let sequence = &outgoing[outgoing.find(marker).expect("the tile was not transmitted")..];
+        [",s=", ",v=", ",c=", ",r="].map(|field| {
+            let value = &sequence[sequence.find(field).unwrap() + field.len()..];
+            value.split(',').next().unwrap().parse().unwrap()
+        })
+    }
+
+    fn scroll_down(app: &mut App, rows: i32) {
+        app.viewer.apply(Command::Scroll { columns: 0, rows });
+    }
+
+    #[test]
+    fn a_scroll_is_shown_at_scrolling_density_without_rendering_sharp_tiles() {
+        let (mut app, inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        settle(&mut app, &inbox);
+        let now = Instant::now() + RESIZE_SETTLE;
+        scroll_down(&mut app, 30);
+        app.request_tiles_at(now);
+        scroll_down(&mut app, 30);
+        app.request_tiles_at(now + Duration::from_millis(10));
+        assert!(!app.in_flight.is_empty());
+        assert!(
+            app.in_flight
+                .iter()
+                .all(|key| key.density == Density::ThreeQuarters),
+            "{:?}",
+            app.in_flight
+        );
+    }
+
+    #[test]
+    fn once_a_scroll_settles_the_view_is_sent_again_one_image_pixel_per_screen_pixel() {
+        let (mut app, inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        settle(&mut app, &inbox);
+        let now = Instant::now() + RESIZE_SETTLE;
+        scroll_down(&mut app, 30);
+        app.request_tiles_at(now);
+        settle(&mut app, &inbox);
+        sharpen(&mut app, &inbox, now + HOLD_WINDOW);
+        for key in tile_keys(app.generation, app.viewer.view()) {
+            let id = app.placed(key).unwrap();
+            let [width, height, columns, rows] = transmitted_sizes(&app.outgoing, id);
+            assert_eq!((width, height), (columns * CELL.width, rows * CELL.height));
+        }
+    }
+
+    #[test]
+    fn the_sharp_tiles_are_drawn_and_the_tiles_they_replace_deleted_after_that_draw() {
+        let (mut app, inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        settle(&mut app, &inbox);
+        let view = tile_keys(app.generation, app.viewer.view());
+        let blurry: Vec<ImageId> = view.iter().filter_map(|key| app.cached(*key)).collect();
+        sharpen(
+            &mut app,
+            &inbox,
+            Instant::now() + RESIZE_SETTLE + HOLD_WINDOW,
+        );
+        app.outgoing.clear();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 31)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        for key in &view {
+            assert_eq!(app.placed(*key), app.cached(full_density(*key)));
+        }
+        assert!(app.outgoing.is_empty());
+        app.retire_replaced_tiles();
+        for id in blurry {
+            assert!(app.outgoing.contains(&kitty::delete(id)), "{id:?} was kept");
+        }
+        assert!(view.iter().all(|key| app.cached(*key).is_none()));
+    }
+
+    #[test]
+    fn a_sharp_tile_stays_on_screen_while_scrolling_past_it() {
+        let (mut app, inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 30,
+        });
+        settle(&mut app, &inbox);
+        sharpen(
+            &mut app,
+            &inbox,
+            Instant::now() + RESIZE_SETTLE + HOLD_WINDOW,
+        );
+        let top = tile_keys(app.generation, app.viewer.view())[0];
+        let sharp_id = app.cached(full_density(top));
+        scroll_down(&mut app, 1);
+        app.request_tiles_at(Instant::now() + RESIZE_SETTLE + HOLD_WINDOW * 2);
+        assert!(tile_keys(app.generation, app.viewer.view()).contains(&top));
+        assert_eq!(app.placed(top), sharp_id);
+        assert!(!app.in_flight.contains(&top));
+    }
+
     #[test]
     fn a_pinch_zooms_the_page() {
         let (mut app, _inbox) = headless_app(Pane {
@@ -2391,11 +2602,12 @@ mod tests {
         loop {
             app.request_tiles_at(Instant::now() + RESIZE_SETTLE);
             terminal.read(app);
+            app.retire_replaced_tiles();
             let view = app.viewer.view().clone();
             if app.in_flight.is_empty()
                 && tile_keys(app.generation, &view)
                     .iter()
-                    .all(|key| app.cached(*key).is_some())
+                    .all(|key| app.placed(*key).is_some())
             {
                 return;
             }

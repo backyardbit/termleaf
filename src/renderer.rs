@@ -19,6 +19,7 @@ pub struct RenderKey {
     pub page: usize,
     pub scale: Scale,
     pub region: PixelRegion,
+    pub density: Density,
 }
 
 #[derive(Debug, PartialEq)]
@@ -70,10 +71,9 @@ impl Renderer {
         respond: impl Fn(Response) + Send + 'static,
         deliver: impl Fn(RenderKey, RgbImage) + Send + 'static,
         wanted: impl Fn(&RenderKey) -> bool + Send + 'static,
-        density: Density,
     ) -> Self {
         let (requests, inbox) = mpsc::channel();
-        thread::spawn(move || serve(&path, &inbox, &respond, &deliver, &wanted, density));
+        thread::spawn(move || serve(&path, &inbox, &respond, &deliver, &wanted));
         Self { requests }
     }
 
@@ -160,7 +160,6 @@ fn serve(
     respond: &impl Fn(Response),
     deliver: &impl Fn(RenderKey, RgbImage),
     wanted: &impl Fn(&RenderKey) -> bool,
-    density: Density,
 ) {
     let mut loaded: Option<LoadedPdf> = None;
     let mut pending: Vec<Request> = Vec::new();
@@ -219,7 +218,8 @@ fn serve(
                 if current.rendered_generation != key.generation || !wanted(&key) {
                     continue;
                 }
-                let (scale, region) = (density.scale(key.scale), density.region(key.region));
+                let (scale, region) =
+                    (key.density.scale(key.scale), key.density.region(key.region));
                 if let Ok(mut image) = current.pdf.render(key.page, scale, region) {
                     current.highlights.tint(key.page, scale, region, &mut image);
                     deliver(key, image);
@@ -339,6 +339,7 @@ mod tests {
                 width: 10,
                 height: 10,
             },
+            density: Density::Full,
         })
     }
 
@@ -365,6 +366,54 @@ mod tests {
     }
 
     #[test]
+    fn a_tile_renders_at_the_density_its_key_names() {
+        let path = scratch_copy_of_fixture();
+        let (send, responses) = mpsc::channel();
+        let (tiles, rendered) = mpsc::channel();
+        let renderer = Renderer::spawn(
+            path.clone(),
+            move |response| {
+                send.send(response).unwrap();
+            },
+            move |key, image: RgbImage| {
+                tiles.send((key, image.dimensions())).unwrap();
+            },
+            |_| true,
+        );
+        renderer.load(0);
+        next_response(&responses);
+        let full = RenderKey {
+            generation: 0,
+            page: 0,
+            scale: Scale::from_pixels_per_point(1.0),
+            region: PixelRegion {
+                x: 0,
+                y: 0,
+                width: 400,
+                height: 200,
+            },
+            density: Density::Full,
+        };
+        for (key, dimensions) in [
+            (full, (400, 200)),
+            (
+                RenderKey {
+                    density: Density::ThreeQuarters,
+                    ..full
+                },
+                (300, 150),
+            ),
+        ] {
+            renderer.render(key);
+            let returned = rendered
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            assert_eq!(returned, (key, dimensions));
+        }
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn highlight_revisions_render_pixels_without_reloading_the_pdf() {
         let path = scratch_copy_of_fixture();
         let (send, responses) = mpsc::channel();
@@ -378,7 +427,6 @@ mod tests {
                 tiles.send((key, image)).unwrap();
             },
             |_| true,
-            Density::Full,
         );
         renderer.load(0);
         next_response(&responses);
@@ -402,6 +450,7 @@ mod tests {
                 width: 600,
                 height: 800,
             },
+            density: Density::Full,
         };
         renderer.render(key);
         let (returned, image) = rendered
@@ -456,7 +505,6 @@ mod tests {
             },
             |_, _| {},
             |_| true,
-            Density::Full,
         );
         renderer.load(3);
         next_response(&responses);
@@ -502,7 +550,6 @@ mod tests {
             },
             |_, _| {},
             |_| true,
-            Density::Full,
         );
 
         renderer.load(0);
@@ -530,7 +577,6 @@ mod tests {
             },
             |_, _| {},
             |_| true,
-            Density::Full,
         );
 
         renderer.load(0);
@@ -561,7 +607,6 @@ mod tests {
             },
             |_, _| {},
             |_| true,
-            Density::Full,
         );
 
         renderer.load(0);
@@ -592,7 +637,6 @@ mod tests {
             },
             |_, _| {},
             |_| true,
-            Density::Full,
         );
 
         renderer.load(0);

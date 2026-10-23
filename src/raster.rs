@@ -109,7 +109,6 @@ fn show(
                 let _ = tiles.send(Event::Tile(key, image));
             },
             |_| true,
-            crate::layout::Density::Full,
         )
     };
     renderer.load(0);
@@ -176,6 +175,7 @@ fn show(
             width: u32::from(font.width.max(1)),
             height: u32::from(font.height.max(1)),
         },
+        pixels_per_point: picker.pixels_per_point(),
         pane: pane_of(page_area(terminal.get_frame().area())),
         requery_every: std::env::var_os("ZELLIJ").map(|_| ZELLIJ_REQUERY),
         renderer,
