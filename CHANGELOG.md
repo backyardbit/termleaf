@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.5.0
+
+- Inverse search and Helix follow work in Rex. termleaf finds Neovim, Vim and Helix in Rex blocks through the `rex` CLI that Rex provides, and never starts a Rex server itself (#72).
+- Reach an editor opened by a program that waits for it, such as the yazi file manager, `git commit` or `sh -c`. The pane counts when only that program, the editor and the editor's own children (such as a language server) run in the foreground, and the status bar names the editor `hx (via yazi)` (#72).
+- Pages turn sharp once scrolling stops. After the view has stayed put for 150 ms, the visible tiles are drawn again at full density, so text is crisp and thin seams between rows in some terminals, such as Tern, go away (#71).
+
 ## v0.4.0
 
 - Navigate with more vim and pager keys. `Ctrl-d` / `Ctrl-u` scroll half a pane, `PgDn` / `PgUp` a whole pane, the arrows scroll and pan, and `h` / `l` pan. All take a count (#61).
