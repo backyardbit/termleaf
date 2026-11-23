@@ -184,6 +184,7 @@ The status bar ends with `follow: nvim at chapters/intro.tex:12`, `follow: hx at
 | GNU screen | ✓ | |
 | kitty windows | ✓ | `allow_remote_control socket-only` and `listen_on unix:/tmp/kitty` in `kitty.conf`. Otherwise the status bar says `kitty remote control is off`. |
 | WezTerm panes | ✓ | `wezterm cli` (tested with `wezterm-mux-server`) |
+| Rex blocks | ✓ | the `rex` CLI, found through `REX_BIN_DIR` that Rex sets |
 | anything else (a plain terminal, Konsole, Ghostty, …) | Neovim only | |
 
 The editor has to run in the same multiplexer as termleaf, as your user, on the same machine.

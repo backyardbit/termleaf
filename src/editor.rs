@@ -14,6 +14,7 @@ mod process;
 mod procfs;
 #[cfg(any(test, not(target_os = "linux")))]
 mod ps;
+mod rex;
 mod safety;
 mod screen;
 mod tmux;
@@ -38,6 +39,7 @@ use probe::{
     choose, own_pane, survey,
 };
 use process::{Pid, ProcessTable, ancestors};
+use rex::Rex;
 use safety::recheck;
 use screen::Screen;
 use tmux::Tmux;
@@ -437,6 +439,10 @@ fn follow_layer(
             let wezterm = Wezterm::new(&SystemCli, env.var("WEZTERM_EXECUTABLE_DIR"));
             follow_in(&wezterm, table, own, helix, gate, on_request)
         }
+        (MultiplexerKind::Rex, _, _) => {
+            let rex = Rex::new(&SystemCli, env.var("REX_BIN_DIR"));
+            follow_in(&rex, table, own, helix, gate, on_request)
+        }
         _ => false,
     }
 }
@@ -551,6 +557,10 @@ impl Jumper {
                 Some((MultiplexerKind::Wezterm, _, _)) => {
                     let wezterm = Wezterm::new(&SystemCli, env.var("WEZTERM_EXECUTABLE_DIR"));
                     jump_with(&wezterm, &table, own, wanted, &loaded, &rpc)
+                }
+                Some((MultiplexerKind::Rex, _, _)) => {
+                    let rex = Rex::new(&SystemCli, env.var("REX_BIN_DIR"));
+                    jump_with(&rex, &table, own, wanted, &loaded, &rpc)
                 }
                 Some(_) => {
                     if let Some(hint) = layer.and_then(|layer| layer.hint()) {
