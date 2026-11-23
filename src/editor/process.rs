@@ -167,6 +167,10 @@ pub mod fake {
             self.edit(pid, |process| process.foreground_group = Some(Pid(group)))
         }
 
+        pub fn joins(&mut self, pid: u32, group: u32) -> &mut Self {
+            self.edit(pid, |process| process.group = Pid(group))
+        }
+
         pub fn owned_by(&mut self, pid: u32, uid: u32) -> &mut Self {
             self.edit(pid, |process| process.uid = uid)
         }

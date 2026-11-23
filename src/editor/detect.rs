@@ -21,16 +21,18 @@ pub enum MultiplexerKind {
     Herdr,
     Kitty,
     Wezterm,
+    Rex,
     Konsole,
 }
 
-const INNERMOST_FIRST: [MultiplexerKind; 7] = [
+const INNERMOST_FIRST: [MultiplexerKind; 8] = [
     MultiplexerKind::Tmux,
     MultiplexerKind::Zellij,
     MultiplexerKind::Screen,
     MultiplexerKind::Herdr,
     MultiplexerKind::Kitty,
     MultiplexerKind::Wezterm,
+    MultiplexerKind::Rex,
     MultiplexerKind::Konsole,
 ];
 
@@ -43,6 +45,7 @@ impl MultiplexerKind {
             Self::Herdr => "herdr",
             Self::Kitty => "kitty",
             Self::Wezterm => "wezterm",
+            Self::Rex => "rex",
             Self::Konsole => "konsole",
         }
     }
@@ -55,6 +58,7 @@ impl MultiplexerKind {
             Self::Herdr => &["herdr"],
             Self::Kitty => &["kitty"],
             Self::Wezterm => &["wezterm-gui", "wezterm-mux-server", "wezterm"],
+            Self::Rex => &["rex"],
             Self::Konsole => &["konsole"],
         }
     }
@@ -117,6 +121,10 @@ impl Layer {
                 let pane = var("WEZTERM_PANE")?;
                 layer(Some(pane), None, var("WEZTERM_UNIX_SOCKET"))
             }
+            MultiplexerKind::Rex => {
+                let block = var("REX_BLOCK")?;
+                layer(Some(block), var("REX_SESSION"), None)
+            }
             MultiplexerKind::Konsole => {
                 let service = var("KONSOLE_DBUS_SERVICE")?;
                 layer(var("KONSOLE_DBUS_SESSION"), None, Some(service))
@@ -175,7 +183,7 @@ mod tests {
         assert_eq!(
             INNERMOST_FIRST.map(MultiplexerKind::name),
             [
-                "tmux", "zellij", "screen", "herdr", "kitty", "wezterm", "konsole"
+                "tmux", "zellij", "screen", "herdr", "kitty", "wezterm", "rex", "konsole"
             ]
         );
     }
@@ -253,6 +261,32 @@ mod tests {
         assert_eq!(
             layers[1].control,
             Some(PathBuf::from("org.kde.konsole-311"))
+        );
+    }
+
+    #[test]
+    fn rex_is_found_by_its_block_and_ordered_by_its_server_process() {
+        let env = FakeEnvironment::new(&[
+            ("TMUX", "/tmp/tmux-501/default,4127,0"),
+            ("TMUX_PANE", "%3"),
+            ("REX_SESSION", "session:01a1"),
+            ("REX_BLOCK", "block:01a2"),
+            ("REX_SERVER", "unix:///tmp/rex/server.sock"),
+        ]);
+        let ancestors: Vec<String> = ["fish", "login", "rex", "tmux"].map(str::to_owned).to_vec();
+        let layers = detect(&env, &ancestors);
+        assert_eq!(
+            kinds(&layers),
+            [MultiplexerKind::Rex, MultiplexerKind::Tmux]
+        );
+        assert_eq!(layers[0].own_pane.as_deref(), Some("block:01a2"));
+        assert_eq!(layers[0].session.as_deref(), Some("session:01a1"));
+        assert!(
+            detect(
+                &FakeEnvironment::new(&[("REX_SESSION", "session:01a1")]),
+                &[]
+            )
+            .is_empty()
         );
     }
 

@@ -66,6 +66,7 @@ pub struct Editor {
     pub kind: EditorKind,
     pub identity: Identity,
     pub socket: Option<PathBuf>,
+    pub via: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,8 +78,14 @@ pub struct Candidate {
 
 impl Candidate {
     pub fn label(&self) -> String {
+        let via = self
+            .editor
+            .via
+            .as_ref()
+            .map(|via| format!(" (via {via})"))
+            .unwrap_or_default();
         format!(
-            "{} in {} {}",
+            "{}{via} in {} {}",
             self.editor.kind.name(),
             self.multiplexer.name(),
             self.pane.id
@@ -132,25 +139,92 @@ pub fn foreground_leader(table: &impl ProcessTable, anchor: &Anchor) -> Result<P
 
 pub fn editor_in(table: &impl ProcessTable, pane: &Pane) -> Result<Editor, Refusal> {
     let leader = foreground_leader(table, &pane.anchor)?;
-    if Some(leader.uid) != table.own_uid() {
+    let own_uid = table.own_uid();
+    if Some(leader.uid) != own_uid {
         return Err(Refusal::OtherUser);
     }
-    let Some(kind) = EditorKind::of_program(&leader.program) else {
+    if let Some(kind) = EditorKind::of_program(&leader.program) {
+        return Ok(editor_at(table, kind, &leader, None));
+    }
+    let Some((kind, waited_on)) = waited_on_editor(table, &leader) else {
         return Err(if is_shell(&leader.program) {
             Refusal::Shell
         } else {
             Refusal::Program(leader.program)
         });
     };
+    if waited_on.iter().any(|process| Some(process.uid) != own_uid) {
+        return Err(Refusal::OtherUser);
+    }
+    let editor = waited_on.first().ok_or(Refusal::NoForeground)?;
+    Ok(editor_at(table, kind, editor, Some(leader.program)))
+}
+
+fn editor_at(
+    table: &impl ProcessTable,
+    kind: EditorKind,
+    process: &Process,
+    via: Option<String>,
+) -> Editor {
     let socket = match kind {
-        EditorKind::Neovim => neovim_socket(table, leader.pid()),
+        EditorKind::Neovim => neovim_socket(table, process.pid()),
         EditorKind::Vim | EditorKind::Helix => None,
     };
-    Ok(Editor {
+    Editor {
         kind,
-        identity: leader.identity,
+        identity: process.identity,
         socket,
-    })
+        via,
+    }
+}
+
+fn lineage<'a>(members: &'a [Process], from: &'a Process) -> Vec<&'a Process> {
+    let mut line = vec![from];
+    while let Some(parent) = line.last().and_then(|last| {
+        members
+            .iter()
+            .find(|member| member.pid() == last.parent && !line.contains(member))
+    }) {
+        line.push(parent);
+    }
+    line
+}
+
+fn waited_on_editor(
+    table: &impl ProcessTable,
+    leader: &Process,
+) -> Option<(EditorKind, Vec<Process>)> {
+    let members: Vec<Process> = table
+        .processes()
+        .into_iter()
+        .filter(|process| process.group == leader.group)
+        .collect();
+    let is_editor = |process: &Process| EditorKind::of_program(&process.program).is_some();
+    let outermost: Vec<&Process> = members
+        .iter()
+        .filter(|member| is_editor(member))
+        .filter(|member| {
+            !lineage(&members, member)
+                .iter()
+                .skip(1)
+                .any(|up| is_editor(up))
+        })
+        .collect();
+    let [editor] = outermost.as_slice() else {
+        return None;
+    };
+    let kind = EditorKind::of_program(&editor.program)?;
+    let waiting = lineage(&members, editor);
+    if !waiting.iter().any(|process| process.pid() == leader.pid()) {
+        return None;
+    }
+    let accounted = members.iter().all(|member| {
+        waiting.iter().any(|up| up.pid() == member.pid())
+            || lineage(&members, member)
+                .iter()
+                .any(|up| up.pid() == editor.pid())
+    });
+    accounted.then(|| (kind, waiting.into_iter().cloned().collect()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -429,6 +503,120 @@ mod tests {
             .foreground(10, 10)
             .spawn(11, 10, "vim");
         assert_eq!(editor_in(&table, &pane("%9", 10, "1")), Err(Refusal::Shell));
+    }
+
+    fn file_manager_pane() -> FakeTable {
+        let mut table = FakeTable::default();
+        table
+            .spawn(10, 1, "fish")
+            .foreground(10, 20)
+            .spawn(20, 10, "yazi")
+            .spawn(21, 20, "hx")
+            .joins(21, 20)
+            .spawn(22, 21, "texlab")
+            .joins(22, 20);
+        table
+    }
+
+    #[test]
+    fn an_editor_opened_by_a_file_manager_is_found_through_it() {
+        let table = file_manager_pane();
+        let editor = editor_in(&table, &pane("%9", 10, "1")).expect("hx under yazi");
+        assert_eq!(editor.kind, EditorKind::Helix);
+        assert_eq!(editor.identity.pid, Pid(21));
+        assert_eq!(editor.via.as_deref(), Some("yazi"));
+        let candidate = Candidate {
+            multiplexer: MultiplexerKind::Rex,
+            pane: pane("block:hx", 10, "1"),
+            editor,
+        };
+        assert_eq!(candidate.label(), "hx (via yazi) in rex block:hx");
+    }
+
+    #[test]
+    fn an_editor_leading_its_group_is_not_reached_through_anything() {
+        let (table, multiplexer) = layout();
+        let helix = editor_in(&table, &multiplexer.panes().expect("panes")[3]).expect("hx");
+        assert_eq!(helix.via, None);
+    }
+
+    #[test]
+    fn a_neovim_under_a_file_manager_is_its_outer_process_with_the_inner_socket() {
+        let mut table = FakeTable::default();
+        table
+            .spawn(10, 1, "fish")
+            .foreground(10, 20)
+            .spawn(20, 10, "yazi")
+            .spawn(21, 20, "nvim")
+            .joins(21, 20)
+            .spawn(22, 21, "nvim")
+            .joins(22, 20)
+            .listens(22, "/run/user/1000/nvim.22.0");
+        let editor = editor_in(&table, &pane("%9", 10, "1")).expect("nvim under yazi");
+        assert_eq!(editor.identity.pid, Pid(21));
+        assert_eq!(
+            editor.socket,
+            Some(PathBuf::from("/run/user/1000/nvim.22.0"))
+        );
+    }
+
+    #[test]
+    fn an_editor_run_by_a_script_shell_is_found_through_it() {
+        let mut table = FakeTable::default();
+        table
+            .spawn(10, 1, "fish")
+            .foreground(10, 20)
+            .spawn(20, 10, "sh")
+            .spawn(21, 20, "vim")
+            .joins(21, 20);
+        let editor = editor_in(&table, &pane("%9", 10, "1")).expect("vim under sh -c");
+        assert_eq!(editor.via.as_deref(), Some("sh"));
+    }
+
+    #[test]
+    fn a_group_with_a_process_beside_the_editor_is_refused() {
+        let mut beside = file_manager_pane();
+        beside.spawn(23, 20, "cat").joins(23, 20);
+        assert_eq!(
+            editor_in(&beside, &pane("%9", 10, "1")),
+            Err(Refusal::Program("yazi".to_owned()))
+        );
+        let mut piped = FakeTable::default();
+        piped
+            .spawn(10, 1, "fish")
+            .foreground(10, 20)
+            .spawn(20, 10, "sh")
+            .spawn(21, 20, "hx")
+            .joins(21, 20)
+            .spawn(22, 20, "tee")
+            .joins(22, 20);
+        assert_eq!(editor_in(&piped, &pane("%9", 10, "1")), Err(Refusal::Shell));
+    }
+
+    #[test]
+    fn two_editors_side_by_side_in_one_group_are_refused() {
+        let mut table = file_manager_pane();
+        table.spawn(23, 20, "vim").joins(23, 20);
+        assert_eq!(
+            editor_in(&table, &pane("%9", 10, "1")),
+            Err(Refusal::Program("yazi".to_owned()))
+        );
+    }
+
+    #[test]
+    fn an_editor_under_a_file_manager_of_another_user_is_refused() {
+        let mut leader_elsewhere = file_manager_pane();
+        leader_elsewhere.owned_by(20, OUR_UID + 1);
+        assert_eq!(
+            editor_in(&leader_elsewhere, &pane("%9", 10, "1")),
+            Err(Refusal::OtherUser)
+        );
+        let mut editor_elsewhere = file_manager_pane();
+        editor_elsewhere.owned_by(21, OUR_UID + 1);
+        assert_eq!(
+            editor_in(&editor_elsewhere, &pane("%9", 10, "1")),
+            Err(Refusal::OtherUser)
+        );
     }
 
     #[test]

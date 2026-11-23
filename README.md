@@ -142,7 +142,7 @@ termleaf jumps from the PDF to the source line in your editor (inverse search), 
 
 zellij (tested with 0.45.1) passes neither modifier-click on, so use `e` there.
 
-termleaf looks for Neovim, Vim or Helix in the multiplexer it runs in (see [Editors and multiplexers](#editors-and-multiplexers)). An editor that has the file open wins over one that doesn't. Right before sending, termleaf checks that the pane's foreground process is still that editor, owned by you, with no `Press ENTER`, swap-file or yes/no prompt waiting. It never types into a shell or any other program. The status bar shows the outcome for 4 s:
+termleaf looks for Neovim, Vim or Helix in the multiplexer it runs in (see [Editors and multiplexers](#editors-and-multiplexers)). An editor that has the file open wins over one that doesn't. Right before sending, termleaf checks that the pane's foreground process is still that editor, owned by you, with no `Press ENTER`, swap-file or yes/no prompt waiting. It never types into a shell or any other program. An editor opened by a program that waits for it, such as the yazi file manager, `git commit` or `sh -c`, counts when that program and the editor (with its own children, such as a language server) are all that run in the foreground, and the status bar names it `hx (via yazi)`. The status bar shows the outcome for 4 s:
 
 - `→ nvim in tmux %3 · chapters/intro.tex:12`: sent;
 - `chapters/intro.tex:12 · no editor found`: nothing to send to;
@@ -184,6 +184,7 @@ The status bar ends with `follow: nvim at chapters/intro.tex:12`, `follow: hx at
 | GNU screen | ✓ | |
 | kitty windows | ✓ | `allow_remote_control socket-only` and `listen_on unix:/tmp/kitty` in `kitty.conf`. Otherwise the status bar says `kitty remote control is off`. |
 | WezTerm panes | ✓ | `wezterm cli` (tested with `wezterm-mux-server`) |
+| Rex blocks | ✓ | the `rex` CLI, found through `REX_BIN_DIR` that Rex sets |
 | anything else (a plain terminal, Konsole, Ghostty, …) | Neovim only | |
 
 The editor has to run in the same multiplexer as termleaf, as your user, on the same machine.
