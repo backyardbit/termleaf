@@ -211,6 +211,7 @@ mod tests {
                 start: StartTime(1),
             },
             socket: None,
+            via: None,
         }
     }
 

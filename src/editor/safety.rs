@@ -94,7 +94,7 @@ pub fn recheck(
 mod tests {
     use std::path::PathBuf;
 
-    use super::super::probe::fake::{FakeMultiplexer, layout};
+    use super::super::probe::fake::{FakeMultiplexer, layout, pane};
     use super::super::probe::{Multiplexer, candidates, survey};
     use super::super::process::fake::FakeTable;
     use super::*;
@@ -176,6 +176,28 @@ mod tests {
         assert_eq!(
             recheck(&multiplexer, &table, Some("%0"), &vim),
             Err(Refusal::Shell)
+        );
+    }
+
+    #[test]
+    fn an_editor_that_quit_back_to_its_file_manager_fails_the_recheck() {
+        let mut table = FakeTable::default();
+        table
+            .spawn(10, 1, "fish")
+            .foreground(10, 20)
+            .spawn(20, 10, "yazi")
+            .spawn(21, 20, "hx")
+            .joins(21, 20);
+        let multiplexer = FakeMultiplexer::new(vec![pane("%9", 10, "1")]);
+        let verdicts = survey(&multiplexer, &table, Some("%0")).expect("panes");
+        let helix = candidates(multiplexer.kind(), &verdicts)
+            .pop()
+            .expect("hx under yazi");
+        assert_eq!(recheck(&multiplexer, &table, Some("%0"), &helix), Ok(()));
+        table.exit(21);
+        assert_eq!(
+            recheck(&multiplexer, &table, Some("%0"), &helix),
+            Err(Refusal::Program("yazi".to_owned()))
         );
     }
 

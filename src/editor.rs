@@ -154,6 +154,7 @@ fn plain_neovims(table: &impl ProcessTable) -> Vec<(Editor, PathBuf)> {
                 kind: EditorKind::Neovim,
                 socket: Some(socket.clone()),
                 identity: leader.identity,
+                via: None,
             };
             Some((editor, socket))
         })
