@@ -6,6 +6,7 @@ mod herdr;
 mod jumps;
 mod kitty;
 mod pane_shell;
+mod profile;
 mod screen;
 mod tmux;
 mod wezterm;
@@ -75,9 +76,12 @@ fn main() -> ExitCode {
         Some("wezterm") => jumps::run(&workspace_root(), jumps::Backend::Wezterm),
         Some("follow") => follow::run(&workspace_root()),
         Some("dpi") => dpi::run(&workspace_root()),
+        Some("profile") => profile::run(&workspace_root()),
+        Some("profile-here") => profile::here(&workspace_root(), args.get(2..).unwrap_or_default()),
+        Some("profile-tap") => profile::tap::run(args.get(2..).unwrap_or_default()),
         _ => {
             eprintln!(
-                "usage: cargo xtask <lint|check|commits|e2e|xterm|tmux|herdr|plain|zellij|screen|kitty|wezterm|follow|dpi>"
+                "usage: cargo xtask <lint|check|commits|e2e|xterm|tmux|herdr|plain|zellij|screen|kitty|wezterm|follow|dpi|profile|profile-here>"
             );
             eprintln!("  lint   run the anti-slop source checks");
             eprintln!("  check  run fmt, clippy, tests and lint");
@@ -116,6 +120,12 @@ fn main() -> ExitCode {
             );
             eprintln!(
                 "  dpi    change only the pixel size of termleaf's pty, alone and in zellij, and check the Sixel frame follows (needs zellij)"
+            );
+            eprintln!(
+                "  profile scroll termleaf and a PixelGUI viewer through the same keys in each terminal and multiplexer on a virtual display, and report bytes, images and CPU (CI only)"
+            );
+            eprintln!(
+                "  profile-here [termleaf|pixel] the same keys inside the terminal you are in, which they take over for about a minute"
             );
             ExitCode::FAILURE
         }
