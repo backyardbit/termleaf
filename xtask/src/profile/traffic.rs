@@ -119,14 +119,21 @@ enum Sequence {
 }
 
 fn next_sequence(stream: &[u8]) -> Option<(usize, Sequence)> {
-    [
-        (KITTY_START, Sequence::Kitty),
-        (DCS_START, Sequence::Dcs),
-        (ITERM2_START, Sequence::Iterm2),
-    ]
-    .into_iter()
-    .filter_map(|(start, kind)| find(stream, start).map(|at| (at, kind)))
-    .min_by_key(|(at, _)| *at)
+    stream
+        .iter()
+        .enumerate()
+        .filter(|(_, byte)| **byte == 0x1b)
+        .find_map(|(at, _)| {
+            let rest = &stream[at..];
+            [
+                (KITTY_START, Sequence::Kitty),
+                (DCS_START, Sequence::Dcs),
+                (ITERM2_START, Sequence::Iterm2),
+            ]
+            .into_iter()
+            .find(|(start, _)| rest.starts_with(start))
+            .map(|(_, kind)| (at, kind))
+        })
 }
 
 fn sequence_length(sequence: &[u8], kind: Sequence) -> Option<usize> {
@@ -134,7 +141,8 @@ fn sequence_length(sequence: &[u8], kind: Sequence) -> Option<usize> {
     if kind != Sequence::Iterm2 {
         return terminator;
     }
-    let bell = sequence
+    let searched = terminator.map_or(sequence, |end| &sequence[..end]);
+    let bell = searched
         .iter()
         .position(|&byte| byte == BELL)
         .map(|at| at + 1);
@@ -311,6 +319,22 @@ mod tests {
     fn a_dcs_that_is_not_sixel_is_not_a_frame() {
         let traffic = read(b"\x1bP>|xterm(388)\x1b\\");
         assert_eq!(traffic.sixel_frames, 0);
+    }
+
+    #[test]
+    fn a_long_stream_of_tiles_is_scanned_in_one_pass() {
+        let tile =
+            b"\x1b_Ga=T,f=32,t=d,s=64,v=48;QUFBQUFBQUFBQUFBQUFBQQ==\x1b\\\x1b[1;1H\xf4\x8e\xbb\xae";
+        let stream: Vec<u8> = tile
+            .iter()
+            .copied()
+            .cycle()
+            .take(tile.len() * 200_000)
+            .collect();
+        let started = std::time::Instant::now();
+        let traffic = read(&stream);
+        assert_eq!(traffic.transmissions, 200_000);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 
     #[test]
