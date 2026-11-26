@@ -81,7 +81,7 @@ enum Event {
     Follow(Request),
 }
 
-pub fn run(path: PathBuf, options: Options) -> Result<()> {
+pub fn run(path: PathBuf, options: Options, opened: impl FnOnce()) -> Result<Ending> {
     if !path.is_file() {
         bail!("no such file: {}", path.display());
     }
@@ -108,6 +108,7 @@ pub fn run(path: PathBuf, options: Options) -> Result<()> {
         Event::Renderer(Response::Loaded { pages, outline, .. }) => (pages, outline),
         _ => bail!("{} is not a readable PDF", path.display()),
     };
+    opened();
 
     let _watcher = {
         let events = events.clone();
@@ -454,7 +455,7 @@ impl App {
         &mut self,
         terminal: &mut DefaultTerminal,
         inbox: &Receiver<Event>,
-    ) -> Result<()> {
+    ) -> Result<Ending> {
         loop {
             let size = terminal.size()?;
             let now = Instant::now();
@@ -503,8 +504,8 @@ impl App {
                 Err(RecvTimeoutError::Disconnected) => bail!("all event sources stopped"),
             };
             for event in std::iter::once(first).chain(inbox.try_iter()) {
-                if self.handle(event) == Flow::Quit {
-                    return Ok(());
+                if let Flow::End(ending) = self.handle(event) {
+                    return Ok(ending);
                 }
             }
         }
@@ -551,7 +552,7 @@ impl App {
                 self.pinch.focus(focused);
                 self.follow.focus(focused);
             }
-            Event::TerminalClosed => return Flow::Quit,
+            Event::TerminalClosed => return Flow::End(Ending::TerminalClosed),
             Event::Resized => {}
             Event::FileChanged => {
                 self.follow.reloading();
@@ -616,7 +617,7 @@ impl App {
             return Flow::Continue;
         }
         if command == Command::Quit {
-            return Flow::Quit;
+            return Flow::End(Ending::Quit);
         }
         if let Command::Click(at) = command
             && let Some(address) = self.viewer.web_link_under(at)
@@ -1332,7 +1333,13 @@ impl App {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Flow {
     Continue,
+    End(Ending),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ending {
     Quit,
+    TerminalClosed,
 }
 
 fn tile_bytes(key: RenderKey, cell: CellSize) -> usize {
@@ -1665,7 +1672,26 @@ mod tests {
             columns: 80,
             rows: 24,
         });
-        assert_eq!(app.handle(Event::TerminalClosed), Flow::Quit);
+        assert_eq!(
+            app.handle(Event::TerminalClosed),
+            Flow::End(Ending::TerminalClosed)
+        );
+    }
+
+    #[test]
+    fn quitting_by_key_is_told_apart_from_a_closed_terminal() {
+        let (mut app, _inbox) = headless_app(Pane {
+            columns: 80,
+            rows: 24,
+        });
+        assert_eq!(
+            app.handle(Event::Key(Key::Char('q'))),
+            Flow::End(Ending::Quit)
+        );
+        assert_eq!(
+            app.handle(Event::Key(Key::Interrupt)),
+            Flow::End(Ending::Quit)
+        );
     }
 
     #[test]

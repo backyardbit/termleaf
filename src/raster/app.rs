@@ -12,6 +12,7 @@ use ratatui::text::Line;
 use ratatui::widgets::Widget;
 use ratatui::{DefaultTerminal, Frame};
 
+use crate::app::Ending;
 use crate::browser::{Browser, WebLinks};
 use crate::clipboard::{self, Clipboard, SystemClipboard};
 use crate::follow::{Follow, Request};
@@ -61,7 +62,7 @@ pub enum Event {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flow {
     Continue,
-    Quit,
+    End(Ending),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -189,7 +190,7 @@ impl App {
         &mut self,
         terminal: &mut DefaultTerminal,
         inbox: &Receiver<Event>,
-    ) -> Result<()> {
+    ) -> Result<Ending> {
         loop {
             let size = terminal.size()?;
             let now = Instant::now();
@@ -223,8 +224,8 @@ impl App {
                 Err(RecvTimeoutError::Disconnected) => bail!("all event sources stopped"),
             };
             for event in std::iter::once(first).chain(inbox.try_iter()) {
-                if self.handle(event) == Flow::Quit {
-                    return Ok(());
+                if let Flow::End(ending) = self.handle(event) {
+                    return Ok(ending);
                 }
             }
         }
@@ -268,7 +269,7 @@ impl App {
                 self.pinch.focus(focused);
                 self.follow.focus(focused);
             }
-            Event::TerminalClosed => return Flow::Quit,
+            Event::TerminalClosed => return Flow::End(Ending::TerminalClosed),
             Event::Resized => {}
             Event::FileChanged => {
                 self.follow.reloading();
@@ -347,7 +348,7 @@ impl App {
             return Flow::Continue;
         }
         if command == Command::Quit {
-            return Flow::Quit;
+            return Flow::End(Ending::Quit);
         }
         if let Command::Click(at) = command
             && let Some(address) = self.viewer.web_link_under(at)
@@ -1025,7 +1026,23 @@ mod tests {
     #[test]
     fn a_closed_terminal_exits_even_when_other_event_sources_remain_alive() {
         let (mut app, _inbox) = headless_app(fixture("three-pages.pdf"), PANE);
-        assert_eq!(app.handle(Event::TerminalClosed), Flow::Quit);
+        assert_eq!(
+            app.handle(Event::TerminalClosed),
+            Flow::End(Ending::TerminalClosed)
+        );
+    }
+
+    #[test]
+    fn quitting_by_key_is_told_apart_from_a_closed_terminal() {
+        let (mut app, _inbox) = headless_app(fixture("three-pages.pdf"), PANE);
+        assert_eq!(
+            app.handle(Event::Key(Key::Char('q'))),
+            Flow::End(Ending::Quit)
+        );
+        assert_eq!(
+            app.handle(Event::Key(Key::Interrupt)),
+            Flow::End(Ending::Quit)
+        );
     }
 
     #[test]
