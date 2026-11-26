@@ -29,7 +29,7 @@ use crate::graphics::{
 };
 use crate::inverse::Inverse;
 use crate::keys::{Command, Key, KeyParser, ScreenCell};
-use crate::kitty::{self, CellGrid, ImageId, Payload, Placeholders, Placement};
+use crate::kitty::{self, CellGrid, ColourOutput, ImageId, Payload, Placeholders, Placement};
 use crate::layout::{
     CellSize, Density, Pane, RenderedTile, Stretched, StretchedGrid, TILE_ROWS, View,
 };
@@ -1243,6 +1243,7 @@ impl App {
             frame.render_widget(&self.outline, pages);
         } else {
             self.draw_pages(frame, pages);
+            kitty::finish_placeholders(frame.buffer_mut(), pages, ColourOutput::of_terminal());
         }
         frame.render_widget(
             Line::styled(

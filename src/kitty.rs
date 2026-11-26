@@ -163,11 +163,6 @@ pub struct Placeholders {
 
 impl Widget for Placeholders {
     fn render(self, area: Rect, buffer: &mut Buffer) {
-        let [_, red, green, blue] = self.id.0.to_be_bytes();
-        let colours = format!(
-            "\x1b[38;2;{red};{green};{blue}m\x1b[58;2;0;0;{}m",
-            self.placement.id()
-        );
         let mut symbol = String::new();
         for y in 0..area.height {
             let Some(row) = diacritic(self.first_row.saturating_add(y)) else {
@@ -181,11 +176,9 @@ impl Widget for Placeholders {
                     continue;
                 };
                 symbol.clear();
-                symbol.push_str(&colours);
                 symbol.push(PLACEHOLDER);
                 symbol.push(row);
                 symbol.push(column);
-                symbol.push_str("\x1b[39;59m");
                 cell.set_symbol(&symbol)
                     .set_fg(self.id.colour())
                     .set_style(
@@ -197,8 +190,99 @@ impl Widget for Placeholders {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColourOutput {
+    Escapes,
+    Stripped,
+}
+
+impl ColourOutput {
+    pub fn of_terminal() -> Self {
+        if crossterm::style::Colored::ansi_color_disabled_memoized() {
+            Self::Stripped
+        } else {
+            Self::Escapes
+        }
+    }
+}
+
+pub fn finish_placeholders(buffer: &mut Buffer, area: Rect, colours: ColourOutput) {
+    let mut symbol = String::new();
+    for y in area.top()..area.bottom() {
+        let mut left = None;
+        for x in area.left()..area.right() {
+            let Some(cell) = buffer.cell_mut((x, y)) else {
+                left = None;
+                continue;
+            };
+            let current = ImageCell::of(cell);
+            if let Some(current) = current {
+                match colours {
+                    ColourOutput::Escapes if left.is_some_and(|left| current.continues(left)) => {
+                        symbol.clear();
+                        symbol.push(PLACEHOLDER);
+                        cell.set_symbol(&symbol);
+                    }
+                    ColourOutput::Escapes => {}
+                    ColourOutput::Stripped => {
+                        symbol.clear();
+                        push_colour(&mut symbol, 38, cell.fg);
+                        push_colour(&mut symbol, 58, cell.underline_color);
+                        symbol.push_str(cell.symbol());
+                        symbol.push_str("\x1b[39;59m");
+                        cell.set_symbol(&symbol);
+                    }
+                }
+            }
+            left = current;
+        }
+    }
+}
+
+fn push_colour(sequence: &mut String, layer: u8, colour: Color) {
+    if let Color::Rgb(red, green, blue) = colour {
+        let _ = write!(sequence, "\x1b[{layer};2;{red};{green};{blue}m");
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ImageCell {
+    image: Color,
+    placement: Color,
+    row: usize,
+    column: usize,
+}
+
+impl ImageCell {
+    fn of(cell: &ratatui::buffer::Cell) -> Option<Self> {
+        let mut marks = cell.symbol().chars();
+        if marks.next() != Some(PLACEHOLDER) {
+            return None;
+        }
+        let row = position_of(marks.next()?)?;
+        let column = position_of(marks.next()?)?;
+        Some(Self {
+            image: cell.fg,
+            placement: cell.underline_color,
+            row,
+            column,
+        })
+    }
+
+    fn continues(self, left: Self) -> bool {
+        self.image == left.image
+            && self.placement == left.placement
+            && self.row == left.row
+            && self.column == left.column + 1
+    }
+}
+
 fn diacritic(position: u16) -> Option<char> {
     DIACRITICS.get(usize::from(position)).copied()
+}
+
+fn position_of(mark: char) -> Option<usize> {
+    DIACRITICS.binary_search(&mark).ok()
 }
 
 static DIACRITICS: [char; 297] = [
@@ -655,17 +739,119 @@ mod tests {
         assert_eq!(buffer[(1, 0)].underline_color, Color::Rgb(0, 0, 2));
     }
 
+    fn placeholders(id: u32, first_column: u16, first_row: u16) -> Placeholders {
+        Placeholders {
+            id: ImageId(id),
+            placement: Placement::Tile,
+            first_column,
+            first_row,
+        }
+    }
+
+    #[test]
+    fn only_the_first_cell_of_a_run_names_its_row_and_column() {
+        let area = Rect::new(0, 0, 3, 2);
+        let mut buffer = Buffer::empty(area);
+        placeholders(7, 4, 1).render(area, &mut buffer);
+        finish_placeholders(&mut buffer, area, ColourOutput::Escapes);
+        assert_eq!(
+            marks(&buffer, 0, 1),
+            [PLACEHOLDER, DIACRITICS[2], DIACRITICS[4]]
+        );
+        assert_eq!(marks(&buffer, 1, 1), [PLACEHOLDER]);
+        assert_eq!(marks(&buffer, 2, 1), [PLACEHOLDER]);
+        assert_eq!(buffer[(2, 1)].fg, Color::Rgb(0, 0, 7));
+        assert!(
+            buffer
+                .content()
+                .iter()
+                .all(|cell| !cell.symbol().contains('\x1b'))
+        );
+    }
+
+    #[test]
+    fn every_diacritic_reads_back_as_its_position() {
+        for (position, mark) in DIACRITICS.iter().enumerate() {
+            assert_eq!(position_of(*mark), Some(position));
+        }
+    }
+
+    #[test]
+    fn a_cell_right_of_another_image_names_its_row_and_column() {
+        let area = Rect::new(0, 0, 4, 1);
+        let mut buffer = Buffer::empty(area);
+        placeholders(1, 0, 0).render(area, &mut buffer);
+        placeholders(2, 0, 0).render(Rect::new(1, 0, 1, 1), &mut buffer);
+        finish_placeholders(&mut buffer, area, ColourOutput::Escapes);
+        assert_eq!(
+            marks(&buffer, 1, 0),
+            [PLACEHOLDER, DIACRITICS[0], DIACRITICS[0]]
+        );
+        assert_eq!(
+            marks(&buffer, 2, 0),
+            [PLACEHOLDER, DIACRITICS[0], DIACRITICS[2]]
+        );
+        assert_eq!(marks(&buffer, 3, 0), [PLACEHOLDER]);
+    }
+
+    #[test]
+    fn a_cell_that_skips_a_column_of_its_image_names_its_column() {
+        let area = Rect::new(0, 0, 2, 1);
+        let mut buffer = Buffer::empty(area);
+        placeholders(1, 0, 0).render(Rect::new(0, 0, 1, 1), &mut buffer);
+        placeholders(1, 5, 0).render(Rect::new(1, 0, 1, 1), &mut buffer);
+        finish_placeholders(&mut buffer, area, ColourOutput::Escapes);
+        assert_eq!(
+            marks(&buffer, 1, 0),
+            [PLACEHOLDER, DIACRITICS[0], DIACRITICS[5]]
+        );
+    }
+
+    #[test]
+    fn scrolling_within_a_tile_rewrites_only_the_first_cell_of_each_row() {
+        let area = Rect::new(0, 0, 64, 20);
+        let frame = |first_row| {
+            let mut buffer = Buffer::empty(area);
+            placeholders(9, 0, first_row).render(area, &mut buffer);
+            finish_placeholders(&mut buffer, area, ColourOutput::Escapes);
+            buffer
+        };
+        let (before, after) = (frame(0), frame(3));
+        let changed = before.diff(&after);
+        assert_eq!(changed.len(), 20);
+        assert!(changed.iter().all(|(x, _, _)| *x == 0));
+    }
+
+    #[test]
+    fn every_cell_names_its_row_and_column_when_colours_are_stripped() {
+        let area = Rect::new(0, 0, 2, 1);
+        let mut buffer = Buffer::empty(area);
+        placeholders(0x0001_0203, 0, 0).render(area, &mut buffer);
+        finish_placeholders(&mut buffer, area, ColourOutput::Stripped);
+        assert_eq!(
+            marks(&buffer, 1, 0),
+            [PLACEHOLDER, DIACRITICS[0], DIACRITICS[1]]
+        );
+        assert!(
+            buffer[(1, 0)]
+                .symbol()
+                .starts_with("\x1b[38;2;1;2;3m\x1b[58;2;0;0;1m")
+        );
+    }
+
     #[test]
     fn placeholders_keep_their_ids_when_no_color_strips_colours() {
         use ratatui::backend::{Backend, CrosstermBackend};
-        let mut buffer = Buffer::empty(Rect::new(0, 0, 1, 1));
+        let area = Rect::new(0, 0, 1, 1);
+        let mut buffer = Buffer::empty(area);
         Placeholders {
             id: ImageId(0x0001_0203),
             placement: Placement::Stretched,
             first_column: 0,
             first_row: 0,
         }
-        .render(Rect::new(0, 0, 1, 1), &mut buffer);
+        .render(area, &mut buffer);
+        finish_placeholders(&mut buffer, area, ColourOutput::Stripped);
         crossterm::style::force_color_output(false);
         let mut written = Vec::new();
         CrosstermBackend::new(&mut written)
