@@ -52,6 +52,15 @@ impl Choice {
             _ => None,
         }
     }
+
+    pub fn flag(self) -> Option<&'static str> {
+        match self {
+            Self::Auto => None,
+            Self::Force(Protocol::Kitty) => Some("kitty"),
+            Self::Force(Protocol::Raster(Raster::Sixel)) => Some("sixel"),
+            Self::Force(Protocol::Raster(Raster::Iterm2)) => Some("iterm2"),
+        }
+    }
 }
 
 impl fmt::Display for Raster {
@@ -319,6 +328,14 @@ mod tests {
     const ITERM2: Protocol = Protocol::Raster(Raster::Iterm2);
     const ELSEWHERE: Hints = Hints { konsole: false };
     const KONSOLE: Hints = Hints { konsole: true };
+
+    #[test]
+    fn every_forced_choice_is_named_as_the_graphics_flag_spells_it() {
+        for choice in [Protocol::Kitty, SIXEL, ITERM2].map(Choice::Force) {
+            assert_eq!(choice.flag().and_then(Choice::parse), Some(choice));
+        }
+        assert_eq!(Choice::Auto.flag(), None);
+    }
 
     fn no_hints() -> QueryHints {
         QueryHints::from_env(|_| None)

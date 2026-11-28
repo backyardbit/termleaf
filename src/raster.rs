@@ -17,7 +17,7 @@ use crossterm::event::{
 use crossterm::execute;
 use ratatui::DefaultTerminal;
 
-use crate::app::Options;
+use crate::app::{Ending, Options};
 use crate::follow::{self, Follow, Listener};
 use crate::graphics::{Raster, TerminalInfo, tmux_server};
 use crate::layout::CellSize;
@@ -37,7 +37,7 @@ pub fn run(
     mut terminal: DefaultTerminal,
     picker: &TerminalInfo,
     raster: Raster,
-) -> Result<()> {
+) -> Result<Ending> {
     let result = show(path, &options, &mut terminal, picker, raster);
     let _ = execute!(std::io::stdout(), DisableFocusChange, DisableMouseCapture);
     crate::terminal::restore(terminal);
@@ -92,7 +92,7 @@ fn show(
     terminal: &mut DefaultTerminal,
     picker: &TerminalInfo,
     raster: Raster,
-) -> Result<()> {
+) -> Result<Ending> {
     let encode = encoder_for(raster);
     let sixel_support = picker.tmux_detected().then(tmux_sixel_support);
     allowed_in_tmux(raster, sixel_support.as_deref())?;

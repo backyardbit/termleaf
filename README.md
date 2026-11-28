@@ -128,6 +128,10 @@ Terminals never pass trackpad pinches to the programs running inside them, so te
 
 Run `termleaf --no-pinch` to keep termleaf away from OS input entirely. Ctrl+wheel and `+`/`-` zoom without any permission.
 
+### Coming back after a restart
+
+In a terminal or multiplexer that supports the [Program Resume Protocol](https://www.superlogical.com/rex/docs/build/program-resume) (OSC 7577), such as Rex, termleaf tells the pane how to start it again: the same `termleaf` binary, the same options and the PDF's absolute path, from the same directory. If the terminal restarts or the machine reboots, the pane can then reopen the PDF on its own. Quitting with `q`, `:q` or Ctrl-C withdraws the command, so a pane you closed on purpose stays closed. termleaf only reports when the terminal hands it an `OSC7577_TOKEN`, and it removes the token from its environment, so the programs it starts (the browser opener, the clipboard tools, editor CLIs) never see it.
+
 ## SyncTeX
 
 termleaf jumps from the PDF to the source line in your editor (inverse search), and follows your editor's cursor through the PDF (forward search). Both need SyncTeX data. Build with `-synctex=1` (for example `latexmk -pdf -synctex=1 -pvc`), which writes `thesis.synctex.gz` next to `thesis.pdf`. An uncompressed `thesis.synctex` works too. Without it, the status bar says `no SyncTeX data: build with -synctex=1`. If the data is older than the PDF, termleaf still uses it and adds `SyncTeX data is older than the PDF`.

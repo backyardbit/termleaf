@@ -15,6 +15,7 @@ mod pdf;
 mod pinch;
 mod raster;
 mod renderer;
+mod resume;
 mod search;
 mod selection;
 mod shelf;
@@ -24,10 +25,11 @@ mod viewer;
 mod visual;
 mod watch;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use crate::graphics::Choice;
+use crate::resume::{Reporter, Resume, Token};
 
 const USAGE: &str = "usage: termleaf [--no-pinch] [--no-follow] [--graphics <protocol>] <file.pdf>
        termleaf --follow <file.tex>:<line>[:<column>]
@@ -111,7 +113,52 @@ fn parse(arguments: &[String]) -> Invocation {
     }
 }
 
+fn resume_argv(
+    program: &Path,
+    directory: &Path,
+    path: &Path,
+    options: &app::Options,
+) -> Option<Vec<String>> {
+    let mut argv = vec![program.to_str()?.to_owned()];
+    if !options.pinch {
+        argv.push("--no-pinch".to_owned());
+    }
+    if !options.follow {
+        argv.push("--no-follow".to_owned());
+    }
+    if let Some(protocol) = options.graphics.flag() {
+        argv.extend(["--graphics".to_owned(), protocol.to_owned()]);
+    }
+    argv.push(directory.join(path).to_str()?.to_owned());
+    Some(argv)
+}
+
+fn resume_after(ended: &anyhow::Result<app::Ending>) -> Option<Resume> {
+    match ended {
+        Ok(app::Ending::TerminalClosed) => None,
+        Ok(app::Ending::Quit) | Err(_) => Some(Resume::Clear),
+    }
+}
+
+fn resume_command(path: &Path, options: &app::Options) -> Option<Resume> {
+    let program = std::env::current_exe().ok()?;
+    let directory = std::env::current_dir().ok()?;
+    let argv = resume_argv(&program, &directory, path, options)?;
+    Some(Resume::Run {
+        argv,
+        cwd: Some(directory),
+    })
+}
+
+fn take_resume_token() -> Option<Token> {
+    let token = std::env::var(resume::TOKEN_VARIABLE).ok()?;
+    // SAFETY: this runs first in main, before termleaf starts any thread, so nothing else reads or writes the environment meanwhile.
+    unsafe { std::env::remove_var(resume::TOKEN_VARIABLE) };
+    Token::try_from(token.as_str()).ok()
+}
+
 fn main() -> ExitCode {
+    let token = take_resume_token();
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let (path, options) = match parse(&arguments) {
         Invocation::Help => {
@@ -146,8 +193,21 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match app::run(path, options) {
-        Ok(()) => ExitCode::SUCCESS,
+    let resume = token
+        .map(Reporter::new)
+        .zip(resume_command(&path, &options));
+    let ended = app::run(path, options, || {
+        if let Some((reporter, command)) = &resume {
+            reporter.send(command, &mut std::io::stdout());
+        }
+    });
+    if let Some((reporter, _)) = &resume
+        && let Some(after) = resume_after(&ended)
+    {
+        reporter.send(&after, &mut std::io::stdout());
+    }
+    match ended {
+        Ok(_) => ExitCode::SUCCESS,
         Err(error) => {
             use std::io::Write;
             let _ = writeln!(std::io::stderr(), "termleaf: {error:#}");
@@ -159,7 +219,7 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graphics::Protocol;
+    use crate::graphics::{Protocol, Raster};
 
     fn run(arguments: &[&str]) -> Invocation {
         let owned: Vec<String> = arguments
@@ -232,6 +292,74 @@ mod tests {
             run(&["--graphics", "halfblocks", "thesis.pdf"]),
             Invocation::Misused
         );
+    }
+
+    fn options(pinch: bool, follow: bool, graphics: Choice) -> app::Options {
+        app::Options {
+            pinch,
+            follow,
+            graphics,
+        }
+    }
+
+    fn resume_of(path: &str, options: &app::Options) -> Option<Vec<String>> {
+        resume_argv(
+            Path::new("/opt/bin/termleaf"),
+            Path::new("/home/me/thesis"),
+            Path::new(path),
+            options,
+        )
+    }
+
+    #[test]
+    fn resuming_reopens_the_same_file_by_its_absolute_path() {
+        assert_eq!(
+            resume_of("out/thesis.pdf", &options(true, true, Choice::Auto)).unwrap(),
+            ["/opt/bin/termleaf", "/home/me/thesis/out/thesis.pdf"]
+        );
+        assert_eq!(
+            resume_of("/tmp/notes.pdf", &options(true, true, Choice::Auto)).unwrap(),
+            ["/opt/bin/termleaf", "/tmp/notes.pdf"]
+        );
+    }
+
+    #[test]
+    fn resuming_keeps_the_options_termleaf_was_started_with() {
+        let resumed = resume_of(
+            "thesis.pdf",
+            &options(false, false, Choice::Force(Protocol::Raster(Raster::Sixel))),
+        )
+        .unwrap();
+        assert_eq!(
+            resumed,
+            [
+                "/opt/bin/termleaf",
+                "--no-pinch",
+                "--no-follow",
+                "--graphics",
+                "sixel",
+                "/home/me/thesis/thesis.pdf",
+            ]
+        );
+        assert_eq!(
+            parse(&resumed[1..]),
+            Invocation::View {
+                path: PathBuf::from("/home/me/thesis/thesis.pdf"),
+                pinch: false,
+                follow: false,
+                graphics: Choice::Force(Protocol::Raster(Raster::Sixel)),
+            }
+        );
+    }
+
+    #[test]
+    fn only_a_deliberate_quit_or_a_failure_withdraws_the_resume_command() {
+        assert_eq!(resume_after(&Ok(app::Ending::Quit)), Some(Resume::Clear));
+        assert_eq!(
+            resume_after(&Err(anyhow::anyhow!("no graphics"))),
+            Some(Resume::Clear)
+        );
+        assert_eq!(resume_after(&Ok(app::Ending::TerminalClosed)), None);
     }
 
     #[test]

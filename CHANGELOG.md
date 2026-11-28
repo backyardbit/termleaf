@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Come back after a terminal restart or reboot in terminals that support the Program Resume Protocol (OSC 7577), such as Rex. termleaf reports the command that reopens the same PDF with the same options, and withdraws it when you quit with `q`, `:q` or Ctrl-C.
+
 ## v0.5.0
 
 - Inverse search and Helix follow work in Rex. termleaf finds Neovim, Vim and Helix in Rex blocks through the `rex` CLI that Rex provides, and never starts a Rex server itself (#72).
